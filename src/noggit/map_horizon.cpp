@@ -527,6 +527,10 @@ void map_horizon::save_wdl(World* world, bool regenerate)
                 {
                     bool unload = !world->mapIndex.tileLoaded(index) && !world->mapIndex.tileAwaitingLoading(index);
                     MapTile* mTile = world->mapIndex.loadTile(index, false, false, false);
+                    if (!mTile)
+                    {
+                        continue;
+                    }
 
                     auto nloadedtiles = world->mapIndex.getNLoadedTiles();
 
