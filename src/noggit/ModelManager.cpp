@@ -25,7 +25,7 @@ namespace
   }
 }
 
-decltype (ModelManager::_) ModelManager::_ {};
+// ModelManager::_ is defined in AsyncObjectManagers.cpp to fix static destruction order.
 
 void ModelManager::report()
 {

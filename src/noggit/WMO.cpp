@@ -1255,7 +1255,7 @@ void WMOFog::setup()
 
 }
 
-decltype (WMOManager::_) WMOManager::_;
+// WMOManager::_ is defined in AsyncObjectManagers.cpp to fix static destruction order.
 
 void WMOManager::report()
 {
