@@ -5,6 +5,7 @@
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/Selection.h>
+#include <noggit/scoped_blp_texture_reference.hpp>
 #include <noggit/texture_set.hpp>
 #include <noggit/ui/CurrentTexture.h>
 #include <noggit/ui/FontAwesome.hpp>
@@ -14,12 +15,21 @@
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QPushButton>
 
+#include <algorithm>
 #include <cassert>
+#include <numeric>
 
 namespace Noggit
 {
   namespace Ui
   {
+    namespace
+    {
+      constexpr int texture_picker_columns = 4;
+      constexpr int texture_picker_slots = MAX_TEXTURE_LAYERS;
+      constexpr size_t texture_picker_render_slots = 4;
+    }
+
     texture_picker::texture_picker
         (current_texture* current_texture_window, QWidget* parent)
       : widget (parent, Qt::Window)
@@ -38,18 +48,13 @@ namespace Noggit
       auto Alphamaps_layout = new QGridLayout(AlphamapsBox_content);
       AlphamapsBox->setLayoutDirection(Qt::LeftToRight);
       AlphamapsBox->addPage(AlphamapsBox_content);
-      layout->addWidget(AlphamapsBox, 3, 0, 1, 4, Qt::AlignLeft);
 
       connect(AlphamapsBox, &ExpanderWidget::expanderChanged, [&](bool flag)
           {
-              // adjust window's size with the expander.
-              if (flag)
-                this->setFixedHeight(224 + 128 + 18);
-              else
-                  this->setFixedHeight(224);
+              adjustSize();
           });
 
-      for (int i = 0; i < 4; i++)
+      for (int i = 0; i < texture_picker_slots; i++)
       {
         current_texture* click_label = new current_texture(false, this);
         connect ( click_label, &ClickableLabel::leftClicked
@@ -59,15 +64,6 @@ namespace Noggit
                         return;
 
                     setTexture(i, current_texture_window);
-
-                    for (unsigned long long i = 0; i < _labels.size(); ++i)
-                    {
-
-                        _labels[i]->unselect();
-
-                        if (_labels[i] == click_label && !_labels[i]->_is_swap_selected)
-                            _labels[i]->select();
-                    }
                   }
                 );
 
@@ -97,7 +93,7 @@ namespace Noggit
         if (click_label->filename() == current_texture_window->filename())
             click_label->select();
 
-        layout->addWidget(click_label, 0, i);
+        layout->addWidget(click_label, i / texture_picker_columns, i % texture_picker_columns);
         _labels.push_back(click_label);
 
         QLabel* alphamap_label = new QLabel(this);
@@ -105,14 +101,17 @@ namespace Noggit
         alphamap_label->setMinimumSize(128, 128);
         // alphamap_label->hide();
 
-        Alphamaps_layout->addWidget(alphamap_label, 0, i);
+        Alphamaps_layout->addWidget(alphamap_label, i / texture_picker_columns, i % texture_picker_columns);
         _alphamap_preview_labels.push_back(alphamap_label);
       }
 
       QPushButton* btn_left = new QPushButton (this);
       QPushButton* btn_right = new QPushButton (this);
+      QPushButton* btn_add = new QPushButton (this);
       btn_left->setIcon(FontAwesomeIcon(FontAwesome::angledoubleleft));
       btn_right->setIcon(FontAwesomeIcon(FontAwesome::angledoubleright));
+      btn_add->setIcon(FontAwesomeIcon(FontAwesome::plus));
+      btn_add->setToolTip("Add current texture to chunk");
 
       // QPushButton* btn_hide_alphamaps = new QPushButton(this);
       // btn_hide_alphamaps->setIcon(Noggit::Ui::FontNoggitIcon(Noggit::Ui::FontNoggit::Icons::VISIBILITY_HIDDEN_MODELS));
@@ -120,15 +119,20 @@ namespace Noggit
 
       btn_left->setMinimumHeight(16);
       btn_right->setMinimumHeight(16);
+      btn_add->setMinimumHeight(16);
       // btn_hide_alphamaps->setMinimumHeight(16);
 
       auto btn_layout(new QGridLayout);
       btn_layout->addWidget (btn_left, 0, 0);
-      btn_layout->addWidget (btn_right, 0, 1);
+      btn_layout->addWidget (btn_add, 0, 1);
+      btn_layout->addWidget (btn_right, 0, 2);
 
       // layout->addWidget(btn_hide_alphamaps, 2, 0, 1, 4, Qt::AlignHCenter | Qt::AlignBottom);
 
-      layout->addItem(btn_layout, 1, 0, 1, 4, Qt::AlignHCenter | Qt::AlignBottom);
+      int texture_rows = (texture_picker_slots + texture_picker_columns - 1) / texture_picker_columns;
+
+      layout->addItem(btn_layout, texture_rows, 0, 1, texture_picker_columns, Qt::AlignHCenter | Qt::AlignBottom);
+      layout->addWidget(AlphamapsBox, texture_rows + 2, 0, 1, texture_picker_columns, Qt::AlignLeft);
 
       connect ( btn_left, &QPushButton::clicked
               , [this]
@@ -144,8 +148,25 @@ namespace Noggit
                 }
               );
 
+      connect ( btn_add, &QPushButton::clicked
+              , [this]
+                {
+                  if (!_chunk || !_main_texture_window)
+                    return;
+
+                  scoped_blp_texture_reference texture(_main_texture_window->filename(), Noggit::NoggitRenderContext::MAP_VIEW);
+                  int texture_index = _chunk->texture_set->get_texture_index_or_add(std::move(texture), 1.f);
+                  if (texture_index < 0)
+                    return;
+
+                  _chunk->texture_set->markDirty();
+                  _chunk->mt->changed = true;
+                  update();
+                }
+              );
+
       adjustSize();
-      setFixedSize(size());
+      setMinimumSize(sizeHint());
 
     }
 
@@ -154,7 +175,9 @@ namespace Noggit
         if (!_chunk)
             return;
 
-        for (size_t index = 0; index < _chunk->texture_set->num(); ++index)
+        size_t visible_texture_count = std::min(_chunk->texture_set->num(), _labels.size());
+
+        for (size_t index = 0; index < visible_texture_count; ++index)
         {
             _labels[index]->unselect();
             if (_main_texture_window->filename() == _labels[index]->filename())
@@ -182,8 +205,22 @@ namespace Noggit
     {
       assert(id < _textures.size());
 
-      emit set_texture(_textures[id]);
-      current_texture_window->set_texture (_textures[id]->file_key().filepath());
+      scoped_blp_texture_reference texture = _textures[id];
+
+      if (_chunk && id >= texture_picker_render_slots && id < _chunk->texture_set->num())
+      {
+        while (id >= texture_picker_render_slots)
+        {
+          _chunk->texture_set->swap_layers(static_cast<int>(id - 1), static_cast<int>(id));
+          --id;
+        }
+
+        update(false);
+      }
+
+      emit set_texture(texture);
+      current_texture_window->set_texture(texture->file_key().filepath());
+      updateSelection();
     }
 
     void texture_picker::shiftSelectedTextureLeft()
@@ -235,9 +272,10 @@ namespace Noggit
       _textures.clear();
       // uint8_t index = 0;
 
-      std::array<int, 4> weights{0,0,0,0};
+      size_t visible_texture_count = std::min(_chunk->texture_set->num(), _labels.size());
+      std::vector<int> weights(visible_texture_count, 0);
 
-      for (uint8_t index = 0; index < _chunk->texture_set->num(); ++index)
+      for (size_t index = 0; index < visible_texture_count; ++index)
       {
         _labels[index]->unselect();
         _textures.push_back(_chunk->texture_set->texture(index));
@@ -263,27 +301,26 @@ namespace Noggit
             {
                 if (index == 0)
                 {
-                    // WoW calculates layer 0 as 255 - sum(Layer[1]...Layer[3])
+                    // WoW calculates layer 0 as 255 - sum(Layer[1]...Layer[N]).
                     int layers_sum = 0;
-                    if (alphamaps->at(0))
-                        layers_sum += alphamaps->at(0)->getAlpha(64 * l + k);
-                    if (alphamaps->at(1))
-                        layers_sum += alphamaps->at(1)->getAlpha(64 * l + k);
-                    if (alphamaps->at(2))
-                        layers_sum += alphamaps->at(2)->getAlpha(64 * l + k);
+                    for (size_t alpha_index = 0; alpha_index < _chunk->texture_set->num() - 1; ++alpha_index)
+                    {
+                      if (alphamaps->at(alpha_index))
+                        layers_sum += alphamaps->at(alpha_index)->getAlpha(64 * l + k);
+                    }
         
                     int value = std::clamp((255 - layers_sum), 0, 255);
                     image.setPixelColor(k, l, QColor(value, value, value, 255));
-                    weights.at(index) += value;
+                    weights[index] += value;
 
                 }
-                else // layer 1-3
+                else
                 {
                     auto& alpha_layer = *alphamaps->at(index - 1);
         
                     int value = alpha_layer.getAlpha(64 * l + k);
                     image.setPixelColor(k, l, QColor(value, value, value, 255));
-                    weights.at(index) += value;
+                    weights[index] += value;
                 }
             }
         }
@@ -296,20 +333,16 @@ namespace Noggit
         _alphamap_preview_labels[index]->setPixmap(alphamap_preview);
       }
 
-      float sum = weights.at(0) + weights.at(1) + weights.at(2) + weights.at(3);
-      std::array<float, 4> alpha_weights = { 
-          weights.at(0) / sum * 100.f,
-          weights.at(1) / sum * 100.f,
-          weights.at(2) / sum * 100.f,
-          weights.at(3) / sum * 100.f };
+      int sum = std::accumulate(weights.begin(), weights.end(), 0);
 
-      for (uint8_t index = 0; index < _chunk->texture_set->num(); ++index)
+      for (size_t index = 0; index < visible_texture_count; ++index)
       {
-          std::string weight_tooltip = "Weight: " + std::to_string(alpha_weights.at(index));
+          float alpha_weight = sum ? (static_cast<float>(weights[index]) / static_cast<float>(sum) * 100.f) : 0.f;
+          std::string weight_tooltip = "Weight: " + std::to_string(alpha_weight);
         _alphamap_preview_labels[index]->setToolTip(QString::fromStdString(weight_tooltip));
       }
 
-      for (uint8_t index = _chunk->texture_set->num(); index < 4U; ++index)
+      for (size_t index = visible_texture_count; index < _labels.size(); ++index)
       {
         _labels[index]->hide();
         _alphamap_preview_labels[index]->hide();

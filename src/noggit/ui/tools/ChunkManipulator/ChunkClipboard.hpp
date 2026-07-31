@@ -5,6 +5,7 @@
 
 #include <noggit/MapHeaders.h>
 #include <noggit/TileIndex.hpp>
+#include <noggit/texture_set.hpp>
 
 #include <blizzard-archive-library/include/Listfile.hpp>
 
@@ -55,9 +56,9 @@ namespace Noggit::Ui::Tools::ChunkManipulator
   {
     size_t n_textures;
     std::vector<std::string> textures;
-    std::array<std::unique_ptr<Alphamap>, 3> alphamaps;
+    std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS> alphamaps;
     std::unique_ptr<tmp_edit_alpha_values> tmp_edit_values;
-    ENTRY_MCLY layers_info[4];
+    layer_info layers_info[MAX_TEXTURE_LAYERS];
   };
 
   enum class ChunkManipulatorObjectTypes

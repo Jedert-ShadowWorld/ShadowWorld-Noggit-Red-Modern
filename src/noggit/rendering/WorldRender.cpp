@@ -1600,6 +1600,7 @@ void WorldRender::upload()
     mcnk_shader.bind_uniform_block("lighting", 1);
     mcnk_shader.bind_uniform_block("overlay_params", 2);
     mcnk_shader.bind_uniform_block("chunk_instances", 3);
+    mcnk_shader.bind_uniform_block("chunk_layer_ext", OpenGL::ubo_targets::CHUNK_LAYER_EXT);
 
     gl.bindBuffer(GL_UNIFORM_BUFFER, _terrain_params_ubo);
     gl.bufferData(GL_UNIFORM_BUFFER, sizeof(OpenGL::TerrainParamsUniformBlock), NULL, GL_STATIC_DRAW);

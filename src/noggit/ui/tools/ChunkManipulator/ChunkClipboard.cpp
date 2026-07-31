@@ -187,7 +187,7 @@ void ChunkClipboard::copySelected(glm::vec3 const& pos, ChunkCopyFlags flags)
       else
           cache.tmp_edit_values.reset();
 
-      std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * 4);
+      std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * MAX_TEXTURE_LAYERS);
 
       for (int i = 0; i < cache.n_textures; ++i)
       {

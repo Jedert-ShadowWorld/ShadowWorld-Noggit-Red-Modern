@@ -18,7 +18,7 @@
 TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base
                         , bool use_big_alphamaps, bool do_not_fix_alpha_map, bool do_not_convert_alphamaps
                         , Noggit::NoggitRenderContext context, MapChunkHeader const& header)
-  : nTextures(header.nLayers)
+  : nTextures(std::min<std::size_t>(header.nLayers, MAX_TEXTURE_LAYERS))
   , _do_not_convert_alphamaps(do_not_convert_alphamaps)
   , _context(context)
   , _chunk(chunk)
@@ -31,7 +31,7 @@ TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t 
   {
     f->seek(base + header.ofsLayer + 8);
 
-    ENTRY_MCLY tmp_entry_mcly[4];
+    ENTRY_MCLY tmp_entry_mcly[MAX_TEXTURE_LAYERS];
 
     for (size_t i = 0; i<nTextures; ++i)
     {
@@ -75,7 +75,7 @@ int TextureSet::addTexture (scoped_blp_texture_reference texture)
 {
   int texLevel = -1;
 
-  if (nTextures < 4U)
+  if (nTextures < MAX_TEXTURE_LAYERS)
   {
     texLevel = static_cast<int>(nTextures);
     nTextures++;
@@ -204,7 +204,7 @@ void TextureSet::eraseTextures()
 
   textures.clear();
 
-  for (int i = 0; i < 4; ++i)
+  for (int i = 0; i < MAX_TEXTURE_LAYERS; ++i)
   {
     if (i > 0)
     {
@@ -280,7 +280,7 @@ bool TextureSet::canPaintTexture(scoped_blp_texture_reference const& texture)
       }
     }
 
-    return nTextures < 4;
+    return nTextures < MAX_TEXTURE_LAYERS;
   }
 
   return true;
@@ -393,7 +393,7 @@ int TextureSet::get_texture_index_or_add (scoped_blp_texture_reference texture, 
     return -1;
   }
 
-  if (nTextures == 4 && !eraseUnusedTextures())
+  if (nTextures == MAX_TEXTURE_LAYERS && !eraseUnusedTextures())
   {
     return -1;
   }
@@ -561,10 +561,10 @@ bool TextureSet::stampTexture(float xbase, float zbase, float x, float z, Brush*
 
       std::size_t offset = i + 64 * j;
       // use double for more precision
-      std::array<double,4> alpha_values;
+      std::vector<double> alpha_values(nTextures);
       double total = 0.;
 
-      for (int n = 0; n < 4; ++n)
+      for (int n = 0; n < nTextures; ++n)
       {
         total += alpha_values[n] = amaps[n][i + 64 * j];
       }
@@ -656,7 +656,7 @@ bool TextureSet::stampTexture(float xbase, float zbase, float x, float z, Brush*
         }
       }
 
-      for (int n = 0; n < 4; ++n)
+      for (int n = 0; n < nTextures; ++n)
       {
         amaps[n][i + 64 * j] = static_cast<float>(alpha_values[n]);
       }
@@ -855,10 +855,10 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
       {
         std::size_t offset = i + 64 * j;
         // use double for more precision
-        std::array<double,4> alpha_values;
+        std::vector<double> alpha_values(nTextures);
         double total = 0.;
 
-        for (int n = 0; n < 4; ++n)
+        for (int n = 0; n < nTextures; ++n)
         {
           total += alpha_values[n] = amaps[n][i + 64 * j];
         }
@@ -946,7 +946,7 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
             }
           }
 
-          for (int n = 0; n < 4; ++n)
+          for (int n = 0; n < nTextures; ++n)
           {
             amaps[n][i + 64 * j] = static_cast<float>(alpha_values[n]);
           }
@@ -1022,7 +1022,7 @@ bool TextureSet::replace_texture( float xbase
     }
   }
 
-  if (old_tex_level == -1 || (new_tex_level == -1 && nTextures == 4 && !eraseUnusedTextures()))
+  if (old_tex_level == -1 || (new_tex_level == -1 && nTextures == MAX_TEXTURE_LAYERS && !eraseUnusedTextures()))
   {
     return false;
   }
@@ -1139,18 +1139,18 @@ std::vector<std::vector<uint8_t>> TextureSet::save_alpha(bool big_alphamap)
     }
     else
     {
-      uint8_t tab[4096 * 3];
+      std::vector<uint8_t> tab(4096 * (nTextures - 1));
 
       if (_do_not_convert_alphamaps)
       {
         for (size_t k = 0; k < nTextures - 1; k++)
         {
-          memcpy(tab + (k*64*64), alphamaps[k]->getAlpha(), 64 * 64);
+          memcpy(tab.data() + (k*64*64), alphamaps[k]->getAlpha(), 64 * 64);
         }
       }
       else
       {
-        alphas_to_old_alpha(tab);
+        alphas_to_old_alpha(tab.data());
       }
       
 
@@ -1225,7 +1225,7 @@ void TextureSet::convertToBigAlpha()
     return;
   }
 
-  std::array<std::uint8_t, 4096 * 3> tab;
+  std::vector<std::uint8_t> tab(4096 * (nTextures - 1));
 
   apply_alpha_changes();
   alphas_to_big_alpha(tab.data());
@@ -1344,7 +1344,7 @@ bool TextureSet::removeDuplicate()
   return changed;
 }
 
-void TextureSet::uploadAlphamapData()
+void TextureSet::uploadAlphamapData(bool upload_ext_layers)
 {
   // This method assumes tile's alphamap storage is currently bound to the current texture unit
 
@@ -1357,13 +1357,13 @@ void TextureSet::uploadAlphamapData()
   if (tmp_edit_values)
   {
     auto& tmp_amaps = *tmp_edit_values;
+    int base_alpha_layers = std::min<int>(static_cast<int>(nTextures) - 1, 3);
 
     for (int i = 0; i < 64 * 64; ++i)
     {
       for (int alpha_id = 0; alpha_id < 3; ++alpha_id)
       {
-        // amap[i * 3 + alpha_id] = (alpha_id < nTextures - 1) ? tmp_amaps[alpha_id + 1][i] / 255.f : 0.f;
-        if (alpha_id < nTextures - 1)
+        if (alpha_id < base_alpha_layers)
           amap[i * 3 + alpha_id] = tmp_amaps[alpha_id + 1][i] / 255.f;
       }
     }
@@ -1371,8 +1371,9 @@ void TextureSet::uploadAlphamapData()
   else
   {
     uint8_t const* alpha_ptr[3]{ nullptr, nullptr, nullptr };
+    int base_alpha_layers = std::min<int>(static_cast<int>(nTextures) - 1, 3);
 
-    for (int i = 0; i < nTextures - 1; ++i)
+    for (int i = 0; i < base_alpha_layers; ++i)
     {
       alpha_ptr[i] = alphamaps[i]->getAlpha();
     }
@@ -1381,14 +1382,10 @@ void TextureSet::uploadAlphamapData()
     {
       for (int alpha_id = 0; alpha_id < 3; ++alpha_id)
       {
-          if (alpha_id < nTextures - 1)
+          if (alpha_id < base_alpha_layers)
           {
               amap[i * 3 + alpha_id] = static_cast<float>(*(alpha_ptr[alpha_id]++)) / 255.0f;
           }
-          // else
-          // {
-          //     amap[i * 3 + alpha_id] = 0.f;
-          // }
       }
     }
 
@@ -1397,15 +1394,55 @@ void TextureSet::uploadAlphamapData()
   gl.texSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, _chunk->px * 16 + _chunk->py,
                    64, 64, 1, GL_RGB, GL_FLOAT, amap.data());
 
+  if (!upload_ext_layers)
+    return;
+
+  // alphamaps of layers 5+ go to the extension slices appended after the
+  // 256 base slices, 3 alphamaps per RGB slice
+  static std::array<float, EXT_ALPHAMAP_SLICES * 3 * 64 * 64> ext_amap{};
+  std::fill(ext_amap.begin(), ext_amap.end(), 0.0f);
+
+  int ext_alpha_layers = std::min<int>(static_cast<int>(nTextures) - BASE_RENDER_TEXTURE_LAYERS,
+                                       EXT_RENDER_TEXTURE_LAYERS);
+
+  for (int e = 0; e < ext_alpha_layers; ++e)
+  {
+    // extension alpha channel e belongs to layer 4 + e, its alphamap index is 3 + e
+    std::size_t channel_offset = (e / 3) * 3 * 64 * 64 + e % 3;
+
+    if (tmp_edit_values)
+    {
+      auto& tmp_amaps = *tmp_edit_values;
+
+      for (int i = 0; i < 64 * 64; ++i)
+      {
+        ext_amap[channel_offset + i * 3] = tmp_amaps[BASE_RENDER_TEXTURE_LAYERS + e][i] / 255.f;
+      }
+    }
+    else
+    {
+      uint8_t const* alpha_ptr = alphamaps[BASE_RENDER_TEXTURE_LAYERS - 1 + e]->getAlpha();
+
+      for (int i = 0; i < 64 * 64; ++i)
+      {
+        ext_amap[channel_offset + i * 3] = static_cast<float>(alpha_ptr[i]) / 255.0f;
+      }
+    }
+  }
+
+  gl.texSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0,
+                   256 + (_chunk->px * 16 + _chunk->py) * EXT_ALPHAMAP_SLICES,
+                   64, 64, EXT_ALPHAMAP_SLICES, GL_RGB, GL_FLOAT, ext_amap.data());
 }
 
 namespace
 {
   misc::max_capacity_stack_vector<std::size_t, 4> current_layer_values
-    (std::uint8_t nTextures, const std::array<std::unique_ptr<Alphamap>, 3>& alphamaps, std::size_t pz, std::size_t px)
+    (std::uint8_t nTextures, const std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS>& alphamaps, std::size_t pz, std::size_t px)
   {
-    misc::max_capacity_stack_vector<std::size_t, 4> values (nTextures, 0xFF);
-    for (std::uint8_t i = 1; i < nTextures; ++i)
+    std::uint8_t visibleLayers = std::min<std::uint8_t>(nTextures, 4);
+    misc::max_capacity_stack_vector<std::size_t, 4> values (visibleLayers, 0xFF);
+    for (std::uint8_t i = 1; i < visibleLayers; ++i)
     {
       values[i] = alphamaps[i - 1]->getAlpha(64 * pz + px);
       values[0] -= values[i];
@@ -1423,7 +1460,7 @@ void TextureSet::update_lod_texture_map()
   {
     for (int x = 0; x < 8; ++x)
     {
-      misc::max_capacity_stack_vector<std::size_t, 4> dominant_square_count (nTextures);
+      misc::max_capacity_stack_vector<std::size_t, 4> dominant_square_count (std::min<std::size_t>(nTextures, 4));
 
       for (int pz = z * 8; pz < (z + 1) * 8; ++pz)
       {
@@ -1532,8 +1569,9 @@ void TextureSet::updateDoodadMapping()
     constexpr int NUM_UNITS = TILE_SIZE / UNIT_SIZE; // 8
 
     // pre load alphamaps data to avoid functions overhead
+    int doodad_alpha_layers = std::min<int>(static_cast<int>(nTextures) - 1, 3);
     std::array< const unsigned char*, 3> alphamaps_datas;
-    for (int alpha_layer = 0; alpha_layer < nTextures - 1; ++alpha_layer)
+    for (int alpha_layer = 0; alpha_layer < doodad_alpha_layers; ++alpha_layer)
     {
       alphamaps_datas[alpha_layer] = alphamaps[alpha_layer]->getAlpha();
     }
@@ -1553,7 +1591,7 @@ void TextureSet::updateDoodadMapping()
 
               // row pointers per layer
               const unsigned char* row_ptrs[3] = { nullptr, nullptr, nullptr };
-              for (int layer = 0; layer < nTextures - 1; ++layer)
+              for (int layer = 0; layer < doodad_alpha_layers; ++layer)
                 row_ptrs[layer] = alphamaps_datas[layer] + row_base;
 
 
@@ -1607,7 +1645,7 @@ void TextureSet::updateDoodadMapping()
             int max = layer_totals[0];
             int max_layer_index = 0;
 
-            for (int i = 1; i < nTextures; i++)
+            for (int i = 1; i < std::min<std::size_t>(nTextures, 4); i++)
             {
                 // in old azeroth maps superior layers seems to have higher priority
                 // error margin is ~4% in old azeroth without adjusted weight, 2% with

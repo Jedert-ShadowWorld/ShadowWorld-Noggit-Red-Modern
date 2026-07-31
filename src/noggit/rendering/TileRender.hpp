@@ -3,6 +3,7 @@
 #ifndef NOGGIT_TILERENDER_HPP
 #define NOGGIT_TILERENDER_HPP
 
+#include <noggit/Alphamap.hpp>
 #include <noggit/rendering/BaseRender.hpp>
 #include <opengl/scoped.hpp>
 #include <array>
@@ -93,6 +94,10 @@ namespace Noggit::Rendering
     bool _uploaded_alphamap_last_frame = false;
     int _num_uploaded_chunk_alphamaps = 0; // last frame
 
+    // the alphamap array only holds the extension slices for layers 5+
+    // once a chunk of the tile actually uses them
+    bool _alphamap_extended = false;
+
     std::string _geffect_active_texture = "";
 
     // culling
@@ -113,10 +118,13 @@ namespace Noggit::Rendering
     GLuint _tile_occlusion_query;
     bool _tile_occlusion_query_in_use = false;
 
-    OpenGL::Scoped::deferred_upload_buffers<1> _buffers;
+    OpenGL::Scoped::deferred_upload_buffers<2> _buffers;
 
     GLuint const& _chunk_instance_data_ubo = _buffers[0];
     OpenGL::ChunkInstanceDataUniformBlock _chunk_instance_data[256];
+
+    GLuint const& _chunk_layer_ext_ubo = _buffers[1];
+    OpenGL::ChunkExtLayerParams _chunk_layer_ext_data[256 * EXT_RENDER_TEXTURE_LAYERS];
 
   };
 }

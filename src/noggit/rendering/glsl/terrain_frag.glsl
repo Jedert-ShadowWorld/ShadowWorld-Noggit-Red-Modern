@@ -69,6 +69,21 @@ layout (std140) uniform chunk_instances
   ChunkInstanceData instances[256];
 };
 
+struct ChunkExtLayerParams
+{
+  int params_packed; // bits 0-3: sampler id, bit 4: anim enabled,
+                     // bits 5-7: anim speed, bits 8-10: anim rotation
+  int array_index;   // negative = layer texture has no specular map
+  float _unused0;    // reserved (mists heightmapping scale/offset)
+  float _unused1;
+};
+
+// texture layers 5+ of each chunk; the first 4 layers come from ChunkInstanceData
+layout (std140) uniform chunk_layer_ext
+{
+  ChunkExtLayerParams ext_layers[3072]; // 256 chunks * 12 layers
+};
+
 uniform sampler2DArray shadowmap;
 uniform sampler2DArray alphamap;
 uniform sampler2D stamp_brush;
@@ -82,6 +97,7 @@ uniform float outer_cursor_radius;
 uniform float inner_cursor_ratio;
 uniform vec4 cursor_color;
 uniform bool enable_mists_heightmapping;
+uniform int animtime;
 
 in vec3 vary_position;
 in vec2 vary_texcoord;
@@ -211,8 +227,62 @@ vec2 getAdjustedUV(vec2 uv, int textureScale) {
     return combinedUV;
 }
 
+// mirrors animUVOffset() in the vertex shader, which feeds layers 1-4
+vec2 ext_anim_uv_offset(int spd, int dir)
+{
+  const float texanimxtab[8] = float[8]( 0, 1, 1, 1, 0, -1, -1, -1 );
+  const float texanimytab[8] = float[8]( 1, 1, 0, -1, -1, -1, 0, 1 );
+  float fdx = -texanimxtab[dir];
+  float fdy = texanimytab[dir];
+  int animspd = int(200 * 8.0);
+  float f = float((int(animtime*(spd / 7.0f))) % animspd) / float(animspd);
+
+  return vec2(f * fdx, f * fdy);
+}
+
+// blends texture layers 5+ on top of the 4 layers handled in texture_blend().
+// their alphamaps live in the extension slices appended after the 256 base
+// slices, packed 3 layers per RGB slice.
+vec4 ext_texture_blend(int layer_count, out float ext_weight_sum)
+{
+  vec4 color = vec4(0.0);
+  ext_weight_sum = 0.0;
+
+  for (int ext_slice = 0; ext_slice < 4; ++ext_slice)
+  {
+    int first_layer = 4 + ext_slice * 3;
+
+    if (layer_count <= first_layer)
+      break;
+
+    vec3 slice_alpha = texture(alphamap, vec3(vary_texcoord / 8.0, 256 + instanceID * 4 + ext_slice)).rgb;
+
+    for (int channel = 0; channel < 3; ++channel)
+    {
+      int layer = first_layer + channel;
+
+      if (layer_count <= layer)
+        break;
+
+      ChunkExtLayerParams params = ext_layers[instanceID * 12 + (layer - 4)];
+
+      vec2 uv = vary_texcoord + ext_anim_uv_offset((params.params_packed >> 5) & 0x7, (params.params_packed >> 8) & 0x7);
+
+      vec4 t = get_tex_color(uv, params.params_packed & 0xF, abs(params.array_index));
+      t.a = mix(t.a, 0.f, int(params.array_index < 0));
+
+      color += t * slice_alpha[channel];
+      ext_weight_sum += slice_alpha[channel];
+    }
+  }
+
+  return color;
+}
+
 vec4 mists_texture_blend()
 {
+  // layers 5+ are only handled by the regular texture_blend() path,
+  // heightmapping still blends the first 4 layers
   vec3 alpha = texture(alphamap, vec3(vary_texcoord / 8.0, instanceID)).rgb;
 
   int layer_count = instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.b;
@@ -290,7 +360,15 @@ vec4 texture_blend()
   vec4 t3 = get_tex_color(vary_t3_uv, instances[instanceID].ChunkTextureSamplers.w, abs(instances[instanceID].ChunkTextureArrayIDs.w));
   t3.a = mix(t3.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.w < 0));
 
-  return vec4 (t0 * (1.0 - (a0 + a1 + a2)) + t1 * a0 + t2 * a1 + t3 * a2);
+  float ext_weight_sum = 0.0;
+  vec4 ext_color = vec4(0.0);
+
+  if (layer_count > 4)
+  {
+    ext_color = ext_texture_blend(layer_count, ext_weight_sum);
+  }
+
+  return vec4 (t0 * (1.0 - (a0 + a1 + a2 + ext_weight_sum)) + t1 * a0 + t2 * a1 + t3 * a2 + ext_color);
 }
 
 float contour_alpha(float unit_size, float pos, float line_width)

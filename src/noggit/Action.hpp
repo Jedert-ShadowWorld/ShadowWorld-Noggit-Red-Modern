@@ -71,7 +71,7 @@ namespace Noggit
       std::vector<std::string> textures;
       std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS> alphamaps;
       std::unique_ptr<tmp_edit_alpha_values> tmp_edit_values;
-      layer_info layers_info[4];
+      layer_info layers_info[MAX_TEXTURE_LAYERS];
     };
 
     struct ObjectInstanceCache
@@ -164,8 +164,8 @@ namespace Noggit
         std::vector<std::pair<MapChunk*, int>> _chunk_holes_post;
         std::vector<std::pair<MapChunk*, int>> _chunk_area_id_pre;
         std::vector<std::pair<MapChunk*, int>> _chunk_area_id_post;
-        std::vector<std::pair<MapChunk*, std::array<layer_info, 4>>> _chunk_layerinfos_pre;
-        std::vector<std::pair<MapChunk*, std::array<layer_info, 4>>> _chunk_layerinfos_post;
+        std::vector<std::pair<MapChunk*, std::array<layer_info, MAX_TEXTURE_LAYERS>>> _chunk_layerinfos_pre;
+        std::vector<std::pair<MapChunk*, std::array<layer_info, MAX_TEXTURE_LAYERS>>> _chunk_layerinfos_post;
         std::vector<std::pair<MapChunk*, std::array<std::uint8_t, 8>>> _chunk_detaildoodad_exclusion_pre;
         std::vector<std::pair<MapChunk*, std::array<std::uint8_t, 8>>> _chunk_detaildoodad_exclusion_post;
         std::vector<std::pair<MapChunk*, mcnk_flags>> _chunk_flags_pre;

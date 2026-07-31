@@ -14,7 +14,6 @@
 
 using namespace Noggit::Rendering;
 
-
 TileRender::TileRender(MapTile* map_tile)
 : _map_tile(map_tile)
 {
@@ -30,6 +29,11 @@ void TileRender::upload()
   gl.bindBufferRange(GL_UNIFORM_BUFFER, OpenGL::ubo_targets::CHUNK_INSTANCE_DATA,
                      _chunk_instance_data_ubo, 0, sizeof(OpenGL::ChunkInstanceDataUniformBlock) * 256);
   gl.bufferData(GL_UNIFORM_BUFFER, sizeof(OpenGL::ChunkInstanceDataUniformBlock) * 256, NULL, GL_DYNAMIC_DRAW);
+
+  gl.bindBuffer(GL_UNIFORM_BUFFER, _chunk_layer_ext_ubo);
+  gl.bindBufferRange(GL_UNIFORM_BUFFER, OpenGL::ubo_targets::CHUNK_LAYER_EXT,
+                     _chunk_layer_ext_ubo, 0, sizeof(_chunk_layer_ext_data));
+  gl.bufferData(GL_UNIFORM_BUFFER, sizeof(_chunk_layer_ext_data), NULL, GL_DYNAMIC_DRAW);
 
   MapTileDrawCall& draw_call = _draw_calls.emplace_back();
   draw_call.start_chunk = 0;
@@ -49,6 +53,7 @@ void TileRender::unload()
     _chunk_texture_arrays.unload();
     _buffers.unload();
     _uploaded = false;
+    _alphamap_extended = false;
     gl.deleteQueries(1, &_tile_occlusion_query);
   }
 
@@ -145,6 +150,32 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
 
     _selected = is_selected;
 
+    // grow the alphamap array with the extension slices for layers 5+ the
+    // first time a chunk of this tile needs them. reallocating voids the
+    // base slices too, so every chunk alphamap has to be uploaded again.
+    if (!_alphamap_extended)
+    {
+      for (int i = 0; i < 256; ++i)
+      {
+        if (static_cast<int>(_map_tile->mChunks[i % 16][i / 16]->texture_set->num()) <= BASE_RENDER_TEXTURE_LAYERS)
+          continue;
+
+        gl.activeTexture(GL_TEXTURE0 + 3);
+        gl.bindTexture(GL_TEXTURE_2D_ARRAY, _alphamap_tex);
+        gl.texImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGB, 64, 64,
+                      256 + 256 * EXT_ALPHAMAP_SLICES, 0, GL_RGB, GL_FLOAT, nullptr);
+
+        _map_tile->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+        for (int j = 0; j < 256; ++j)
+        {
+          _map_tile->mChunks[j % 16][j / 16]->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+        }
+
+        _alphamap_extended = true;
+        break;
+      }
+    }
+
     for (int i = 0; i < 256; ++i)
     {
       int chunk_x = i / 16;
@@ -164,7 +195,7 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
         gl.activeTexture(GL_TEXTURE0 + 3);
         gl.bindTexture(GL_TEXTURE_2D_ARRAY, _alphamap_tex);
         alphamap_bound = true;
-        chunk->texture_set->uploadAlphamapData();
+        chunk->texture_set->uploadAlphamapData(_alphamap_extended);
 
         _uploaded_alphamap_last_frame = true;
         _num_uploaded_chunk_alphamaps++;
@@ -234,7 +265,9 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
       {
         _chunk_instance_data[i].ChunkHoles_DrawImpass_TexLayerCount_CantPaint[1] = chunk->header_flags.flags.impass;
 
-        for (int k = 0; k < chunk->texture_set->num(); ++k)
+        int n_layers = static_cast<int>(chunk->texture_set->num());
+
+        for (int k = 0; k < n_layers && k < BASE_RENDER_TEXTURE_LAYERS; ++k)
         {
           unsigned layer_flags = chunk->texture_set->flag(k);
           auto flag_view = reinterpret_cast<MCLYFlags*>(&layer_flags);
@@ -242,6 +275,18 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
           _chunk_instance_data[i].ChunkTexDoAnim[k] = flag_view->animation_enabled;
           _chunk_instance_data[i].ChunkTexAnimSpeed[k] = flag_view->animation_speed;
           _chunk_instance_data[i].ChunkTexAnimDir[k] = flag_view->animation_rotation;
+        }
+
+        for (int k = BASE_RENDER_TEXTURE_LAYERS; k < n_layers; ++k)
+        {
+          unsigned layer_flags = chunk->texture_set->flag(k);
+          auto flag_view = reinterpret_cast<MCLYFlags*>(&layer_flags);
+
+          auto& ext_params = _chunk_layer_ext_data[i * EXT_RENDER_TEXTURE_LAYERS + k - BASE_RENDER_TEXTURE_LAYERS];
+          ext_params.params_packed = (ext_params.params_packed & 0xF)
+                                   | (flag_view->animation_enabled << 4)
+                                   | (flag_view->animation_speed << 5)
+                                   | (flag_view->animation_rotation << 8);
         }
 
         _chunk_instance_data[i].ChunkTexDoAnim[1] = chunk->header_flags.flags.impass;
@@ -327,6 +372,14 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
 
     gl.bufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(OpenGL::ChunkInstanceDataUniformBlock) * 256,
                      &_chunk_instance_data);
+
+    // tiles without layers 5+ skip the upload, the shader never reads
+    // the block for chunks with a layer count <= 4
+    if (_alphamap_extended)
+    {
+      gl.bindBuffer(GL_UNIFORM_BUFFER, _chunk_layer_ext_ubo);
+      gl.bufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(_chunk_layer_ext_data), &_chunk_layer_ext_data);
+    }
   }
 
   _map_tile->recalcExtents();
@@ -342,6 +395,8 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
 
   gl.bindBufferRange(GL_UNIFORM_BUFFER, OpenGL::ubo_targets::CHUNK_INSTANCE_DATA,
                      _chunk_instance_data_ubo, 0, sizeof(OpenGL::ChunkInstanceDataUniformBlock) * 256);
+  gl.bindBufferRange(GL_UNIFORM_BUFFER, OpenGL::ubo_targets::CHUNK_LAYER_EXT,
+                     _chunk_layer_ext_ubo, 0, sizeof(_chunk_layer_ext_data));
 
 
   for (auto& draw_call : _draw_calls)
@@ -536,7 +591,7 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
 
   static constexpr unsigned NUM_SAMPLERS = 11;
 
-  for (int i = 0; i < 4; i++)
+  for (int i = 0; i < BASE_RENDER_TEXTURE_LAYERS; i++)
   {
       _chunk_instance_data[chunk_index].ChunkTextureSamplers[i] = 0;
       _chunk_instance_data[chunk_index].ChunkTextureArrayIDs[i] = -1;
@@ -548,6 +603,11 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
       _chunk_instance_data[chunk_index].ChunkTextureHeightOffset[i] = 1.0f;
   }
 
+  OpenGL::ChunkExtLayerParams* ext_layers = &_chunk_layer_ext_data[chunk_index * EXT_RENDER_TEXTURE_LAYERS];
+  for (int i = 0; i < EXT_RENDER_TEXTURE_LAYERS; i++)
+  {
+      ext_layers[i] = OpenGL::ChunkExtLayerParams{};
+  }
 
   auto& chunk_textures = (*chunk->texture_set->getTextures());
   bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
@@ -562,8 +622,11 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
       continue;
     }
 
+    // Mists heightmapping only covers the first 4 layers
+    bool base_layer = k < BASE_RENDER_TEXTURE_LAYERS;
+
     auto heightRef = chunk_textures[k]->getHeightMap();
-    if (chunk_textures[k]->hasHeightMap() && heightRef)
+    if (base_layer && chunk_textures[k]->hasHeightMap() && heightRef)
     {
         heightRef->upload();
 
@@ -574,7 +637,7 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
         }
     }
 
-    if (modern_features) {
+    if (modern_features && base_layer) {
         // Mists Heightmapping
         auto hData = chunk->mt->GetTextureHeightMappingData(chunk_textures[k]->file_key().filepath());
         _chunk_instance_data[chunk_index].ChunkTextureUVScale[k] = hData.uvScale;
@@ -610,9 +673,23 @@ bool TileRender::fillSamplers(MapChunk* chunk, unsigned chunk_index,  unsigned d
       return false;
     }
 
+    if (!base_layer)
+    {
+      unsigned layer_flags = chunk->texture_set->flag(k);
+      auto flag_view = reinterpret_cast<MCLYFlags*>(&layer_flags);
+
+      OpenGL::ChunkExtLayerParams& ext_params = ext_layers[k - BASE_RENDER_TEXTURE_LAYERS];
+      ext_params.params_packed = sampler_id
+                               | (flag_view->animation_enabled << 4)
+                               | (flag_view->animation_speed << 5)
+                               | (flag_view->animation_rotation << 8);
+      ext_params.array_index = chunk_textures[k]->is_specular() ? tex_index : -tex_index;
+      continue;
+    }
+
     _chunk_instance_data[chunk_index].ChunkTextureSamplers[k] = sampler_id;
     _chunk_instance_data[chunk_index].ChunkTextureArrayIDs[k] = (*chunk->texture_set->getTextures())[k]->is_specular() ? tex_index : -tex_index;
-    
+
     if(modern_features && heightRef)
     {
         GLuint hTex_array = (*chunk->texture_set->getTextures())[k]->getHeightMap()->texture_array();

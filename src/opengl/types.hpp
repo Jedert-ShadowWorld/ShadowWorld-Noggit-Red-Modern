@@ -17,7 +17,8 @@ namespace OpenGL
     LIGHTING,
     TERRAIN_OVERLAYS,
     CHUNK_INSTANCE_DATA,
-    CHUNK_LIQUID_INSTANCE_INDEX
+    CHUNK_LIQUID_INSTANCE_INDEX,
+    CHUNK_LAYER_EXT
   };
 
   struct MVPUniformBlock
@@ -85,6 +86,21 @@ namespace OpenGL
 
     float ChunkGroundEffectColor[4];
     int ChunkDoodadsEnabled2_ChunksLayerEnabled2[4];
+  };
+
+  // per-layer data for texture layers 5+ of a chunk; the first 4 layers live
+  // in ChunkInstanceDataUniformBlock. Layout mirrors the std140 struct in
+  // terrain_frag.glsl (16 bytes).
+  struct ChunkExtLayerParams
+  {
+    // bits 0-3: sampler id, bit 4: anim enabled,
+    // bits 5-7: anim speed, bits 8-10: anim rotation
+    int params_packed = 0;
+    // BLP array layer; negative = layer texture has no specular map
+    int array_index = -1;
+    // reserved (mists heightmapping scale/offset)
+    float _unused0 = 0.0f;
+    float _unused1 = 0.0f;
   };
 
   struct LiquidChunkInstanceDataUniformBlock

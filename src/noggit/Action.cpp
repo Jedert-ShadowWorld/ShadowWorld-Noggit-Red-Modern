@@ -84,7 +84,7 @@ void Noggit::Action::undo(bool redo)
       else
         texture_set->getTempAlphamaps().reset();
 
-      std::memcpy(texture_set->getMCLYEntries(), &pair.second.layers_info, sizeof(layer_info) * 4);
+      std::memcpy(texture_set->getMCLYEntries(), &pair.second.layers_info, sizeof(layer_info) * MAX_TEXTURE_LAYERS);
       texture_set->setNTextures(pair.second.n_textures);
 
       auto textures = texture_set->getTextures();
@@ -226,7 +226,7 @@ void Noggit::Action::undo(bool redo)
       for (auto& pair : redo ? _chunk_layerinfos_post : _chunk_layerinfos_pre)
       {
           auto texture_set = pair.first->getTextureSet();
-          std::memcpy(texture_set->getMCLYEntries(), &pair.second, sizeof(layer_info) * 4);
+          std::memcpy(texture_set->getMCLYEntries(), &pair.second, sizeof(layer_info) * MAX_TEXTURE_LAYERS);
 
           // TODO, enable this if texture flags get moved to this action flag.
           // pair.first->registerChunkUpdate(ChunkUpdateFlags::FLAGS); // for texture anim flags. 
@@ -448,7 +448,7 @@ void Noggit::Action::finish()
       else
           cache.tmp_edit_values.reset();
 
-      std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * 4);
+      std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * MAX_TEXTURE_LAYERS);
 
       for (int j = 0; j < cache.n_textures; ++j)
       {
@@ -695,7 +695,7 @@ void Noggit::Action::registerChunkTextureChange(MapChunk* chunk)
   else
       cache.tmp_edit_values.reset();
 
-  std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * 4);
+  std::memcpy(&cache.layers_info, texture_set->getMCLYEntries(), sizeof(layer_info) * MAX_TEXTURE_LAYERS);
 
   for (int i = 0; i < cache.n_textures; ++i)
   {
@@ -870,8 +870,8 @@ void Noggit::Action::registerChunkLayerInfoChange(MapChunk* chunk)
         if (pair.first == chunk)
             return;
     }
-    std::array<layer_info, 4> layer_infos{};
-    std::memcpy(&layer_infos, chunk->texture_set->getMCLYEntries(), sizeof(layer_info) * 4);
+    std::array<layer_info, MAX_TEXTURE_LAYERS> layer_infos{};
+    std::memcpy(&layer_infos, chunk->texture_set->getMCLYEntries(), sizeof(layer_info) * MAX_TEXTURE_LAYERS);
 
     _chunk_layerinfos_pre.emplace_back(chunk, std::move(layer_infos));
 }

@@ -22,8 +22,8 @@ namespace BlizzardArchive
 struct tmp_edit_alpha_values
 {
   using alpha_layer = std::array<float, 64 * 64>;
-  // use 4 "alphamaps" for an easier editing
-  std::array<alpha_layer, 4> map;
+  // use one editable layer for each texture, including the implicit base layer
+  std::array<alpha_layer, MAX_TEXTURE_LAYERS> map;
 
   alpha_layer& operator[](std::size_t i)
   {
@@ -87,7 +87,7 @@ public:
 
   int texture_id(scoped_blp_texture_reference const& texture);
 
-  void uploadAlphamapData();
+  void uploadAlphamapData(bool upload_ext_layers);
 
   bool apply_alpha_changes();
 
@@ -155,7 +155,7 @@ private:
 
   bool _need_lod_texture_map_update = false;
 
-  layer_info _layers_info[4];
+  layer_info _layers_info[MAX_TEXTURE_LAYERS];
 
   std::unique_ptr<tmp_edit_alpha_values> tmp_edit_values;
 
