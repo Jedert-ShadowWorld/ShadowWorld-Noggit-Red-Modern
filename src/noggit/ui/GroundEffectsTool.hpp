@@ -117,6 +117,8 @@ namespace Noggit
     private:
       std::optional<glm::vec3> getSelectedEffectColor();
       void refreshChunkOverlayColor(MapTile* tile, MapChunk* chunk);
+      void createNewSet();
+      void saveSelectedSet();
       void setActiveGroundEffect(ground_effect_set const& effect);
       void updateDoodadPreviewRender(int slot_index);
       void scanTileForEffects(TileIndex tile_index);
@@ -145,8 +147,8 @@ namespace Noggit
       QListWidget* _effect_sets_list;
       // For render previews.
       QListWidget* _object_list;
-      // Weight and percentage customization.
-      QListWidget* _weight_list;
+      // Per-slot doodad weights, aligned under the doodad icons.
+      QSpinBox* _weight_spinboxes[4];
       QSpinBox* _spinbox_doodads_amount;
       QComboBox* _cbbox_terrain_type;
       QCheckBox* _apply_override_cb;

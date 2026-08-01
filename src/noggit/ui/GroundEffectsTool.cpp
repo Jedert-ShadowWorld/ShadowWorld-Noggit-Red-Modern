@@ -15,9 +15,13 @@
 #include <noggit/Log.h>
 
 #include <exception>
+#include <limits>
 #include <string>
 
+#include <QDialog>
 #include <QDockWidget>
+#include <QMenu>
+#include <QMessageBox>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QLabel>
@@ -101,6 +105,8 @@ namespace Noggit
             auto button_create_new = new QPushButton("Create New", this);
             selection_layout->addWidget(button_create_new);
 
+            connect(button_create_new, &QPushButton::clicked, [this]() { createNewSet(); });
+
             auto _cbbox_effect_sets = new QComboBox(this);
             _cbbox_effect_sets->addItem("Noggit Default");
             _cbbox_effect_sets->setItemData(0, QVariant(0)); // index = _cbbox_effect_sets->count()
@@ -150,18 +156,22 @@ namespace Noggit
                     _object_list->addItem(list_item);
                 }
 
-                _weight_list = new QListWidget(this);
-                _weight_list->setItemAlignment(Qt::AlignLeft | Qt::AlignTop);
-                _weight_list->setFlow(QListWidget::LeftToRight);
-                _weight_list->setMovement(QListView::Movement::Static);
-                _weight_list->setSelectionMode(QAbstractItemView::NoSelection);
-                _weight_list->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
-                _weight_list->setMinimumWidth(450);
-                _weight_list->setFixedHeight(120);
-                _weight_list->setVisible(true);
-                QString styleSheet = "QListWidget::item { padding-right: 6px; border: 1px solid darkGray;}";
-                _weight_list->setStyleSheet(styleSheet);
-                settings_layout->addRow(_weight_list);
+                // One weight per doodad slot, aligned under the icons.
+                auto weights_widget = new QWidget(this);
+                auto weights_layout = new QHBoxLayout(weights_widget);
+                weights_layout->setContentsMargins(0, 0, 0, 0);
+                for (int i = 0; i < 4; i++)
+                {
+                    _weight_spinboxes[i] = new QSpinBox(this);
+                    _weight_spinboxes[i]->setRange(0, 100);
+                    _weight_spinboxes[i]->setValue(1);
+                    _weight_spinboxes[i]->setPrefix("Weight : ");
+                    _weight_spinboxes[i]->setToolTip("Relative chance of this doodad being picked for a placement.");
+                    _weight_spinboxes[i]->setFixedWidth(_object_list->iconSize().width());
+                    weights_layout->addWidget(_weight_spinboxes[i]);
+                }
+                weights_layout->addStretch();
+                settings_layout->addRow(weights_widget);
 
                 _preview_renderer = new Tools::PreviewRenderer(_object_list->iconSize().width(),
                     _object_list->iconSize().height(),
@@ -202,13 +212,15 @@ namespace Noggit
                 {
                     auto terrain_type_record = *it;
 
-                    _cbbox_terrain_type->addItem(QString(terrain_type_record.getString(TerrainTypeDB::TerrainDesc)));
-                    _cbbox_terrain_type->setItemData(_cbbox_terrain_type->count(), QVariant(terrain_type_record.getUInt(TerrainTypeDB::TerrainId)));
+                    _cbbox_terrain_type->addItem(QString(terrain_type_record.getString(TerrainTypeDB::TerrainDesc)),
+                        QVariant(terrain_type_record.getUInt(TerrainTypeDB::TerrainId)));
                 }
 
                 auto button_save_settings = new QPushButton("Save Set", this);
                 settings_layout->addRow(button_save_settings);
                 button_save_settings->setBaseSize(button_save_settings->size() / 2.0);
+
+                connect(button_save_settings, &QPushButton::clicked, [this]() { saveSelectedSet(); });
             }
 
 
@@ -406,6 +418,24 @@ namespace Noggit
                 {
                     _map_view->getAssetBrowserWidget()->set_browse_mode(Tools::AssetBrowser::asset_browse_mode::detail_doodads);
                     _map_view->getAssetBrowser()->setVisible(true);
+                }
+            );
+
+            _object_list->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(_object_list, &QWidget::customContextMenuRequested, this, [=](QPoint const& pos)
+                {
+                    QListWidgetItem* item = _object_list->itemAt(pos);
+                    if (!item)
+                        return;
+
+                    QMenu menu(_object_list);
+                    QAction* clear_action = menu.addAction("Clear slot");
+                    if (menu.exec(_object_list->mapToGlobal(pos)) == clear_action)
+                    {
+                        item->setText(STRING_EMPTY_DISPLAY);
+                        item->setToolTip("");
+                        updateDoodadPreviewRender(_object_list->row(item));
+                    }
                 }
             );
 
@@ -669,6 +699,7 @@ namespace Noggit
 
             for (int i = 0; i < 4; i++)
             {
+                _weight_spinboxes[i]->setValue(1);
                 updateDoodadPreviewRender(i);
             }
         }
@@ -826,14 +857,149 @@ namespace Noggit
             return effect_color;
         }
 
+        namespace
+        {
+            QString normalizedDoodadFilename(QString name)
+            {
+                name = name.toLower();
+                name.replace(".mdx", ".m2");
+                name.replace(".mdl", ".m2");
+                return name;
+            }
+
+            // Returns the id of the GroundEffectDoodad record for this filename,
+            // creating the record if no existing one matches.
+            unsigned int findOrCreateGroundEffectDoodad(std::string const& filename)
+            {
+                QString const wanted = normalizedDoodadFilename(QString(filename.c_str()));
+
+                for (auto it = gGroundEffectDoodadDB.begin(); it != gGroundEffectDoodadDB.end(); ++it)
+                {
+                    if (normalizedDoodadFilename(QString(it->getString(GroundEffectDoodadDB::Filename))) == wanted)
+                    {
+                        return it->getUInt(GroundEffectDoodadDB::ID);
+                    }
+                }
+
+                int const new_id = gGroundEffectDoodadDB.getEmptyRecordID();
+                auto record = gGroundEffectDoodadDB.addRecord(new_id);
+                record.writeString(GroundEffectDoodadDB::Filename, filename);
+                return static_cast<unsigned int>(new_id);
+            }
+        }
+
+        void GroundEffectsTool::createNewSet()
+        {
+            ground_effect_set new_set;
+            new_set.Name = "New Set (unsaved)";
+            new_set.Amount = 8;
+            _loaded_effects.push_back(new_set);
+            updateSetsList();
+            _effect_sets_list->setCurrentRow(_effect_sets_list->count() - 1);
+        }
+
+        void GroundEffectsTool::saveSelectedSet()
+        {
+            int const index = _effect_sets_list->currentIndex().row();
+            if (_loaded_effects.empty() || index < 0 || index >= static_cast<int>(_loaded_effects.size()))
+            {
+                QMessageBox::information(this, "Save Ground Effect Set", "Select or create a set first.");
+                return;
+            }
+
+            std::string filenames[4];
+            bool any_doodad = false;
+            for (int i = 0; i < 4; ++i)
+            {
+                QString const text = _object_list->item(i)->text();
+                if (text.isEmpty() || text == STRING_EMPTY_DISPLAY)
+                {
+                    continue;
+                }
+                filenames[i] = text.toStdString();
+                any_doodad = true;
+            }
+
+            if (!any_doodad)
+            {
+                QMessageBox::information(this, "Save Ground Effect Set", "The set needs at least one doodad.");
+                return;
+            }
+
+            ground_effect_set& set = _loaded_effects[index];
+
+            QDialog save_dialog(this);
+            save_dialog.setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
+            save_dialog.setWindowTitle("Save Ground Effect Set");
+            auto dialog_layout = new QVBoxLayout(&save_dialog);
+            dialog_layout->addWidget(new QLabel("GroundEffectTexture Id : ", &save_dialog));
+            auto id_spinbox = new QSpinBox(&save_dialog);
+            id_spinbox->setRange(1, std::numeric_limits<int>::max());
+            id_spinbox->setValue(set.ID ? static_cast<int>(set.ID) : gGroundEffectTextureDB.getEmptyRecordID());
+            dialog_layout->addWidget(id_spinbox);
+            dialog_layout->addWidget(new QLabel("Saving to an id that already exists overwrites that record\nfor every map using it.", &save_dialog));
+            auto save_button = new QPushButton("Save", &save_dialog);
+            dialog_layout->addWidget(save_button);
+            connect(save_button, &QPushButton::clicked, &save_dialog, &QDialog::accept);
+
+            if (save_dialog.exec() != QDialog::Accepted)
+            {
+                return;
+            }
+
+            unsigned int const record_id = static_cast<unsigned int>(id_spinbox->value());
+
+            unsigned int doodad_ids[4] = { 0, 0, 0, 0 };
+            for (int i = 0; i < 4; ++i)
+            {
+                if (!filenames[i].empty())
+                {
+                    doodad_ids[i] = findOrCreateGroundEffectDoodad(filenames[i]);
+                }
+            }
+
+            DBCFile::Record record = gGroundEffectTextureDB.CheckIfIdExists(record_id)
+                ? gGroundEffectTextureDB.getByID(record_id)
+                : gGroundEffectTextureDB.addRecord(record_id);
+
+            for (int i = 0; i < 4; ++i)
+            {
+                record.write(GroundEffectTextureDB::Doodads + i, doodad_ids[i]);
+                record.write(GroundEffectTextureDB::Weights + i, static_cast<unsigned int>(_weight_spinboxes[i]->value()));
+            }
+            record.write(GroundEffectTextureDB::Amount, static_cast<unsigned int>(_spinbox_doodads_amount->value()));
+            record.write(GroundEffectTextureDB::TerrainType, _cbbox_terrain_type->currentData().toUInt());
+
+            gGroundEffectDoodadDB.save();
+            gGroundEffectTextureDB.save();
+
+            set.ID = record_id;
+            set.Name = std::to_string(record_id);
+            set.Amount = _spinbox_doodads_amount->value();
+            set.TerrainType = _cbbox_terrain_type->currentData().toUInt();
+            for (int i = 0; i < 4; ++i)
+            {
+                set.Doodads[i].ID = doodad_ids[i];
+                set.Doodads[i].filename = filenames[i];
+                set.Weights[i] = _weight_spinboxes[i]->value();
+            }
+
+            _ground_effect_cache[record_id] = set;
+
+            updateSetsList();
+            _effect_sets_list->setCurrentRow(index);
+        }
+
         void GroundEffectsTool::setActiveGroundEffect(ground_effect_set const& effect)
         {
             // Sets a ground effect to be actively selected in the UI.
             _spinbox_doodads_amount->setValue(effect.Amount);
-            _cbbox_terrain_type->setCurrentIndex(effect.TerrainType);
+            int const terrain_type_index = _cbbox_terrain_type->findData(QVariant(effect.TerrainType));
+            _cbbox_terrain_type->setCurrentIndex(terrain_type_index >= 0 ? terrain_type_index : 0);
 
             for (int i = 0; i < 4; ++i)
             {
+                _weight_spinboxes[i]->setValue(effect.Weights[i]);
                 QString filename(effect.Doodads[i].filename.c_str());
                 // Replace old extensions in the DBC.
                 filename = filename.replace(".mdx", ".m2", Qt::CaseInsensitive);
