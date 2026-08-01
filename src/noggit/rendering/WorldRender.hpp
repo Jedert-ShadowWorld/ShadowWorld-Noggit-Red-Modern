@@ -106,6 +106,11 @@ namespace Noggit::Rendering
 
     unsigned int _frame_max_chunk_updates = 256;
 
+    // in-editor preview of ground effect detail doodads (client algorithm)
+    bool _draw_detail_doodads = false;
+    int _detail_doodad_density = 16;         // client CVar groundEffectDensity, 16..256
+    float _detail_doodad_distance = 300.f;
+
     bool directional_lightning;
     bool local_lightning;
 

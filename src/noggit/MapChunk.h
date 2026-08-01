@@ -33,6 +33,11 @@ namespace util
   class sExtendableArray;
 }
 
+namespace Noggit
+{
+  struct ChunkDetailDoodads;
+}
+
 class Brush;
 class ChunkWater;
 class MapTile;
@@ -75,6 +80,7 @@ private:
 public:
   MapChunk(MapTile* mt, BlizzardArchive::ClientFile* f, bool bigAlpha, tile_mode mode, Noggit::NoggitRenderContext context
            , bool init_empty = false, int chunk_idx = 0, bool load_textures = true);
+  ~MapChunk();
 
   auto getHoleMask(void) const -> unsigned;
   MapTile *mt;
@@ -117,9 +123,17 @@ private:
 
   Noggit::NoggitRenderContext _context;
 
+  // client-matching ground effect doodad placements, cached per chunk;
+  // the stamp advances on edits that can change them
+  std::unique_ptr<Noggit::ChunkDetailDoodads> _detail_doodads;
+  std::uint32_t _detail_doodad_stamp = 1;
+
 public:
 
     TextureSet* getTextureSet() const;
+
+  Noggit::ChunkDetailDoodads* getDetailDoodads();
+  std::uint32_t detailDoodadStamp() const;
 
   void draw ( math::frustum const& frustum
             , OpenGL::Scoped::use_program& mcnk_shader

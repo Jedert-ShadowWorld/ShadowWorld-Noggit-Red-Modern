@@ -7,6 +7,7 @@
 #include <noggit/Alphamap.hpp>
 #include <noggit/Brush.h>
 #include <noggit/ChunkWater.hpp>
+#include <noggit/DetailDoodads.hpp>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapHeaders.h>
@@ -2163,6 +2164,29 @@ void MapChunk::registerChunkUpdate(unsigned flags)
 {
   _chunk_update_flags |= flags;
   mt->registerChunkUpdate(flags);
+
+  if (flags & (ChunkUpdateFlags::VERTEX | ChunkUpdateFlags::ALPHAMAP | ChunkUpdateFlags::FLAGS
+             | ChunkUpdateFlags::HOLES | ChunkUpdateFlags::GROUND_EFFECT
+             | ChunkUpdateFlags::DETAILDOODADS_EXCLUSION))
+  {
+    _detail_doodad_stamp++;
+  }
+}
+
+MapChunk::~MapChunk() = default;
+
+Noggit::ChunkDetailDoodads* MapChunk::getDetailDoodads()
+{
+  if (!_detail_doodads)
+  {
+    _detail_doodads = std::make_unique<Noggit::ChunkDetailDoodads>();
+  }
+  return _detail_doodads.get();
+}
+
+std::uint32_t MapChunk::detailDoodadStamp() const
+{
+  return _detail_doodad_stamp;
 }
 
 void MapChunk::endChunkUpdates()

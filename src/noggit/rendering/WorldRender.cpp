@@ -7,6 +7,7 @@
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/DBC.h>
+#include <noggit/DetailDoodads.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/TileIndex.hpp>
@@ -677,6 +678,63 @@ void WorldRender::draw (glm::mat4x4 const& model_view
             {
               collect_wmo_doodads(wmo_instance);
             }
+          }
+        }
+      }
+    }
+  }
+
+  // ground effect detail doodads: client-matching placements for chunks in
+  // range, cached per chunk and drawn through the regular m2 batches
+  if (_draw_detail_doodads && render_settings.draw_models && !render_settings.minimap_render)
+  {
+    ZoneScopedN("World::draw() : Collect detail doodads");
+    for (auto const& pair : _world->_loaded_tiles_buffer)
+    {
+      MapTile* tile = pair.second;
+
+      if (!tile)
+      {
+        break;
+      }
+
+      if (!tile->finishedLoading()
+        || tile->camDist() - static_cast<float>(TILE_RADIUS) / 2.f > _detail_doodad_distance)
+      {
+        continue;
+      }
+
+      for (int cx = 0; cx < 16; ++cx)
+      {
+        for (int cz = 0; cz < 16; ++cz)
+        {
+          MapChunk* chunk = tile->getChunk(cx, cz);
+
+          if (glm::distance(chunk->vcenter, camera_pos) > _detail_doodad_distance)
+          {
+            continue;
+          }
+
+          Noggit::ChunkDetailDoodads* cache = chunk->getDetailDoodads();
+
+          if (cache->chunk_stamp != chunk->detailDoodadStamp()
+            || cache->dbc_stamp != Noggit::DetailDoodads::dbcStamp()
+            || cache->density != _detail_doodad_density)
+          {
+            Noggit::DetailDoodads::generate(chunk, _detail_doodad_density, _world->_context, *cache);
+          }
+
+          for (auto& model_batch : cache->models)
+          {
+            Model* model = model_batch.first.get();
+
+            if (model->loading_failed() || !model->finishedLoading())
+            {
+              continue;
+            }
+
+            auto& instances = models_to_draw[model];
+            instances.insert(instances.end(), model_batch.second.begin(), model_batch.second.end());
           }
         }
       }

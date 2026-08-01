@@ -1,5 +1,6 @@
 ﻿#include <noggit/ActionManager.hpp>
 #include <noggit/DBC.h>
+#include <noggit/DetailDoodads.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/MapView.h>
@@ -263,6 +264,44 @@ namespace Noggit
             _apply_override_cb->setToolTip("If the texture already had a ground effect, replace it.");
             _apply_override_cb->setChecked(true);
             apply_layout->addWidget(_apply_override_cb);
+
+            // In-world preview of the detail doodads the client would generate.
+            {
+                auto preview_group = new QGroupBox("Render Detail Doodads", this);
+                preview_group->setCheckable(true);
+                preview_group->setChecked(false);
+                preview_group->setToolTip("Renders the detail doodads exactly where the client will place them.\
+                \nStays active until unchecked, even with this window closed.");
+                right_side_layout->addWidget(preview_group);
+
+                auto preview_layout(new QFormLayout(preview_group));
+                preview_group->setLayout(preview_layout);
+
+                auto preview_density_spin = new QSpinBox(this);
+                preview_density_spin->setRange(16, 256);
+                preview_density_spin->setValue(16);
+                preview_density_spin->setToolTip("The client's groundEffectDensity CVar: cell picks per chunk. Client default is 16.");
+                preview_layout->addRow("Density : ", preview_density_spin);
+
+                auto preview_distance_spin = new QSpinBox(this);
+                preview_distance_spin->setRange(0, 2000);
+                preview_distance_spin->setValue(300);
+                preview_distance_spin->setToolTip("Draw distance in yards. The client uses groundEffectDist, default 70, max 140.");
+                preview_layout->addRow("Draw distance : ", preview_distance_spin);
+
+                connect(preview_group, &QGroupBox::clicked, [this](bool checked)
+                    {
+                        _map_view->getWorld()->renderer()->_draw_detail_doodads = checked;
+                    });
+                connect(preview_density_spin, qOverload<int>(&QSpinBox::valueChanged), [this](int value)
+                    {
+                        _map_view->getWorld()->renderer()->_detail_doodad_density = value;
+                    });
+                connect(preview_distance_spin, qOverload<int>(&QSpinBox::valueChanged), [this](int value)
+                    {
+                        _map_view->getWorld()->renderer()->_detail_doodad_distance = static_cast<float>(value);
+                    });
+            }
 
             auto button_generate = new QPushButton("Apply to Texture", this);
             apply_layout->addWidget(button_generate);
@@ -975,6 +1014,9 @@ namespace Noggit
 
             gGroundEffectDoodadDB.save();
             gGroundEffectTextureDB.save();
+
+            // cached per-chunk placements rebuild against the new records
+            DetailDoodads::bumpDbcStamp();
 
             set.ID = record_id;
             set.Name = std::to_string(record_id);
