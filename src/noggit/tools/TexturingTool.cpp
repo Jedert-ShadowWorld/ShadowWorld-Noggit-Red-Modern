@@ -430,28 +430,52 @@ namespace Noggit
 
         if (_texturingTool->getTexturingMode() == Noggit::Ui::texturing_mode::ground_effect)
         {
+            auto ge_tool = _texturingTool->getGroundEffectsTool();
+
             if (params.mod_shift_down)
             {
-                if (_texturingTool->getGroundEffectsTool()->brush_mode() == Noggit::Ui::ground_effect_brush_mode::exclusion)
+                if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::exclusion)
                 {
                     NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNK_DOODADS_EXCLUSION,
                         Noggit::ActionModalityControllers::eSHIFT
                         | Noggit::ActionModalityControllers::eLMB);
-                    mv->getWorld()->paintGroundEffectExclusion(mv->cursorPosition(), _texturingTool->getGroundEffectsTool()->radius(), true);
+                    mv->getWorld()->paintGroundEffectExclusion(mv->cursorPosition(), ge_tool->radius(), true);
                     // mv->getWorld()->setHole(mv->cursorPosition(), holeTool->brushRadius(), _mod_alt_down, false);
                 }
-                else if (_texturingTool->getGroundEffectsTool()->brush_mode() == Noggit::Ui::ground_effect_brush_mode::effect)
+                else if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::effect)
                 {
-
+                    auto effect = ge_tool->getSelectedGroundEffect();
+                    if (effect.has_value() && !params.underMap)
+                    {
+                        NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_LAYERINFO,
+                            Noggit::ActionModalityControllers::eSHIFT
+                            | Noggit::ActionModalityControllers::eLMB);
+                        mv->getWorld()->paintGroundEffect(mv->cursorPosition(), ge_tool->radius(),
+                            _texturingTool->_current_texture->filename(), effect->ID);
+                        ge_tool->refreshOverlayForChunksInRange(mv->cursorPosition(), ge_tool->radius());
+                    }
                 }
 
             }
             else if (params.mod_ctrl_down && !params.underMap)
             {
-                NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNK_DOODADS_EXCLUSION,
-                    Noggit::ActionModalityControllers::eCTRL
-                    | Noggit::ActionModalityControllers::eLMB);
-                mv->getWorld()->paintGroundEffectExclusion(mv->cursorPosition(), _texturingTool->getGroundEffectsTool()->radius(), false);
+                if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::exclusion)
+                {
+                    NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNK_DOODADS_EXCLUSION,
+                        Noggit::ActionModalityControllers::eCTRL
+                        | Noggit::ActionModalityControllers::eLMB);
+                    mv->getWorld()->paintGroundEffectExclusion(mv->cursorPosition(), ge_tool->radius(), false);
+                }
+                else if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::effect)
+                {
+                    // ctrl clears the effect id from the layer
+                    NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_LAYERINFO,
+                        Noggit::ActionModalityControllers::eCTRL
+                        | Noggit::ActionModalityControllers::eLMB);
+                    mv->getWorld()->paintGroundEffect(mv->cursorPosition(), ge_tool->radius(),
+                        _texturingTool->_current_texture->filename(), 0);
+                    ge_tool->refreshOverlayForChunksInRange(mv->cursorPosition(), ge_tool->radius());
+                }
             }
         }
         else

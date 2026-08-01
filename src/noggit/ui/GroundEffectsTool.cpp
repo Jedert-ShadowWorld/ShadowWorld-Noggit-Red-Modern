@@ -11,6 +11,7 @@
 #include <noggit/ui/tools/PreviewRenderer/PreviewRenderer.hpp>
 #include <noggit/ui/tools/UiCommon/ExtendedSlider.hpp>
 #include <noggit/World.h>
+#include <noggit/World.inl>
 #include <noggit/Log.h>
 
 #include <exception>
@@ -575,72 +576,85 @@ namespace Noggit
                 {
                     for (int y = 0; y < 16; y++)
                     {
-                        auto chunk = tile->getChunk(x, y);
+                        refreshChunkOverlayColor(tile, tile->getChunk(x, y));
+                    }
+                }
+            }
+        }
 
-                        int chunk_index = chunk->px * 16 + chunk->py;
+        void GroundEffectsTool::refreshChunkOverlayColor(MapTile* tile, MapChunk* chunk)
+        {
+            int chunk_index = chunk->px * 16 + chunk->py;
 
-                        // reset to black by default
-                        tile->renderer()->setChunkGroundEffectColor(chunk_index, glm::vec3(0.0, 0.0, 0.0));
+            // reset to black by default
+            tile->renderer()->setChunkGroundEffectColor(chunk_index, glm::vec3(0.0, 0.0, 0.0));
 
-                        // ! Set the chunk active layer data.
-                        // new system : just update the active texture and mark dirty to the renderer
-                        // tile->renderer()->setChunkGroundEffectActiveData(chunk);
+            // ! Set the chunk active layer data.
+            // new system : just update the active texture and mark dirty to the renderer
+            // tile->renderer()->setChunkGroundEffectActiveData(chunk);
 
-                        if (active_texture.empty() || active_texture == "tileset\\generic\\black.blp" || _loaded_effects.empty())
-                            continue;
+            std::string active_texture = _texturing_tool->_current_texture->filename();
+            if (active_texture.empty() || active_texture == "tileset\\generic\\black.blp" || _loaded_effects.empty())
+                return;
 
-                        for (int layer_id = 0; layer_id < chunk->getTextureSet()->num(); layer_id++)
+            for (int layer_id = 0; layer_id < chunk->getTextureSet()->num(); layer_id++)
+            {
+                auto texture_name = chunk->getTextureSet()->filename(layer_id);
+
+                if (texture_name == active_texture)
+                {
+                    unsigned int const effect_id = chunk->getTextureSet()->getEffectForLayer(layer_id);
+
+                    if (effect_id && !(effect_id == 0xFFFFFFFF))
+                    {
+                        ground_effect_set ground_effect;
+
+                        if (_ground_effect_cache.contains(effect_id)) {
+                            ground_effect = _ground_effect_cache.at(effect_id);
+                        }
+                        else {
+                            ground_effect.load_from_id(effect_id);
+                            _ground_effect_cache[effect_id] = ground_effect;
+                        }
+
+                        int count = -1;
+                        bool found_debug = false;
+                        for (auto& effect_set : _loaded_effects)
                         {
-                            auto texture_name = chunk->getTextureSet()->filename(layer_id);
-
-                            if (texture_name == active_texture)
+                            count++;
+                            if (effect_id == effect_set.ID)
                             {
-                                unsigned int const effect_id = chunk->getTextureSet()->getEffectForLayer(layer_id);
-
-                                if (effect_id && !(effect_id == 0xFFFFFFFF))
-                                {
-                                    ground_effect_set ground_effect;
-
-                                    if (_ground_effect_cache.contains(effect_id)) {
-                                        ground_effect = _ground_effect_cache.at(effect_id);
-                                    }
-                                    else {
-                                        ground_effect.load_from_id(effect_id);
-                                        _ground_effect_cache[effect_id] = ground_effect;
-                                    }
-
-                                    int count = -1;
-                                    bool found_debug = false;
-                                    for (auto& effect_set : _loaded_effects)
-                                    {
-                                        count++;
-                                        if (effect_id == effect_set.ID)
-                                        {
-                                            tile->renderer()->setChunkGroundEffectColor(chunk_index, _effects_colors[count]);
-                                            found_debug = true;
-                                            break;
-                                        }
-                                        if (_chkbox_merge_duplicates->isChecked() && (ground_effect == &effect_set)) // do deep comparison, find those that have the same effect as loaded effects, but diff id.
-                                        {
-                                            if (ground_effect.empty())
-                                                continue;
-                                            // same color
-                                            tile->renderer()->setChunkGroundEffectColor(chunk_index, _effects_colors[count]);
-                                            found_debug = true;
-                                            break;
-                                        }
-                                    }
-                                    // in case some chunks couldn't be resolved, paint them in pure red
-                                    if (!found_debug)
-                                        tile->renderer()->setChunkGroundEffectColor(chunk_index, glm::vec3(1.0, 0.0, 0.0));
-                                }
+                                tile->renderer()->setChunkGroundEffectColor(chunk_index, _effects_colors[count]);
+                                found_debug = true;
+                                break;
+                            }
+                            if (_chkbox_merge_duplicates->isChecked() && (ground_effect == &effect_set)) // do deep comparison, find those that have the same effect as loaded effects, but diff id.
+                            {
+                                if (ground_effect.empty())
+                                    continue;
+                                // same color
+                                tile->renderer()->setChunkGroundEffectColor(chunk_index, _effects_colors[count]);
+                                found_debug = true;
                                 break;
                             }
                         }
+                        // in case some chunks couldn't be resolved, paint them in pure red
+                        if (!found_debug)
+                            tile->renderer()->setChunkGroundEffectColor(chunk_index, glm::vec3(1.0, 0.0, 0.0));
                     }
+                    break;
                 }
-
             }
+        }
+
+        void GroundEffectsTool::refreshOverlayForChunksInRange(glm::vec3 const& pos, float radius)
+        {
+            _map_view->getWorld()->for_all_chunks_in_range(pos, radius
+                , [&](MapChunk* chunk)
+                {
+                    refreshChunkOverlayColor(chunk->mt, chunk);
+                    return false;
+                });
         }
 
         void GroundEffectsTool::TextureChanged()

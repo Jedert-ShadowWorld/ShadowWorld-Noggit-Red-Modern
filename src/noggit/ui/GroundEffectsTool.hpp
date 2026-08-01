@@ -9,6 +9,8 @@
 
 class World;
 class MapView;
+class MapTile;
+class MapChunk;
 
 class QButtonGroup;
 class QCheckBox;
@@ -108,9 +110,13 @@ namespace Noggit
 
       void unload();
 
-    private:
       std::optional<ground_effect_set> getSelectedGroundEffect();
+      // Recompute the effect-id overlay color of the chunks a brush stroke touched.
+      void refreshOverlayForChunksInRange(glm::vec3 const& pos, float radius);
+
+    private:
       std::optional<glm::vec3> getSelectedEffectColor();
+      void refreshChunkOverlayColor(MapTile* tile, MapChunk* chunk);
       void setActiveGroundEffect(ground_effect_set const& effect);
       void updateDoodadPreviewRender(int slot_index);
       void scanTileForEffects(TileIndex tile_index);

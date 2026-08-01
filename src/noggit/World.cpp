@@ -1888,6 +1888,34 @@ void World::paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool 
     );
 }
 
+void World::paintGroundEffect(glm::vec3 const& pos, float radius, std::string const& texture, unsigned int effect_id)
+{
+    ZoneScoped;
+    for_all_chunks_in_range
+    (pos, radius
+        , [&](MapChunk* chunk)
+        {
+            auto texture_set = chunk->getTextureSet();
+            bool changed = false;
+            for (int layer = 0; layer < texture_set->num(); ++layer)
+            {
+                if (texture_set->filename(layer) != texture
+                    || texture_set->getEffectForLayer(layer) == effect_id)
+                {
+                    continue;
+                }
+                if (!changed)
+                {
+                    NOGGIT_CUR_ACTION->registerChunkLayerInfoChange(chunk);
+                    changed = true;
+                }
+                texture_set->setEffect(layer, static_cast<int>(effect_id));
+            }
+            return changed;
+        }
+    );
+}
+
 void World::setHole(glm::vec3 const& pos, float radius, bool big, bool hole)
 {
   ZoneScoped;
