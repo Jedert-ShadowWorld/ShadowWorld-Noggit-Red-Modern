@@ -163,6 +163,8 @@ class ParticleSystem
   float base_spin, base_spin_vary, spin_speed, spin_vary;
   glm::vec2 scale_vary;
   bool tumble;
+  glm::vec3 wind;   // constant acceleration, applied while life <= wind_time
+  float wind_time;
   glm::vec3 pos;
   uint16_t _texture_id;
   ParticleList particles;

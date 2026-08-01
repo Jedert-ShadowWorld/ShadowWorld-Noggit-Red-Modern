@@ -50,6 +50,8 @@ ParticleSystem::ParticleSystem(Model* model_
   , spin_vary (mta.p.spinVary)
   , scale_vary (mta.p.scaleVary[0], mta.p.scaleVary[1])
   , tumble ((mta.flags & 0x1000) != 0)
+  , wind (fixCoordSystem(glm::vec3(mta.p.Rot2[2], mta.p.Trans[0], mta.p.Trans[1])))
+  , wind_time (mta.p.Trans[2])
   , pos (fixCoordSystem(mta.pos))
   , _texture_id (mta.texture)
   , blend (mta.blend)
@@ -125,6 +127,8 @@ ParticleSystem::ParticleSystem(ParticleSystem const& other)
   , spin_vary(other.spin_vary)
   , scale_vary(other.scale_vary)
   , tumble(other.tumble)
+  , wind(other.wind)
+  , wind_time(other.wind_time)
   , pos(other.pos)
   , _texture_id(other._texture_id)
   , particles(other.particles)
@@ -177,6 +181,8 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , spin_vary(other.spin_vary)
   , scale_vary(other.scale_vary)
   , tumble(other.tumble)
+  , wind(other.wind)
+  , wind_time(other.wind_time)
   , pos(other.pos)
   , _texture_id(other._texture_id)
   , particles(other.particles)
@@ -284,6 +290,12 @@ void ParticleSystem::update(float dt)
       p.speed *= expf(-slowdown * dt);
 
     p.speed += p.down * grav * dt;
+
+    // wind: constant acceleration for the first wind_time seconds of a
+    // particle's life, then it stops (no wind at all when wind_time is 0)
+    if (wind_time > 0.0f && p.life <= wind_time)
+      p.speed += wind * dt;
+
     p.pos += p.speed * dt;
 
     p.spin_angle += p.spin_rate * dt;
