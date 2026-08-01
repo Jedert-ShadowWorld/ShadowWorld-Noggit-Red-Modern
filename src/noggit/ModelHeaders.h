@@ -275,8 +275,12 @@ struct ModelParticleParams {
   float scaleVary[2];          // per-particle +/- percentage on x/y scale; y rolled independently only with flag 0x80000
   FakeAnimationBlock Intensity;   // head cell track (short, short)
   FakeAnimationBlock unk2;     // tail cell track (short, short)
-  float unk[3];                // tailLength, twinkleSpeed, twinklePercent
-  float scales[3];             // twinkleScale min, twinkleScale max, burstMultiplier
+  float tailLength;            // tail length in seconds-of-travel (times velocity at draw)
+  float twinkleSpeed;          // twinkle table advance rate (Hz against particle age)
+  float twinklePercent;        // visibility cutoff: <1 culls particles whose table sample exceeds it
+  float twinkleScaleMin;       // size factor = table[idx] * (max - min) + min
+  float twinkleScaleMax;
+  float burstMultiplier;
   float slowdown;              // drag: speed *= exp(-drag * dt)
   float baseSpin;              // initial sprite rotation (radians)
   float baseSpinVary;
@@ -286,7 +290,10 @@ struct ModelParticleParams {
   float Rot1[3];          // tumble min.y, min.z, max.x
   float Rot2[3];          // tumble max.y, max.z, wind.x
   float Trans[3];        // wind.y, wind.z, windTime
-  float f2[4];           // followSpeed1, followScale1, followSpeed2, followScale2
+  float followSpeed1;    // FollowPosition (flag 0x4000): 2-point fit mapping emitter
+  float followScale1;    // speed to the fraction of its frame movement particles
+  float followSpeed2;    // inherit — factor = clamp(lerp by (speed-s1)/(s2-s1), 0, 1)
+  float followScale2;
   int32_t nUnknownReference;   // splinePoints M2Array
   int32_t ofsUnknownReferenc;
 };

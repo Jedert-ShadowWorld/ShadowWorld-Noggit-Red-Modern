@@ -16,6 +16,30 @@
 
 static const unsigned int MAX_PARTICLES = 10000;
 
+// twinkle modulation table, mirroring the client's g_particleFrameAnimTable.
+// The static table in the binary is zero-filled and populated at init time
+// with uniform [0,1) noise; these are the values captured from a running
+// 3.3.5a client. The exact numbers aren't load-bearing (any uniform noise
+// works statistically) but they are the client's actual values.
+static const float TWINKLE_TABLE[128] = {
+  0.6324f, 0.2921f, 0.2739f, 0.8879f, 0.0769f, 0.5087f, 0.6119f, 0.3590f,
+  0.5281f, 0.8746f, 0.0271f, 0.2968f, 0.6658f, 0.1647f, 0.9740f, 0.6928f,
+  0.9600f, 0.1155f, 0.8879f, 0.8070f, 0.9494f, 0.1874f, 0.0925f, 0.8640f,
+  0.2901f, 0.3098f, 0.7672f, 0.8580f, 0.6798f, 0.2966f, 0.4896f, 0.1679f,
+  0.7342f, 0.2610f, 0.7615f, 0.5902f, 0.0046f, 0.2726f, 0.3144f, 0.7713f,
+  0.7489f, 0.8233f, 0.4711f, 0.1688f, 0.9746f, 0.1670f, 0.8768f, 0.7621f,
+  0.0573f, 0.8980f, 0.7437f, 0.7491f, 0.7515f, 0.6776f, 0.5856f, 0.3498f,
+  0.4228f, 0.9316f, 0.8946f, 0.6188f, 0.0078f, 0.5946f, 0.9378f, 0.8736f,
+  0.4377f, 0.5119f, 0.4996f, 0.5348f, 0.2569f, 0.7771f, 0.5516f, 0.2216f,
+  0.6822f, 0.7567f, 0.3617f, 0.5889f, 0.2660f, 0.8430f, 0.8257f, 0.0790f,
+  0.0749f, 0.5859f, 0.8261f, 0.8788f, 0.5725f, 0.7957f, 0.1466f, 0.4167f,
+  0.2580f, 0.5750f, 0.2026f, 0.4126f, 0.7093f, 0.6829f, 0.0086f, 0.8584f,
+  0.5336f, 0.0751f, 0.4958f, 0.4362f, 0.5056f, 0.2468f, 0.9488f, 0.8274f,
+  0.1818f, 0.5778f, 0.9489f, 0.9423f, 0.0291f, 0.2180f, 0.1417f, 0.8749f,
+  0.1535f, 0.5698f, 0.2298f, 0.7220f, 0.5182f, 0.7896f, 0.4684f, 0.7986f,
+  0.7308f, 0.5425f, 0.3844f, 0.1695f, 0.9620f, 0.0162f, 0.4795f, 0.8759f,
+};
+
 ParticleSystem::ParticleSystem(Model* model_
                                , const BlizzardArchive::ClientFile& f
                                , const ModelParticleEmitterDef &mta
@@ -38,12 +62,16 @@ ParticleSystem::ParticleSystem(Model* model_
   , areaw (mta.EmissionAreaWidth, f, globals)
   , deacceleration (mta.Gravity2, f, globals)
   , enabled (mta.en, f, globals)
-  , tail_length (mta.p.unk[0])
+  , tail_length (mta.p.tailLength)
   , render_head ((mta.flags & 0x20000) != 0)
   , render_tail ((mta.flags & 0x40000) != 0)
   , slowdown (mta.p.slowdown)
   , lifespan_vary (mta.lifespanVary)
   , rate_vary (mta.emissionRateVary)
+  , twinkle_speed (mta.p.twinkleSpeed)
+  , twinkle_percent (mta.p.twinklePercent)
+  , twinkle_base (mta.p.twinkleScaleMin)
+  , twinkle_range (mta.p.twinkleScaleMax - mta.p.twinkleScaleMin)
   , base_spin (mta.p.baseSpin)
   , base_spin_vary (mta.p.baseSpinVary)
   , spin_speed (mta.p.rotation)
@@ -52,6 +80,8 @@ ParticleSystem::ParticleSystem(Model* model_
   , tumble ((mta.flags & 0x1000) != 0)
   , wind (fixCoordSystem(glm::vec3(mta.p.Rot2[2], mta.p.Trans[0], mta.p.Trans[1])))
   , wind_time (mta.p.Trans[2])
+  , follow ((mta.flags & 0x4000) != 0)
+  , prev_emit_valid (false)
   , pos (fixCoordSystem(mta.pos))
   , _texture_id (mta.texture)
   , blend (mta.blend)
@@ -68,6 +98,20 @@ ParticleSystem::ParticleSystem(Model* model_
   , tofs (misc::frand())
   , _context(context)
 {
+  // FollowPosition 2-point fit (CParticleEmitter2::SetFollowParams): factor =
+  // clamp(emitter_speed * slope + intercept, 0, 1); equal speeds disable it
+  float follow_span = mta.p.followSpeed2 - mta.p.followSpeed1;
+  if (std::fabs(follow_span) < 2.38e-7f)
+  {
+    follow_slope = 0.0f;
+    follow_intercept = 0.0f;
+  }
+  else
+  {
+    follow_slope = (mta.p.followScale2 - mta.p.followScale1) / follow_span;
+    follow_intercept = mta.p.followScale1 - mta.p.followSpeed1 * follow_slope;
+  }
+
   color_track.times = Model::M2Array<uint16_t>(f, mta.p.colors.ofsTimes, mta.p.colors.nTimes);
   for (auto const& c : Model::M2Array<glm::vec3>(f, mta.p.colors.ofsKeys, mta.p.colors.nKeys))
   {
@@ -121,6 +165,10 @@ ParticleSystem::ParticleSystem(ParticleSystem const& other)
   , slowdown(other.slowdown)
   , lifespan_vary(other.lifespan_vary)
   , rate_vary(other.rate_vary)
+  , twinkle_speed(other.twinkle_speed)
+  , twinkle_percent(other.twinkle_percent)
+  , twinkle_base(other.twinkle_base)
+  , twinkle_range(other.twinkle_range)
   , base_spin(other.base_spin)
   , base_spin_vary(other.base_spin_vary)
   , spin_speed(other.spin_speed)
@@ -129,6 +177,11 @@ ParticleSystem::ParticleSystem(ParticleSystem const& other)
   , tumble(other.tumble)
   , wind(other.wind)
   , wind_time(other.wind_time)
+  , follow(other.follow)
+  , follow_slope(other.follow_slope)
+  , follow_intercept(other.follow_intercept)
+  , prev_emit_pos(other.prev_emit_pos)
+  , prev_emit_valid(other.prev_emit_valid)
   , pos(other.pos)
   , _texture_id(other._texture_id)
   , particles(other.particles)
@@ -175,6 +228,10 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , slowdown(other.slowdown)
   , lifespan_vary(other.lifespan_vary)
   , rate_vary(other.rate_vary)
+  , twinkle_speed(other.twinkle_speed)
+  , twinkle_percent(other.twinkle_percent)
+  , twinkle_base(other.twinkle_base)
+  , twinkle_range(other.twinkle_range)
   , base_spin(other.base_spin)
   , base_spin_vary(other.base_spin_vary)
   , spin_speed(other.spin_speed)
@@ -183,6 +240,11 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , tumble(other.tumble)
   , wind(other.wind)
   , wind_time(other.wind_time)
+  , follow(other.follow)
+  , follow_slope(other.follow_slope)
+  , follow_intercept(other.follow_intercept)
+  , prev_emit_pos(other.prev_emit_pos)
+  , prev_emit_valid(other.prev_emit_valid)
   , pos(other.pos)
   , _texture_id(other._texture_id)
   , particles(other.particles)
@@ -231,6 +293,24 @@ void ParticleSystem::initTile(glm::vec2 *tc, int num)
 void ParticleSystem::update(float dt)
 {
   float grav = gravity.getValue(manim, mtime, manimtime);
+
+  // FollowPosition: the emitter's frame movement, scaled by the speed fit,
+  // is picked up by every particle past its spawn frame (MoveParticle
+  // @ 0x979BB0). First frame after enable contributes nothing.
+  glm::vec3 follow_delta(0.0f);
+  if (follow && dt > 0.0f)
+  {
+    glm::vec3 emit_pos = glm::vec3(parent->mat * glm::vec4(pos, 1.0f));
+    if (prev_emit_valid)
+    {
+      glm::vec3 dp = emit_pos - prev_emit_pos;
+      float emit_speed = glm::length(dp) / dt;
+      float factor = std::clamp(emit_speed * follow_slope + follow_intercept, 0.0f, 1.0f);
+      follow_delta = dp * factor;
+    }
+    prev_emit_pos = emit_pos;
+    prev_emit_valid = true;
+  }
 
   if (emitter)
   {
@@ -307,6 +387,11 @@ void ParticleSystem::update(float dt)
       it = particles.erase (it);
       continue;
     }
+
+    // 2*dt < life excludes the spawn frame so a brand-new particle isn't
+    // double-translated
+    if (follow && 2.0f * dt < p.life)
+      p.pos += follow_delta;
 
     p.size = scale_track.sample(rlife, glm::vec2(1.0f, 1.0f));
     p.color = glm::vec4(color_track.sample(rlife, glm::vec3(1.0f)), alpha_track.sample(rlife, 1.0f));
@@ -426,8 +511,25 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
     }
 
     TexCoordSet const& tc = tiles[it->tile];
-    float const sx = it->size.x * it->scale_mul.x;
-    float const sy = it->size.y * it->scale_mul.y;
+
+    // twinkle (CParticleEmitter2::BuildVertex prologue): a noise-table sample
+    // indexed by particle slot + age*speed scales the quad, and twinklePercent
+    // below 1 culls particles whose sample exceeds it. The common case
+    // (percent >= 1, min == max) skips the sample and reduces to min.
+    float twinkle = twinkle_base;
+    if (twinkle_percent < 1.0f || twinkle_range != 0.0f)
+    {
+      int frame = static_cast<int>(twinkle_speed * it->life);
+      float sample = TWINKLE_TABLE[(pi + static_cast<std::size_t>(frame)) & 0x7F];
+      if (twinkle_percent < 1.0f && twinkle_percent < sample)
+      {
+        continue;
+      }
+      twinkle = sample * twinkle_range + twinkle_base;
+    }
+
+    float const sx = it->size.x * it->scale_mul.x * twinkle;
+    float const sy = it->size.y * it->scale_mul.y * twinkle;
 
     if (render_head)
     {

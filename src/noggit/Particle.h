@@ -160,11 +160,16 @@ class ParticleSystem
   bool render_head, render_tail;
   float slowdown;
   float lifespan_vary, rate_vary;
+  float twinkle_speed, twinkle_percent, twinkle_base, twinkle_range;
   float base_spin, base_spin_vary, spin_speed, spin_vary;
   glm::vec2 scale_vary;
   bool tumble;
   glm::vec3 wind;   // constant acceleration, applied while life <= wind_time
   float wind_time;
+  bool follow;      // FollowPosition: particles inherit a fraction of emitter movement
+  float follow_slope, follow_intercept;
+  glm::vec3 prev_emit_pos;
+  bool prev_emit_valid;
   glm::vec3 pos;
   uint16_t _texture_id;
   ParticleList particles;
