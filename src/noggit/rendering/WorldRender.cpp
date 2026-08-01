@@ -429,6 +429,10 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   std::vector<WMOInstance*> wmos_to_draw;
   std::unordered_map<Model*, std::size_t> model_boxes_to_draw;
 
+  // placements whose asset (or its skin) failed to load: marked with a red
+  // box instead of silently vanishing
+  std::vector<glm::vec3> failed_model_markers;
+
   // frame counter loop. pretty hacky but works
   // this is used to make sure no object is processed more than once within a frame
   static int frame = 0;
@@ -459,6 +463,17 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           continue;
         doodad.frame = frame;
 
+        if (doodad.model->loading_failed())
+        {
+          failed_model_markers.push_back(doodad.world_pos);
+          continue;
+        }
+
+        if (doodad.model->skin_load_failed())
+        {
+          failed_model_markers.push_back(doodad.world_pos);
+        }
+
         if (!doodad.isInRenderDist(_cull_distance, camera_pos, render_settings.display_mode))
           continue;
         // TODO can check if in indoor group & exterior not hidden for further optimization. possibly check portals relations
@@ -482,12 +497,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     if (render_settings.minimap_render)
       tile->renderer()->setOccluded(false);
 
-    if (tile->renderer()->isOccluded() && !tile->getChunkUpdateFlags() && !tile->renderer()->isOverridingOcclusionCulling())
-      continue;
+    // tile occlusion queries are terrain-granularity and lag a frame; objects
+    // poking above the occluder box would wrongly vanish with the tile, so
+    // occlusion does not gate object collection
 
-    // early dist check
-    // TODO: optional
-    if (tile->camDist() > _cull_distance)
+    // early dist check against the closest possible point of the tile instead
+    // of its center, which is up to half a tile diagonal too strict
+    if (tile->camDist() - static_cast<float>(TILE_RADIUS) / 2.f > _cull_distance)
       continue;
 
 
@@ -541,6 +557,19 @@ void WorldRender::draw (glm::mat4x4 const& model_view
             continue;
 
           instance->frame = frame;
+
+          if (m2_instance->model->loading_failed())
+          {
+            if (glm::distance(camera_pos, m2_instance->pos) < _cull_distance)
+              failed_model_markers.push_back(m2_instance->pos);
+            continue;
+          }
+
+          if (m2_instance->model->skin_load_failed()
+              && glm::distance(camera_pos, m2_instance->pos) < _cull_distance)
+          {
+            failed_model_markers.push_back(m2_instance->pos);
+          }
 
           bool render = false;
           // experimental : if camera and object haven't moved/changed since last frame, we don't need to do frustum culling again
@@ -614,6 +643,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
             continue;
 
           instance->frame = frame;
+
+          if (wmo_instance->wmo->loading_failed())
+          {
+            if (glm::distance(camera_pos, wmo_instance->pos) < _cull_distance)
+              failed_model_markers.push_back(wmo_instance->pos);
+            continue;
+          }
 
           // experimental : if camera and object haven't moved/changed since last frame, we don't need to do frustum culling again
           bool render = false;
@@ -1080,6 +1116,21 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       }
     }
     model_boxes_to_draw.clear();
+
+    // red markers on placements whose asset failed to load
+    if (!render_settings.minimap_render && !failed_model_markers.empty())
+    {
+      for (glm::vec3 const& marker_pos : failed_model_markers)
+      {
+        Noggit::Rendering::Primitives::WireBox::getInstance(_world->_context).draw(model_view
+            , projection
+            , glm::mat4x4{1}
+            , {1.f, 0.f, 0.f, 1.f}
+            , marker_pos - glm::vec3(2.f)
+            , marker_pos + glm::vec3(2.f)
+        );
+      }
+    }
 
     // render m2 selection boxes.
     // TODO can try to move to m2 box shader but it requires some refactor

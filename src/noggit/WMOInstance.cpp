@@ -261,9 +261,8 @@ std::array<glm::vec3, 2> const& WMOInstance::getExtents()
   return extents;
 }
 
-std::array<glm::vec3, 2> const& WMOInstance::getLocalExtents() const
+std::array<glm::vec3, 2> WMOInstance::getLocalExtents() const
 {
-
   return { wmo->extents[0], wmo->extents[1] };
 }
 

@@ -173,6 +173,10 @@ public:
 
   void updateEmitters(float dt);
 
+  // the model loaded but its .skin didn't: the mesh is invisible
+  [[nodiscard]]
+  bool skin_load_failed() const { return _skin_load_failed; }
+
   void finishLoading() override;
   void waitForChildrenLoaded() override;
 
@@ -324,6 +328,7 @@ private:
   Noggit::Rendering::ModelRender _renderer;
 
   bool _hidden = false;
+  bool _skin_load_failed = false;
 
 };
 

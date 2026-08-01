@@ -290,11 +290,17 @@ void ModelInstance::recalcExtents()
   //   ( glm::min ( model->collision_box_min, model->bounding_box_min)
   //   , glm::max ( model->collision_box_max, model->bounding_box_max)
   //   );
-  math::aabb const relative_to_model(model->bounding_box_min, model->bounding_box_max);
 
-  //! \todo If both boxes are {inf, -inf}, or well, if any min.c > max.c,
-  //! the model is bad itself. We *could* detect that case and explicitly
-  //! assume {-1, 1} then, to be nice to fuckported models.
+  // bad models can ship a zero or inverted bounding box; assume {-1, 1} for
+  // those so they don't get frustum-culled while on screen
+  glm::vec3 const box_size = model->bounding_box_max - model->bounding_box_min;
+  bool const degenerate_box = box_size.x < 0.f || box_size.y < 0.f || box_size.z < 0.f
+                           || glm::length(box_size) < 0.01f;
+
+  math::aabb const relative_to_model
+    ( degenerate_box ? glm::vec3(-1.f) : model->bounding_box_min
+    , degenerate_box ? glm::vec3(1.f) : model->bounding_box_max
+    );
 
   std::array<glm::vec3, 8> const rotated_corners_in_world = relative_to_model.rotated_corners(_transform_mat, true);
 
@@ -308,24 +314,10 @@ void ModelInstance::recalcExtents()
 
   // TODO We only need to recalculate size_cat if size changed
 
-  if (model->mesh_bounds_ratio < 0.80f)
-  {
-    // size cat for animated models with smaller mesh than the BB
-
-    math::aabb const vert_relative_to_model(model->vertices_bounds[0], model->vertices_bounds[1]);
-
-    std::array<glm::vec3, 8> const vert_rotated_corners_in_world = vert_relative_to_model.rotated_corners(_transform_mat, true);
-
-    math::aabb const vert_bounding_of_rotated_points(std::vector<glm::vec3>(vert_rotated_corners_in_world.begin()
-      , vert_rotated_corners_in_world.end()));
-
-    size_cat = glm::distance(vert_bounding_of_rotated_points.max, vert_bounding_of_rotated_points.min);
-  }
-  else
-  {
-    // this is basically AABB sphere diameter
-    size_cat = glm::distance(bounding_of_rotated_points.max, bounding_of_rotated_points.min);
-  }
+  // always derived from the model bounds (AABB sphere diameter): the vertex
+  // box shrinks for any model with emitters or lights (animBones is forced on
+  // for those) and made animated props pop out of render distance early
+  size_cat = glm::distance(bounding_of_rotated_points.max, bounding_of_rotated_points.min);
 
   // Reference :  Using original blizzard model BB radius
   // TODO : No approach seems to generate the same value
@@ -363,7 +355,7 @@ std::array<glm::vec3, 2> const& ModelInstance::getExtents()
   return extents;
 }
 
-std::array<glm::vec3, 2> const& ModelInstance::getLocalExtents() const
+std::array<glm::vec3, 2> ModelInstance::getLocalExtents() const
 {
   return { model->bounding_box_min , model->bounding_box_max };
 }

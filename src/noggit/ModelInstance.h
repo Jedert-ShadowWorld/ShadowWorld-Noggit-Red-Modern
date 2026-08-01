@@ -86,7 +86,7 @@ public:
   void ensureExtents() override;
   bool finishedLoading() override;;
   std::array<glm::vec3, 2> const& getExtents() override; // axis aligned
-  std::array<glm::vec3, 2> const& getLocalExtents() const;
+  std::array<glm::vec3, 2> getLocalExtents() const; // by value: built from the model bounds on call
 
   std::array<glm::vec3, 8> getBoundingBox() override; // not axis aligned
 
