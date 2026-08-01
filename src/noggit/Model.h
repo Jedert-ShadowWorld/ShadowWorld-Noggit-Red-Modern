@@ -152,6 +152,7 @@ class Model : public AsyncObject
 {
   friend class Noggit::Rendering::ModelRender;
   friend struct Noggit::Rendering::ModelRenderPass;
+  friend class RibbonEmitter; // resolves its blend mode from _render_flags
 
 public:
   template<typename T>

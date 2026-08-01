@@ -60,7 +60,7 @@ ParticleSystem::ParticleSystem(Model* model_
   , rate (mta.EmissionRate, f, globals)
   , areal (mta.EmissionAreaLength, f, globals)
   , areaw (mta.EmissionAreaWidth, f, globals)
-  , deacceleration (mta.Gravity2, f, globals)
+  , z_source (mta.zSource, f, globals)
   , enabled (mta.en, f, globals)
   , tail_length (mta.p.tailLength)
   , render_head ((mta.flags & 0x20000) != 0)
@@ -153,7 +153,7 @@ ParticleSystem::ParticleSystem(ParticleSystem const& other)
   , rate(other.rate)
   , areal(other.areal)
   , areaw(other.areaw)
-  , deacceleration(other.deacceleration)
+  , z_source(other.z_source)
   , enabled(other.enabled)
   , color_track(other.color_track)
   , alpha_track(other.alpha_track)
@@ -216,7 +216,7 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , rate(other.rate)
   , areal(other.areal)
   , areaw(other.areaw)
-  , deacceleration(other.deacceleration)
+  , z_source(other.z_source)
   , enabled(other.enabled)
   , color_track(other.color_track)
   , alpha_track(other.alpha_track)
@@ -338,13 +338,14 @@ void ParticleSystem::update(float dt)
         float var = variation.getValue(manim, mtime, manimtime);
         float spr = spread.getValue(manim, mtime, manimtime);
         float spr2 = lat.getValue(manim, mtime, manimtime);
+        float zs = z_source.getValue(manim, mtime, manimtime);
 
         // InheritBoneScale (disk flag 0x20 -> runtime 0x400): sprite size scales
         // with the emission frame's world scale (CParticleEmitter2::BuildVertex)
         float bone_scale = (flags & 0x20) ? glm::length(glm::vec3(parent->mat[0])) : 1.0f;
 
         for (int i = 0; i<tospawn; ++i) {
-          Particle p = emitter->newParticle(this, manim, mtime, manimtime, w, l, spd, var, spr, spr2);
+          Particle p = emitter->newParticle(this, manim, mtime, manimtime, w, l, spd, var, spr, spr2, zs);
           p.life = misc::frand() * dt;
 
           p.spin_angle = base_spin + base_spin_vary * misc::randfloat(-1.0f, 1.0f);
@@ -685,18 +686,28 @@ void ParticleSystem::unload()
   _uploaded = false;
 }
 
-Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2)
+Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs)
 {
   Particle p;
 
-  p.pos = sys->pos + glm::vec3(misc::randfloat(-0.5f, 0.5f) * w, 0, misc::randfloat(-0.5f, 0.5f) * l);
-  p.pos = sys->parent->mat * glm::vec4(p.pos, 1);
+  glm::vec3 local(misc::randfloat(-0.5f, 0.5f) * w, 0, misc::randfloat(-0.5f, 0.5f) * l);
+  p.pos = sys->parent->mat * glm::vec4(sys->pos + local, 1);
 
   // velocity in spherical coords off the emitter up axis, polar/azimuth signed
   // (CPlaneParticleEmitter::CreateParticle @ 0x9815C0)
   float polar = misc::randfloat(-spr, spr);
   float azim = misc::randfloat(-spr2, spr2);
   glm::vec3 dir(sinf(polar) * cosf(azim), cosf(polar), sinf(polar) * sinf(azim));
+
+  // zSource > 0 overrides the launch direction: away from the emitter-local
+  // point (0, zs, 0) (client-space (0,0,zSource)) through the spawn position
+  if (zs > 0.0f)
+  {
+    glm::vec3 zdir = local - glm::vec3(0.0f, zs, 0.0f);
+    float dlen = glm::length(zdir);
+    if (dlen > 1e-6f)
+      dir = zdir / dlen;
+  }
   dir = sys->parent->mrot * glm::vec4(dir, 0);
 
   p.dir = glm::normalize(dir);
@@ -715,7 +726,7 @@ Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int ti
   return p;
 }
 
-Particle SphereParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2)
+Particle SphereParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs)
 {
   Particle p;
 
@@ -728,11 +739,15 @@ Particle SphereParticleEmitter::newParticle(ParticleSystem* sys, int anim, int t
   float elev = misc::randfloat(-spr, spr);
   float azim = misc::randfloat(-spr2, spr2);
   glm::vec3 normal(cosf(elev) * cosf(azim), sinf(elev), cosf(elev) * sinf(azim));
+  glm::vec3 local = normal * radius;
 
-  p.pos = sys->parent->mat * glm::vec4(sys->pos + normal * radius, 1);
+  p.pos = sys->parent->mat * glm::vec4(sys->pos + local, 1);
 
   glm::vec3 dir;
-  if (sys->flags & 0x100)
+  // zSource > 0 overrides both the radial and flag-0x100 directions
+  if (zs > 0.0f && glm::length(local - glm::vec3(0.0f, zs, 0.0f)) > 1e-6f)
+    dir = sys->parent->mrot * glm::vec4(glm::normalize(local - glm::vec3(0.0f, zs, 0.0f)), 0);
+  else if (sys->flags & 0x100)
     dir = sys->parent->mrot * glm::vec4(0, 1, 0, 0);
   else
     dir = sys->parent->mrot * glm::vec4(normal, 0);
@@ -764,23 +779,37 @@ RibbonEmitter::RibbonEmitter(Model* model_
   , opacity (mta.opacity, f, globals)
   , above (mta.above, f, globals)
   , below (mta.below, f, globals)
+  , tex_slot (mta.texSlot, f, globals)
+  , visibility (mta.visibility, f, globals)
   , parent (&model->bones[mta.bone])
   , pos (fixCoordSystem(mta.pos))
-  , seglen (mta.length)
-  , length (mta.res * seglen)
-   // just use the first texture for now; most models I've checked only had one
-  , tpos (fixCoordSystem(mta.pos))
-   //! \todo  figure out actual correct way to calculate length
-   // in BFD, res is 60 and len is 0.6, the trails are very short (too long here)
-   // in CoT, res and len are like 10 but the trails are supposed to be much longer (too short here)
+  , manim (0)
+  , mtime (0)
+  , manimtime (0)
+  // load clamps from CRibbonEmitter::Initialize: rate is ceil'd, lifetime
+  // floored at 0.25s
+  , edges_per_second (std::ceil(mta.edgesPerSecond))
+  , edge_lifetime (std::max(0.25f, mta.edgeLifetime))
+  , gravity (mta.gravity)
+  , rows (std::max<int>(1, mta.textureRows))
+  , cols (std::max<int>(1, mta.textureCols))
+  , accum (0.0f)
+  , tcolor (1.0f)
+  , cur_tile (0)
+  , blend (4)
   , _context(context)
 {
   _texture_ids = Model::M2Array<uint16_t>(f, mta.ofsTextures, mta.nTextures);
   _material_ids = Model::M2Array<uint16_t>(f, mta.ofsMaterials, mta.nMaterials);
 
-   // create first segment
-  segs.emplace_back(tpos, 0);
+  // ring capacity: ceil(rate * lifetime) + slack, matching the client's
+  // steady-state maximum
+  max_edges = static_cast<std::size_t>(std::ceil(edges_per_second * edge_lifetime + 2.0f));
+  max_edges = std::min<std::size_t>(std::max<std::size_t>(max_edges, 4), 256);
 
+  // blend mode comes from the referenced material; additive is the fallback
+  if (!_material_ids.empty() && _material_ids[0] < model->_render_flags.size())
+    blend = model->_render_flags[_material_ids[0]].blend;
 }
 
 RibbonEmitter::RibbonEmitter(RibbonEmitter const& other)
@@ -789,19 +818,26 @@ RibbonEmitter::RibbonEmitter(RibbonEmitter const& other)
   , opacity(other.opacity)
   , above(other.above)
   , below(other.below)
+  , tex_slot(other.tex_slot)
+  , visibility(other.visibility)
   , parent(other.parent)
   , pos(other.pos)
   , manim(other.manim)
   , mtime(other.mtime)
-  , seglen(other.seglen)
-  , length(other.length)
-  , tpos(other.tpos)
+  , manimtime(other.manimtime)
+  , edges_per_second(other.edges_per_second)
+  , edge_lifetime(other.edge_lifetime)
+  , gravity(other.gravity)
+  , rows(other.rows)
+  , cols(other.cols)
+  , max_edges(other.max_edges)
+  , accum(other.accum)
   , tcolor(other.tcolor)
-  , tabove(other.tabove)
-  , tbelow(other.tbelow)
+  , cur_tile(other.cur_tile)
+  , blend(other.blend)
   , _texture_ids(other._texture_ids)
   , _material_ids(other._material_ids)
-  , segs(other.segs)
+  , edges(other.edges)
   , _context(other._context)
 {
 
@@ -813,19 +849,26 @@ RibbonEmitter::RibbonEmitter(RibbonEmitter&& other)
   , opacity(other.opacity)
   , above(other.above)
   , below(other.below)
+  , tex_slot(other.tex_slot)
+  , visibility(other.visibility)
   , parent(other.parent)
   , pos(other.pos)
   , manim(other.manim)
   , mtime(other.mtime)
-  , seglen(other.seglen)
-  , length(other.length)
-  , tpos(other.tpos)
+  , manimtime(other.manimtime)
+  , edges_per_second(other.edges_per_second)
+  , edge_lifetime(other.edge_lifetime)
+  , gravity(other.gravity)
+  , rows(other.rows)
+  , cols(other.cols)
+  , max_edges(other.max_edges)
+  , accum(other.accum)
   , tcolor(other.tcolor)
-  , tabove(other.tabove)
-  , tbelow(other.tbelow)
+  , cur_tile(other.cur_tile)
+  , blend(other.blend)
   , _texture_ids(other._texture_ids)
   , _material_ids(other._material_ids)
-  , segs(other.segs)
+  , edges(other.edges)
   , _context(other._context)
 {
 
@@ -833,59 +876,58 @@ RibbonEmitter::RibbonEmitter(RibbonEmitter&& other)
 
 void RibbonEmitter::setup(int anim, int time, int animtime)
 {
-  glm::vec3 ntpos = parent->mat * glm::vec4(pos,0);
-  glm::vec3 ntup = parent->mat * (glm::vec4(pos, 0) + glm::vec4(0, 0, 1,0));
-  ntup -= ntpos;
-  ntup = glm::normalize(ntup);
-  float dlen = glm::distance(ntpos, tpos);
-
   manim = anim;
   mtime = time;
+  manimtime = animtime;
 
-  // move first segment
-  RibbonSegment &first = *segs.begin();
-  if (first.len > seglen) {
-    // add new segment
-    first.back = glm::normalize((tpos - ntpos));
-    first.len0 = first.len;
-    RibbonSegment newseg (ntpos, dlen);
-    newseg.up = ntup;
-    segs.push_front(newseg);
-  }
-  else {
-    first.up = ntup;
-    first.pos = ntpos;
-    first.len += dlen;
-  }
-
-  // kill stuff from the end TODO: occasional crashes here
-  float l = 0;
-  bool erasemode = false;
-  for (std::list<RibbonSegment>::iterator it = segs.begin(); it != segs.end();)
-  {
-    if (!erasemode)
-    {
-      l += it->len;
-      if (l > length)
-      {
-          it->len = l - length;
-          erasemode = true;
-      }
-
-      ++it;
-    }
-    else
-    {
-      it = segs.erase(it);
-    }
-  }
-
-  tpos = ntpos;
+  // color/alpha are broadcast to the whole strip per frame; the flipbook cell
+  // comes from the animated tex slot track
   auto col = color.getValue(anim, time, animtime);
-  tcolor = glm::vec4(col.x,col.y,col.z, opacity.getValue(anim, time, animtime));
+  tcolor = glm::vec4(col.x, col.y, col.z, opacity.getValue(anim, time, animtime));
+  cur_tile = tex_slot.uses(anim) ? tex_slot.getValue(anim, time, animtime) : 0;
+}
 
-  tabove = above.getValue(anim, time, animtime);
-  tbelow = below.getValue(anim, time, animtime);
+void RibbonEmitter::update(float dt)
+{
+  // CRibbonEmitter::Update caps dt at the edge lifetime; with the ring sized
+  // ceil(rate * lifetime) + 2 this makes overflow impossible in steady state
+  dt = std::min(dt, edge_lifetime);
+
+  bool visible = !visibility.uses(manim) || visibility.getValue(manim, mtime, manimtime) != 0;
+  if (visible)
+  {
+    glm::vec3 emit_pos = parent->mat * glm::vec4(pos, 1.0f);
+
+    // the client widens the strip along the bone's Y axis; that basis vector
+    // is -Z in the converted coordinate system
+    glm::vec3 up = -glm::vec3(parent->mat[2]);
+    float up_len = glm::length(up);
+    up = up_len > 1e-6f ? up / up_len : glm::vec3(0.0f, 1.0f, 0.0f);
+
+    // heights are captured per edge at spawn and never re-sampled
+    float above_now = std::max(0.0f, above.getValue(manim, mtime, manimtime));
+    float below_now = std::max(0.0f, below.getValue(manim, mtime, manimtime));
+
+    accum += edges_per_second * dt;
+    while (accum >= 1.0f)
+    {
+      accum -= 1.0f;
+      edges.emplace_front(emit_pos, up, above_now, below_now);
+      if (edges.size() > max_edges)
+        edges.pop_back();
+    }
+  }
+
+  // closed-form gravity sag: (age*2 + dt) * gravity * dt on the vertical,
+  // cumulative g*t^2 (CRibbonEmitter::Update @ 0x98035C)
+  for (auto& e : edges)
+  {
+    e.pos.y += (e.age * 2.0f + dt) * gravity * dt;
+    e.age += dt;
+  }
+
+  while (!edges.empty() && edges.back().age >= edge_lifetime)
+    edges.pop_back();
 }
 
 void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
@@ -893,7 +935,7 @@ void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
                         , int instances_count
                         )
 {
-  if (segs.size() < 2 || _texture_ids.empty() || _texture_ids[0] >= model->_textures.size())
+  if (edges.size() < 2 || _texture_ids.empty() || _texture_ids[0] >= model->_textures.size())
   {
     return;
   }
@@ -913,49 +955,81 @@ void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
   gl.bindTexture(GL_TEXTURE_2D_ARRAY, texture->texture_array());
   shader.uniform("tex_index", texture->array_index());
 
-  gl.enable(GL_BLEND);
+  // same client blend table as particles, mode from the referenced material
+  float alpha_test = -1.f;
+  switch (blend)
+  {
+  case 0:
+    gl.disable(GL_BLEND);
+    break;
+  case 1:
+    gl.disable(GL_BLEND);
+    alpha_test = 224.0f / 255.0f;
+    break;
+  case 2:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 3:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_ONE, GL_ONE);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 4:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 5:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_DST_COLOR, GL_ZERO);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 6:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  default:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+    break;
+  }
+  shader.uniform("alpha_test", alpha_test);
+  gl.depthMask(blend <= 1 ? GL_TRUE : GL_FALSE);
 
   shader.uniform("color", tcolor);
 
-  std::uint16_t indice = 0;
-  auto add_quad_indices([] (std::vector<std::uint16_t>& indices, std::uint16_t& start)
+  // flipbook cell from the animated tex slot; UV.u sweeps one tile width over
+  // each edge's lifetime, anchored at the cell column (CRibbonEmitter::Update)
+  int tile = cur_tile % (rows * cols);
+  float tile_w = 1.0f / static_cast<float>(cols);
+  float tile_h = 1.0f / static_cast<float>(rows);
+  float base_u = static_cast<float>(tile % cols) * tile_w;
+  float v_top = static_cast<float>((tile / cols) % rows) * tile_h;
+  float v_bot = v_top + tile_h;
+
+  for (auto it = edges.begin(); it != edges.end(); ++it)
   {
-    indices.push_back(start + 0);
-    indices.push_back(start + 1);
-    indices.push_back(start + 2);
+    float u = base_u + (it->age / edge_lifetime) * tile_w;
 
-    indices.push_back(start + 2);
-    indices.push_back(start + 1);
-    indices.push_back(start + 3);
-
-    start += 2;
-  });
-
-  std::list<RibbonSegment>::iterator it = segs.begin();
-  float l = 0;
-  for (; it != segs.end(); ++it) 
-  {
-    float u = l / length;
-
-    texcoords.emplace_back(u, 0);
-    vertices.push_back(it->pos + tabove * it->up);
-    texcoords.emplace_back(u, 1);
-    vertices.push_back(it->pos - tbelow * it->up);
-
-    l += it->len;
-
-    add_quad_indices(indices, indice);
+    texcoords.emplace_back(u, v_top);
+    vertices.push_back(it->pos + it->up * it->above);
+    texcoords.emplace_back(u, v_bot);
+    vertices.push_back(it->pos - it->up * it->below);
   }
 
-  if (segs.size() > 1)
+  for (std::uint16_t e = 0; e + 1 < static_cast<std::uint16_t>(edges.size()); ++e)
   {
-    // last segment...?
-    --it;
-    float t = it->len0 > 0.f ? it->len / it->len0 : 0.f;
-    texcoords.emplace_back(1, 0);
-    vertices.push_back(it->pos + tabove * it->up + t * it->back);
-    texcoords.emplace_back(1, 1);
-    vertices.push_back(it->pos - tbelow * it->up + t * it->back);
+    std::uint16_t base = e * 2;
+    indices.push_back(base + 0);
+    indices.push_back(base + 1);
+    indices.push_back(base + 2);
+
+    indices.push_back(base + 2);
+    indices.push_back(base + 1);
+    indices.push_back(base + 3);
   }
 
   gl.bufferData<GL_ARRAY_BUFFER, glm::vec3>(_vertices_vbo, vertices, GL_STREAM_DRAW);

@@ -329,12 +329,14 @@ struct ModelParticleEmitterDef {
   float emissionRateVary; // per-tick rate += emissionRateVary * U[-1,1]
   AnimationBlock EmissionAreaLength; // Well, you can do that in this area.
   AnimationBlock EmissionAreaWidth;
-  AnimationBlock Gravity2; // A second gravity? Its strong.
+  AnimationBlock zSource; // when > 0, particles launch along (spawn_pos - (0,0,zSource)) instead of the emitter normal
   ModelParticleParams p;
   AnimationBlock en;
 };
 
 
+// field names per the wrath (v264) M2Ribbon layout (176 bytes), byte-compatible
+// with the legacy declarations they replace
 struct ModelRibbonEmitterDef {
   int32_t id;
   int32_t bone;
@@ -345,13 +347,18 @@ struct ModelRibbonEmitterDef {
   int32_t ofsMaterials;
   AnimationBlock color;
   AnimationBlock opacity;
-  AnimationBlock above;
-  AnimationBlock below;
-  float res, length, Emissionangle;
-  int16_t s1, s2;
-  AnimationBlock unk1;
-  AnimationBlock unk2;
-  int32_t unknown;
+  AnimationBlock above;        // strip height above the edge axis (float track)
+  AnimationBlock below;        // strip height below the edge axis (float track)
+  float edgesPerSecond;        // edge spawn rate; the client ceil()s this at load
+  float edgeLifetime;          // seconds an edge persists; client floors at 0.25s
+  float gravity;               // per-frame sag, (age*2+dt)*gravity*dt on the up axis
+  int16_t textureRows;         // flipbook grid
+  int16_t textureCols;
+  AnimationBlock texSlot;      // uint16 flipbook cell track
+  AnimationBlock visibility;   // uint8 emission on/off track
+  int16_t priorityPlane;
+  int8_t ribbonColorIndex;     // ParticleColor.dbc index
+  int8_t textureTransformLookup;
 };
 
 

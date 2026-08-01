@@ -126,19 +126,19 @@ class ParticleEmitter {
 public:
   explicit ParticleEmitter() {}
   virtual ~ParticleEmitter() {}
-  virtual Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2) = 0;
+  virtual Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs) = 0;
 };
 
 class PlaneParticleEmitter : public ParticleEmitter {
 public:
   explicit PlaneParticleEmitter() {}
-  Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2);
+  Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs);
 };
 
 class SphereParticleEmitter : public ParticleEmitter {
 public:
   explicit SphereParticleEmitter() {}
-  Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2);
+  Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs);
 };
 
 struct TexCoordSet {
@@ -150,7 +150,7 @@ class ParticleSystem
   Model *model;
   int emitter_type;
   std::unique_ptr<ParticleEmitter> emitter;
-  Animation::M2Value<float> speed, variation, spread, lat, gravity, lifespan, rate, areal, areaw, deacceleration;
+  Animation::M2Value<float> speed, variation, spread, lat, gravity, lifespan, rate, areal, areaw, z_source;
   Animation::M2Value<uint8_t> enabled;
   FBlockTrack<glm::vec3> color_track;
   FBlockTrack<float> alpha_track;
@@ -228,43 +228,54 @@ private:
 };
 
 
-struct RibbonSegment
+// one strip cross-section, spawned at the emitter's current position; the
+// heights are captured at spawn and never re-sampled (CRibbonEmitter::PlaceEdge)
+struct RibbonEdge
 {
-  glm::vec3 pos, up, back;
-  float len, len0;
-  RibbonSegment (::glm::vec3 pos_, float len_)
+  glm::vec3 pos, up;
+  float age;
+  float above, below;
+  RibbonEdge (glm::vec3 pos_, glm::vec3 up_, float above_, float below_)
     : pos (pos_)
-    , up (0.f)
-    , back (0.f)
-    , len (len_)
-    , len0 (0.f)
+    , up (up_)
+    , age (0.f)
+    , above (above_)
+    , below (below_)
   {}
 };
 
-class RibbonEmitter 
+class RibbonEmitter
 {
   Model *model;
 
   Animation::M2Value<glm::vec3> color;
   Animation::M2Value<float, int16_t> opacity;
   Animation::M2Value<float> above, below;
+  Animation::M2Value<uint16_t> tex_slot;
+  Animation::M2Value<uint8_t> visibility;
 
   Bone *parent;
 
   glm::vec3 pos;
 
   int manim, mtime;
-  int seglen;
-  float length;
+  int manimtime;
 
-  glm::vec3 tpos;
+  float edges_per_second;
+  float edge_lifetime;
+  float gravity;
+  int rows, cols;
+  std::size_t max_edges;
+
+  float accum;
   glm::vec4 tcolor;
-  float tabove, tbelow;
+  int cur_tile;
+  int blend;
 
   std::vector<uint16_t> _texture_ids;
   std::vector<uint16_t> _material_ids;
 
-  std::list<RibbonSegment> segs;
+  std::list<RibbonEdge> edges; // front = newest
 
 public:
   RibbonEmitter(Model*, const BlizzardArchive::ClientFile &f, ModelRibbonEmitterDef const& mta, int *globals
@@ -276,6 +287,7 @@ public:
   RibbonEmitter& operator= (RibbonEmitter&&) = delete;
 
   void setup(int anim, int time, int animtime);
+  void update(float dt);
   void draw( OpenGL::Scoped::use_program& shader
            , GLuint const& transform_vbo
            , int instances_count

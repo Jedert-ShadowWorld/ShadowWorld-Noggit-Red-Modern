@@ -1041,6 +1041,11 @@ void Model::updateEmitters(float dt)
     {
       particle.update (dt);
     }
+
+    for (auto& ribbon : _ribbons)
+    {
+      ribbon.update (dt);
+    }
   }
 }
 
