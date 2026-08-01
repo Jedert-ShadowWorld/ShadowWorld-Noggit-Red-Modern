@@ -84,7 +84,7 @@ public:
   glm::vec3 dir;
   float scale = 1.f; // Note : max scale is uint16 max / 1024 = 63.999
   unsigned int uid;
-  int frame;
+  int frame = -1; // last render-frame counter this object was processed in
 
   // Note : First, need to check if the tile that contained it was rendered too
   bool _rendered_last_frame = false;

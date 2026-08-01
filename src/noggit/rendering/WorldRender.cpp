@@ -442,6 +442,34 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     frame++;
   }
 
+  // shared by the per-tile WMO branch and the global-WMO path, which
+  // previously collected no doodads at all
+  auto collect_wmo_doodads = [&] (WMOInstance* wmo_instance)
+  {
+    std::map<uint32_t, std::vector<wmo_doodad_instance>>* doodads = wmo_instance->get_doodads(render_settings.draw_hidden_models);
+
+    if (!doodads)
+      return;
+
+    for (auto& pair : *doodads)
+    {
+      for (auto& doodad : pair.second)
+      {
+        if (doodad.frame == frame)
+          continue;
+        doodad.frame = frame;
+
+        if (!doodad.isInRenderDist(_cull_distance, camera_pos, render_settings.display_mode))
+          continue;
+        // TODO can check if in indoor group & exterior not hidden for further optimization. possibly check portals relations
+
+        auto& instances = models_to_draw[doodad.model.get()];
+
+        instances.emplace_back(doodad.transformMatrix());
+      }
+    }
+  };
+
   for (auto const& pair : _world->_loaded_tiles_buffer)
   {
     MapTile* tile = pair.second;
@@ -608,50 +636,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
             if (render_settings.draw_wmo_doodads)
             {
-              // auto doodads = wmo_instance->get_visible_doodads(frustum, _cull_distance, camera_pos, draw_hidden_models, display);
-              // 
-              // for (auto& doodad : doodads)
-              // {
-              //     if (doodad->frame == frame)
-              //         continue;
-              //     doodad->frame = frame;
-              // 
-              //     auto& instances = models_to_draw[doodad->model.get()];
-              // 
-              //     instances.emplace_back(doodad->transformMatrix());
-              // }
-
-              // doodad->isInFrustum(frustum);
-
-              std::map<uint32_t, std::vector<wmo_doodad_instance>>* doodads = wmo_instance->get_doodads(render_settings.draw_hidden_models);
-              
-              if (!doodads)
-                continue;
-              
-              for (auto& pair : *doodads)
-              {
-                for (auto& doodad : pair.second)
-                {
-                    if (doodad.frame == frame)
-                        continue;
-                    doodad.frame = frame;
-
-                    // skip no geometry boxes for WMO doodads
-                    if (doodad.model->use_fake_geometry())
-                      continue;
-
-                    // apply size culling to wmo doodads?
-                    float dist = glm::distance(camera_pos, doodad.world_pos) - (doodad.model->bounding_box_radius * doodad.scale);
-
-                    if (!doodad.isInRenderDist(_cull_distance, camera_pos, render_settings.display_mode))
-                      continue;
-                    // TODO can check if in indoor group & exterior not hidden for further optimization. possibly check portals relations
-              
-                    auto& instances = models_to_draw[doodad.model.get()];
-              
-                    instances.emplace_back(doodad.transformMatrix());
-                }
-              }
+              collect_wmo_doodads(wmo_instance);
             }
           }
         }
@@ -680,6 +665,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           {
             wmos_to_draw.push_back(global_wmo.value());
             disable_cull = true;
+
+            // global-WMO maps have no tile loop pass, so their doodads have to
+            // be collected here
+            if (render_settings.draw_wmo_doodads)
+            {
+              collect_wmo_doodads(global_wmo.value());
+            }
           }
       }
       // draw wdl models in horizon/fog
