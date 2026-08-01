@@ -351,6 +351,14 @@ void MapTile::finishLoading()
 
     for (auto const& object : lWMOInstances)
     {
+      if (object.nameID >= mWMOFilenames.size() || mWMOFilenames[object.nameID].empty())
+      {
+        LogError << "Tile " << index.x << "," << index.z << ": MODF entry (uid " << object.uniqueID
+                 << ") references invalid WMO filename entry " << object.nameID
+                 << " (have " << mWMOFilenames.size() << "). Skipping instance." << std::endl;
+        continue;
+      }
+
       add_model(_world->add_wmo_instance(WMOInstance(mWMOFilenames[object.nameID],
                                                      &object, _context), _tile_is_being_reloaded, false));
     }
@@ -359,6 +367,14 @@ void MapTile::finishLoading()
 
     for (auto const& model : lModelInstances)
     {
+      if (model.nameID >= mModelFilenames.size() || mModelFilenames[model.nameID].empty())
+      {
+        LogError << "Tile " << index.x << "," << index.z << ": MDDF entry (uid " << model.uniqueID
+                 << ") references invalid model filename entry " << model.nameID
+                 << " (have " << mModelFilenames.size() << "). Skipping instance." << std::endl;
+        continue;
+      }
+
       add_model(_world->add_model_instance(ModelInstance(mModelFilenames[model.nameID],
                                                          &model, _context), _tile_is_being_reloaded, false));
     }

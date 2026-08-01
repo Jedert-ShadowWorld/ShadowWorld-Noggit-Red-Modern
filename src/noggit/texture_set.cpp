@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/Brush.h>
+#include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapHeaders.h>
 #include <noggit/MapTile.h>
@@ -18,11 +19,18 @@
 TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base
                         , bool use_big_alphamaps, bool do_not_fix_alpha_map, bool do_not_convert_alphamaps
                         , Noggit::NoggitRenderContext context, MapChunkHeader const& header)
-  : nTextures(header.nLayers)
+  : nTextures(std::min<size_t>(header.nLayers, 4))
   , _do_not_convert_alphamaps(do_not_convert_alphamaps)
   , _context(context)
   , _chunk(chunk)
 {
+  if (header.nLayers > 4)
+  {
+    LogError << "Chunk (" << chunk->px << ", " << chunk->py << ") in "
+             << chunk->mt->file_key().stringRepr()
+             << " has " << header.nLayers
+             << " texture layers (max 4). Only the first 4 will be loaded." << std::endl;
+  }
 
   std::copy(header.doodadMapping, header.doodadMapping + 8, _doodadMapping.begin());
   std::copy(header.doodadStencil, header.doodadStencil + 8, _doodadStencil.begin());
