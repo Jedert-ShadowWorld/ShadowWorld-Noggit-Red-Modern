@@ -2923,6 +2923,96 @@ void World::removeTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex
 }
 
 
+void World::removeTextureGlobal(scoped_blp_texture_reference tex)
+{
+  ZoneScoped;
+  for (size_t z = 0; z < 64; z++)
+  {
+    for (size_t x = 0; x < 64; x++)
+    {
+      TileIndex tile(x, z);
+
+      bool unload = !mapIndex.tileLoaded(tile) && !mapIndex.tileAwaitingLoading(tile);
+      MapTile* mTile = mapIndex.loadTile(tile);
+
+      if (mTile)
+      {
+        mTile->wait_until_loaded();
+
+        bool tile_changed = false;
+        for_all_chunks_on_tile(mTile, [&](MapChunk* chunk)
+        {
+          if (chunk->texture_set->texture_id(tex) >= 0)
+          {
+            chunk->eraseTexture(tex);
+            tile_changed = true;
+          }
+        });
+
+        // only tiles that actually contained the texture get rewritten
+        if (tile_changed)
+        {
+          mTile->saveTile(this);
+          mapIndex.markOnDisc(tile, true);
+          mapIndex.unsetChanged(tile);
+        }
+
+        if (unload)
+        {
+          mapIndex.unloadTile(tile);
+        }
+      }
+    }
+  }
+}
+
+void World::clearTexturesLoaded()
+{
+  ZoneScoped;
+  for (MapTile* tile : mapIndex.loaded_tiles())
+  {
+    for_all_chunks_on_tile(tile, [](MapChunk* chunk)
+    {
+      NOGGIT_CUR_ACTION->registerChunkTextureChange(chunk);
+      chunk->eraseTextures();
+    });
+  }
+}
+
+void World::clearTexturesGlobal()
+{
+  ZoneScoped;
+  for (size_t z = 0; z < 64; z++)
+  {
+    for (size_t x = 0; x < 64; x++)
+    {
+      TileIndex tile(x, z);
+
+      bool unload = !mapIndex.tileLoaded(tile) && !mapIndex.tileAwaitingLoading(tile);
+      MapTile* mTile = mapIndex.loadTile(tile);
+
+      if (mTile)
+      {
+        mTile->wait_until_loaded();
+
+        for_all_chunks_on_tile(mTile, [](MapChunk* chunk)
+        {
+          chunk->eraseTextures();
+        });
+
+        mTile->saveTile(this);
+        mapIndex.markOnDisc(tile, true);
+        mapIndex.unsetChanged(tile);
+
+        if (unload)
+        {
+          mapIndex.unloadTile(tile);
+        }
+      }
+    }
+  }
+}
+
 void World::removeTexDuplicateOnADT(glm::vec3 const& pos)
 {
   ZoneScoped;

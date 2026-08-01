@@ -238,6 +238,11 @@ public:
   void swapTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
   void swapTextureGlobal(scoped_blp_texture_reference tex);
   void removeTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
+  // writes every affected ADT to disk immediately; not undoable
+  void removeTextureGlobal(scoped_blp_texture_reference tex);
+  void clearTexturesLoaded();
+  // writes every ADT to disk immediately; not undoable
+  void clearTexturesGlobal();
   void removeTexDuplicateOnADT(glm::vec3 const& pos);
   void change_texture_flags(glm::vec3 const& pos, scoped_blp_texture_reference const& tex, std::size_t flags);
 
