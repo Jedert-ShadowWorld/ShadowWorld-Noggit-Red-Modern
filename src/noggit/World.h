@@ -232,6 +232,11 @@ public:
   void overwriteTextureAtCurrentChunk(glm::vec3 const& pos, scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
   void paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool exclusion);
   void paintGroundEffect(glm::vec3 const& pos, float radius, std::string const& texture, unsigned int effect_id);
+  void applyGroundEffectToTileAt(glm::vec3 const& pos, std::string const& texture, unsigned int effect_id, bool override_existing);
+  // area_id is an exact area match, or a zone id matched against each chunk's parent zone
+  void applyGroundEffectToArea(int area_id, bool whole_zone, std::string const& texture, unsigned int effect_id, bool override_existing);
+  // writes every affected ADT straight to disk, not undoable
+  void applyGroundEffectGlobal(std::string const& texture, unsigned int effect_id, bool override_existing);
   void setBaseTexture(glm::vec3 const& pos);
   void clear_shadows(glm::vec3 const& pos);
   void bake_shadows(glm::vec3 const& pos, int mode, const glm::mat4x4& view);

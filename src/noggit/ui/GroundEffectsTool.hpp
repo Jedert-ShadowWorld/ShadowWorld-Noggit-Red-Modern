@@ -119,6 +119,7 @@ namespace Noggit
       void refreshChunkOverlayColor(MapTile* tile, MapChunk* chunk);
       void createNewSet();
       void saveSelectedSet();
+      void applySelectedSet();
       void setActiveGroundEffect(ground_effect_set const& effect);
       void updateDoodadPreviewRender(int slot_index);
       void scanTileForEffects(TileIndex tile_index);
@@ -152,6 +153,8 @@ namespace Noggit
       QSpinBox* _spinbox_doodads_amount;
       QComboBox* _cbbox_terrain_type;
       QCheckBox* _apply_override_cb;
+      // 0 = zone, 1 = area, 2 = tile, 3 = global
+      QButtonGroup* _generate_type_group;
       QGroupBox* _brush_grup_box;
       QButtonGroup* _brush_type_group;
       QRadioButton* _paint_effect;

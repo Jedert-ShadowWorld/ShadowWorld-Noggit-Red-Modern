@@ -1,4 +1,5 @@
-﻿#include <noggit/DBC.h>
+﻿#include <noggit/ActionManager.hpp>
+#include <noggit/DBC.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/MapView.h>
@@ -236,22 +237,22 @@ namespace Noggit
                 auto buttons_layout(new QGridLayout(this));
                 apply_layout->addLayout(buttons_layout);
 
-                auto generate_type_group = new QButtonGroup(apply_group);
+                _generate_type_group = new QButtonGroup(apply_group);
 
                 auto generate_effect_zone = new QRadioButton("Current Zone", this);
-                generate_type_group->addButton(generate_effect_zone);
+                _generate_type_group->addButton(generate_effect_zone, 0);
                 buttons_layout->addWidget(generate_effect_zone, 0, 0);
 
                 auto generate_effect_area = new QRadioButton("Current Area (Subzone)", this);
-                generate_type_group->addButton(generate_effect_area);
+                _generate_type_group->addButton(generate_effect_area, 1);
                 buttons_layout->addWidget(generate_effect_area, 0, 1);
 
                 auto generate_effect_adt = new QRadioButton("Current ADT (Tile)", this);
-                generate_type_group->addButton(generate_effect_adt);
+                _generate_type_group->addButton(generate_effect_adt, 2);
                 buttons_layout->addWidget(generate_effect_adt, 1, 0);
 
                 auto generate_effect_global = new QRadioButton("Global (Entire Map)", this);
-                generate_type_group->addButton(generate_effect_global);
+                _generate_type_group->addButton(generate_effect_global, 3);
                 buttons_layout->addWidget(generate_effect_global, 1, 1);
 
                 generate_effect_zone->setChecked(true);
@@ -265,6 +266,8 @@ namespace Noggit
 
             auto button_generate = new QPushButton("Apply to Texture", this);
             apply_layout->addWidget(button_generate);
+
+            connect(button_generate, &QPushButton::clicked, [this]() { applySelectedSet(); });
 
             // Brush modes.
             {
@@ -988,6 +991,81 @@ namespace Noggit
 
             updateSetsList();
             _effect_sets_list->setCurrentRow(index);
+        }
+
+        void GroundEffectsTool::applySelectedSet()
+        {
+            auto effect = getSelectedGroundEffect();
+            if (!effect.has_value() || !effect->ID)
+            {
+                QMessageBox::information(this, "Apply Ground Effect", "Select a saved set first (unsaved sets have no id to apply).");
+                return;
+            }
+
+            std::string const texture = _texturing_tool->_current_texture->filename();
+            if (texture.empty() || texture == "tileset\\generic\\black.blp")
+            {
+                QMessageBox::information(this, "Apply Ground Effect", "Select a texture first.");
+                return;
+            }
+
+            bool const override_existing = _apply_override_cb->isChecked();
+            World* world = _map_view->getWorld();
+            glm::vec3 const camera_pos = _map_view->getCamera()->position;
+
+            switch (_generate_type_group->checkedId())
+            {
+            case 0: // current zone
+            case 1: // current area
+            {
+                bool const whole_zone = _generate_type_group->checkedId() == 0;
+
+                auto area_id = world->for_maybe_chunk_at(camera_pos, [](MapChunk* chunk) { return chunk->getAreaID(); });
+                if (!area_id.has_value())
+                {
+                    QMessageBox::information(this, "Apply Ground Effect", "The camera is not over a loaded tile.");
+                    return;
+                }
+
+                int target_area = area_id.value();
+                if (whole_zone)
+                {
+                    std::uint32_t const parent = AreaDB::get_area_parent(target_area);
+                    if (parent)
+                    {
+                        target_area = static_cast<int>(parent);
+                    }
+                }
+
+                NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eCHUNKS_LAYERINFO);
+                world->applyGroundEffectToArea(target_area, whole_zone, texture, effect->ID, override_existing);
+                NOGGIT_ACTION_MGR->endAction();
+                break;
+            }
+            case 2: // current tile
+            {
+                NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eCHUNKS_LAYERINFO);
+                world->applyGroundEffectToTileAt(camera_pos, texture, effect->ID, override_existing);
+                NOGGIT_ACTION_MGR->endAction();
+                break;
+            }
+            case 3: // global
+            {
+                if (QMessageBox::question(this
+                    , "Apply ground effect globally"
+                    , "Apply this effect to the texture on every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone."
+                    , QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+                {
+                    return;
+                }
+                world->applyGroundEffectGlobal(texture, effect->ID, override_existing);
+                break;
+            }
+            default:
+                return;
+            }
+
+            genEffectColors();
         }
 
         void GroundEffectsTool::setActiveGroundEffect(ground_effect_set const& effect)
