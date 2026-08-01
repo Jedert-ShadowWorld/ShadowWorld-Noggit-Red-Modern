@@ -247,6 +247,7 @@ void PreviewRenderer::draw()
 
   // draw M2
   std::unordered_map<Model*, std::size_t> model_boxes_to_draw;
+  std::unordered_map<Model*, std::size_t> model_with_particles;
 
   if (_draw_models.get() && !(_model_instances.empty() && _wmo_doodads.empty()))
   {
@@ -295,6 +296,8 @@ void PreviewRenderer::draw()
         , _draw_animated.get()
         , true
         , false
+        , _draw_animated.get() && _draw_particles.get()
+        , model_with_particles
       );
     }
 
@@ -323,6 +326,8 @@ void PreviewRenderer::draw()
           , _draw_animated.get()
           , false
           , false
+          , _draw_animated.get() && _draw_particles.get()
+          , model_with_particles
       );
     }
 
@@ -355,44 +360,40 @@ void PreviewRenderer::draw()
   gl.bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
   // model particles
-
-  /*
   if (_draw_animated.get() && !model_with_particles.empty())
   {
     OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
     OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
 
-    OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
-
-    particles_shader.uniform("model_view_projection", mvp);
-    particles_shader.uniform("tex", 0);
-    OpenGL::texture::set_active_texture(0);
-
-    for (auto& it : model_with_particles)
     {
-      it.first->draw_particles(model_view().transposed(), particles_shader, it.second);
+      OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
+
+      particles_shader.uniform("model_view_projection", mvp);
+      particles_shader.uniform("tex", 0);
+
+      for (auto& it : model_with_particles)
+      {
+        it.first->renderer()->drawParticles(mv, particles_shader, it.second);
+      }
     }
-  }
 
-  if (_draw_animated.get() && !model_with_particles.empty())
-  {
-    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
-    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
-
-    OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
-
-    ribbon_shader.uniform("model_view_projection", mvp);
-    ribbon_shader.uniform("tex", 0);
-
-    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
-
-    for (auto& it : model_with_particles)
     {
-      it.first->draw_ribbons(ribbon_shader, it.second);
-    }
-  }
+      OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
 
-  */
+      ribbon_shader.uniform("model_view_projection", mvp);
+      ribbon_shader.uniform("tex", 0);
+
+      gl.enable(GL_BLEND);
+      gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+
+      for (auto& it : model_with_particles)
+      {
+        it.first->renderer()->drawRibbons(ribbon_shader, it.second);
+      }
+    }
+
+    gl.depthMask(GL_TRUE);
+  }
 
   gl.enable(GL_BLEND);
   gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -531,11 +532,7 @@ void PreviewRenderer::setLightDirection(float y, float z)
 
 void PreviewRenderer::update_emitters(float dt)
 {
-  while (dt > 0.1f)
-  {
-    ModelManager::updateEmitters(0.1f);
-    dt -= 0.1f;
-  }
+  // dt is ignored: ModelManager self-clocks so multiple views can tick safely
   ModelManager::updateEmitters(dt);
 }
 
@@ -617,16 +614,12 @@ void PreviewRenderer::upload()
   }
 
 
-  /*
-  
-
   _m2_ribbons_program.reset
   (new OpenGL::program
     { { GL_VERTEX_SHADER,   OpenGL::shader::src_from_qrc("ribbon_vs") }
         , { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("ribbon_fs") }
     }
   );
-  
 
   _m2_particles_program.reset
   (new OpenGL::program
@@ -634,8 +627,6 @@ void PreviewRenderer::upload()
         , { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("particle_fs") }
     }
   );
-
-  */
 
   // wmo
   

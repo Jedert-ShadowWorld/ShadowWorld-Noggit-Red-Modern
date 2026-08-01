@@ -636,20 +636,16 @@ void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time)
     }
   }
 
-  /*
   for (auto& particle : _particles)
   {
-    // random time distribution for teh win ..?
     int pt = (t + static_cast<int>(tmax*particle.tofs)) % tmax;
     particle.setup(_current_anim_seq, pt, _global_animtime);
   }
 
-  for (size_t i = 0; i<header.nRibbonEmitters; ++i) 
+  for (auto& ribbon : _ribbons)
   {
-    _ribbons[i].setup(_current_anim_seq, t, _global_animtime);
+    ribbon.setup(_current_anim_seq, t, _global_animtime);
   }
-
-   */
 
   for (auto& tex_anim : _texture_animations)
   {
@@ -1039,8 +1035,6 @@ void Model::lightsOff(OpenGL::light lbase)
 
 void Model::updateEmitters(float dt)
 {
-  return;
-
   if (finished)
   {
     for (auto& particle : _particles)

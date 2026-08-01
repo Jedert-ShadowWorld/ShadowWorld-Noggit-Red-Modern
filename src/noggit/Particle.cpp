@@ -3,23 +3,18 @@
 #include <noggit/Misc.h>
 #include <noggit/Model.h>
 #include <noggit/Particle.h>
+#include <noggit/TextureManager.h>
 #include <opengl/context.hpp>
 #include <opengl/context.inl>
 #include <opengl/shader.hpp>
 #include <ClientFile.hpp>
 #include <glm/vec3.hpp>
 
-
+#include <algorithm>
+#include <cmath>
 #include <list>
 
 static const unsigned int MAX_PARTICLES = 10000;
-
-template<class T>
-T lifeRamp(float life, float mid, const T &a, const T &b, const T &c)
-{
-  if (life <= mid) return math::interpolation::linear(life / mid, a, b);
-  else return math::interpolation::linear((life - mid) / (1.0f - mid), b, c);
-}
 
 ParticleSystem::ParticleSystem(Model* model_
                                , const BlizzardArchive::ClientFile& f
@@ -43,8 +38,18 @@ ParticleSystem::ParticleSystem(Model* model_
   , areaw (mta.EmissionAreaWidth, f, globals)
   , deacceleration (mta.Gravity2, f, globals)
   , enabled (mta.en, f, globals)
-  , mid (0.5)
+  , tail_length (mta.p.unk[0])
+  , render_head ((mta.flags & 0x20000) != 0)
+  , render_tail ((mta.flags & 0x40000) != 0)
   , slowdown (mta.p.slowdown)
+  , lifespan_vary (mta.lifespanVary)
+  , rate_vary (mta.emissionRateVary)
+  , base_spin (mta.p.baseSpin)
+  , base_spin_vary (mta.p.baseSpinVary)
+  , spin_speed (mta.p.rotation)
+  , spin_vary (mta.p.spinVary)
+  , scale_vary (mta.p.scaleVary[0], mta.p.scaleVary[1])
+  , tumble ((mta.flags & 0x1000) != 0)
   , pos (fixCoordSystem(mta.pos))
   , _texture_id (mta.texture)
   , blend (mta.blend)
@@ -52,26 +57,33 @@ ParticleSystem::ParticleSystem(Model* model_
   , type (mta.ParticleType)
   , manim (0)
   , mtime (0)
-  , rows (mta.rows)
-  , cols (mta.cols)
-  , billboard (!(mta.flags & 4096))
+  , manimtime (0)
+  , rows (std::max<int>(1, mta.rows))
+  , cols (std::max<int>(1, mta.cols))
   , rem(0)
   , parent (&model->bones[mta.bone])
   , flags(mta.flags)
   , tofs (misc::frand())
   , _context(context)
 {
-  glm::vec3 colors2[3];
-  memcpy(colors2, f.getBuffer() + mta.p.colors.ofsKeys, sizeof(glm::vec3) * 3);
-  for (size_t i = 0; i<3; ++i) {
-    float opacity = *reinterpret_cast<int16_t const*>(f.getBuffer() + mta.p.opacity.ofsKeys + i * 2);
-    colors[i] = glm::vec4(colors2[i].x / 255.0f, colors2[i].y / 255.0f, colors2[i].z / 255.0f, opacity / 32767.0f);
-    sizes[i] = (*reinterpret_cast<float const*>(f.getBuffer() + mta.p.sizes.ofsKeys + i * 4))*mta.p.scales[i];
+  color_track.times = Model::M2Array<uint16_t>(f, mta.p.colors.ofsTimes, mta.p.colors.nTimes);
+  for (auto const& c : Model::M2Array<glm::vec3>(f, mta.p.colors.ofsKeys, mta.p.colors.nKeys))
+  {
+    color_track.keys.push_back(c / 255.0f);
   }
 
-  //transform = mta.flags & 1024;
+  alpha_track.times = Model::M2Array<uint16_t>(f, mta.p.opacity.ofsTimes, mta.p.opacity.nTimes);
+  for (int16_t a : Model::M2Array<int16_t>(f, mta.p.opacity.ofsKeys, mta.p.opacity.nKeys))
+  {
+    alpha_track.keys.push_back(a / 32768.0f);
+  }
 
-  // init tiles
+  scale_track.times = Model::M2Array<uint16_t>(f, mta.p.sizes.ofsTimes, mta.p.sizes.nTimes);
+  scale_track.keys = Model::M2Array<glm::vec2>(f, mta.p.sizes.ofsKeys, mta.p.sizes.nKeys);
+
+  cell_track.times = Model::M2Array<uint16_t>(f, mta.p.Intensity.ofsTimes, mta.p.Intensity.nTimes);
+  cell_track.keys = Model::M2Array<uint16_t>(f, mta.p.Intensity.ofsKeys, mta.p.Intensity.nKeys);
+
   for (int i = 0; i<rows*cols; ++i) {
     TexCoordSet tc;
     initTile(tc.tc, i);
@@ -97,10 +109,22 @@ ParticleSystem::ParticleSystem(ParticleSystem const& other)
   , areaw(other.areaw)
   , deacceleration(other.deacceleration)
   , enabled(other.enabled)
-  , colors(other.colors)
-  , sizes(other.sizes)
-  , mid(other.mid)
+  , color_track(other.color_track)
+  , alpha_track(other.alpha_track)
+  , scale_track(other.scale_track)
+  , cell_track(other.cell_track)
+  , tail_length(other.tail_length)
+  , render_head(other.render_head)
+  , render_tail(other.render_tail)
   , slowdown(other.slowdown)
+  , lifespan_vary(other.lifespan_vary)
+  , rate_vary(other.rate_vary)
+  , base_spin(other.base_spin)
+  , base_spin_vary(other.base_spin_vary)
+  , spin_speed(other.spin_speed)
+  , spin_vary(other.spin_vary)
+  , scale_vary(other.scale_vary)
+  , tumble(other.tumble)
   , pos(other.pos)
   , _texture_id(other._texture_id)
   , particles(other.particles)
@@ -113,7 +137,6 @@ ParticleSystem::ParticleSystem(ParticleSystem const& other)
   , rows(other.rows)
   , cols(other.cols)
   , tiles(other.tiles)
-  , billboard(other.billboard)
   , rem(other.rem)
   , parent(other.parent)
   , flags(other.flags)
@@ -138,10 +161,22 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , areaw(other.areaw)
   , deacceleration(other.deacceleration)
   , enabled(other.enabled)
-  , colors(other.colors)
-  , sizes(other.sizes)
-  , mid(other.mid)
+  , color_track(other.color_track)
+  , alpha_track(other.alpha_track)
+  , scale_track(other.scale_track)
+  , cell_track(other.cell_track)
+  , tail_length(other.tail_length)
+  , render_head(other.render_head)
+  , render_tail(other.render_tail)
   , slowdown(other.slowdown)
+  , lifespan_vary(other.lifespan_vary)
+  , rate_vary(other.rate_vary)
+  , base_spin(other.base_spin)
+  , base_spin_vary(other.base_spin_vary)
+  , spin_speed(other.spin_speed)
+  , spin_vary(other.spin_vary)
+  , scale_vary(other.scale_vary)
+  , tumble(other.tumble)
   , pos(other.pos)
   , _texture_id(other._texture_id)
   , particles(other.particles)
@@ -154,7 +189,6 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , rows(other.rows)
   , cols(other.cols)
   , tiles(other.tiles)
-  , billboard(other.billboard)
   , rem(other.rem)
   , parent(other.parent)
   , flags(other.flags)
@@ -191,77 +225,84 @@ void ParticleSystem::initTile(glm::vec2 *tc, int num)
 void ParticleSystem::update(float dt)
 {
   float grav = gravity.getValue(manim, mtime, manimtime);
-  float deaccel = deacceleration.getValue(manim, mtime, manimtime);
 
-  // spawn new particles
-  if (emitter) {
-    float frate = rate.getValue(manim, mtime, manimtime);
-    float flife = 1.0f;
-    flife = lifespan.getValue(manim, mtime, manimtime);
+  if (emitter)
+  {
+    bool en = true;
+    if (enabled.uses(manim))
+      en = enabled.getValue(manim, mtime, manimtime) != 0;
 
-    float ftospawn = (dt * frate / flife) + rem;
-    if (ftospawn < 1.0f) {
-      rem = ftospawn;
-      if (rem<0)
-        rem = 0;
-    }
-    else {
-      int tospawn = (int)ftospawn;
-
-      if ((tospawn + particles.size()) > MAX_PARTICLES) // Error check to prevent the program from trying to load insane amounts of particles.
-        tospawn = static_cast<int>(particles.size()) - MAX_PARTICLES;
-
+    if (en)
+    {
+      // per-tick rate jitter (CParticleEmitter2::Update: rate + vary * U[-1,1])
+      float frate = std::max(0.0f, rate.getValue(manim, mtime, manimtime)
+                                   + rate_vary * misc::randfloat(-1.0f, 1.0f));
+      float ftospawn = frate * dt + rem;
+      int tospawn = static_cast<int>(ftospawn + 0.5f);
       rem = ftospawn - static_cast<float>(tospawn);
 
+      if (particles.size() + static_cast<std::size_t>(tospawn) > MAX_PARTICLES)
+        tospawn = static_cast<int>(MAX_PARTICLES - particles.size());
 
-      float w = areal.getValue(manim, mtime, manimtime) * 0.5f;
-      float l = areaw.getValue(manim, mtime, manimtime) * 0.5f;
-      float spd = speed.getValue(manim, mtime, manimtime);
-      float var = variation.getValue(manim, mtime, manimtime);
-      float spr = spread.getValue(manim, mtime, manimtime);
-      float spr2 = lat.getValue(manim, mtime, manimtime);
-      bool en = true;
-      if (enabled.uses(manim))
-        en = enabled.getValue(manim, mtime, manimtime) != 0;
+      if (tospawn > 0)
+      {
+        float w = areaw.getValue(manim, mtime, manimtime);
+        float l = areal.getValue(manim, mtime, manimtime);
+        float spd = speed.getValue(manim, mtime, manimtime);
+        float var = variation.getValue(manim, mtime, manimtime);
+        float spr = spread.getValue(manim, mtime, manimtime);
+        float spr2 = lat.getValue(manim, mtime, manimtime);
 
-      //rem = 0;
-      if (en) {
+        // InheritBoneScale (disk flag 0x20 -> runtime 0x400): sprite size scales
+        // with the emission frame's world scale (CParticleEmitter2::BuildVertex)
+        float bone_scale = (flags & 0x20) ? glm::length(glm::vec3(parent->mat[0])) : 1.0f;
+
         for (int i = 0; i<tospawn; ++i) {
           Particle p = emitter->newParticle(this, manim, mtime, manimtime, w, l, spd, var, spr, spr2);
-          // sanity check:
-          //if (particles.size() < MAX_PARTICLES) // No need to check this every loop iteration. Already checked above.
+          p.life = misc::frand() * dt;
+
+          p.spin_angle = base_spin + base_spin_vary * misc::randfloat(-1.0f, 1.0f);
+          p.spin_rate = spin_speed + spin_vary * misc::randfloat(-1.0f, 1.0f);
+
+          // scale variance: x always rolled; y independent only with flag 0x80000
+          p.scale_mul.x = std::max(0.0f, 1.0f + scale_vary.x * misc::randfloat(-1.0f, 1.0f));
+          p.scale_mul.y = (flags & 0x80000)
+                        ? std::max(0.0f, 1.0f + scale_vary.y * misc::randfloat(-1.0f, 1.0f))
+                        : p.scale_mul.x;
+          p.scale_mul *= bone_scale;
+
           particles.push_back(p);
         }
       }
     }
   }
 
-  float mspeed = 1.0f;
-
   for (ParticleList::iterator it = particles.begin(); it != particles.end();) {
     Particle &p = *it;
-    p.speed += p.down * grav * dt - p.dir * deaccel * dt;
 
-    if (slowdown>0) {
-      mspeed = expf(-1.0f * slowdown * p.life);
-    }
-    p.pos += p.speed * mspeed * dt;
+    if (slowdown > 0)
+      p.speed *= expf(-slowdown * dt);
 
+    p.speed += p.down * grav * dt;
+    p.pos += p.speed * dt;
+
+    p.spin_angle += p.spin_rate * dt;
     p.life += dt;
-    float rlife = p.life / p.maxlife;
-    // calculate size and color based on lifetime
-    p.size = lifeRamp<float>(rlife, mid, sizes[0], sizes[1], sizes[2]);
-    p.color = lifeRamp<glm::vec4>(rlife, mid, colors[0], colors[1], colors[2]);
+    float rlife = p.life / std::max(p.maxlife, 0.001f);
 
-    // kill off old particles
     if (rlife >= 1.0f)
     {
       it = particles.erase (it);
+      continue;
     }
-    else
-    {
-      ++it;
-    }
+
+    p.size = scale_track.sample(rlife, glm::vec2(1.0f, 1.0f));
+    p.color = glm::vec4(color_track.sample(rlife, glm::vec3(1.0f)), alpha_track.sample(rlife, 1.0f));
+
+    if (!cell_track.keys.empty())
+      p.tile = cell_track.sampleStep(rlife) % (rows * cols);
+
+    ++it;
   }
 }
 
@@ -278,46 +319,70 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
                          , int instances_count
 )
 {
+  if (particles.empty() || (!render_head && !render_tail) || _texture_id >= model->_textures.size())
+  {
+    return;
+  }
+
   if (!_uploaded)
   {
     upload();
   }
 
-  // setup blend mode
+  // client particle blend table (CGxDeviceD3d::s_srcBlend / s_dstBlend)
   float alpha_test = -1.f;
 
-  switch (blend) 
+  switch (blend)
   {
   case 0:
     gl.disable(GL_BLEND);
     break;
   case 1:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_SRC_COLOR, GL_ONE);
+    gl.disable(GL_BLEND);
+    alpha_test = 224.0f / 255.0f;
     break;
   case 2:
     gl.enable(GL_BLEND);
     gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    alpha_test = 1.0f / 255.0f;
     break;
   case 3:
-    gl.disable(GL_BLEND);
-    alpha_test = 0.5f;
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_ONE, GL_ONE);
+    alpha_test = 1.0f / 255.0f;
     break;
   case 4:
     gl.enable(GL_BLEND);
     gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 5:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_DST_COLOR, GL_ZERO);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 6:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  default:
+    gl.disable(GL_BLEND);
     break;
   }
 
-  //model->_textures[_texture_id]->bind();
+  gl.depthMask(blend <= 1 ? GL_TRUE : GL_FALSE);
 
-  glm::vec3 vRight(1, 0, 0);
-  glm::vec3 vUp(0, 1, 0);
+  auto& texture = model->_textures[_texture_id];
+  texture->upload();
+  gl.activeTexture(GL_TEXTURE0);
+  gl.bindTexture(GL_TEXTURE_2D_ARRAY, texture->texture_array());
+  shader.uniform("tex_index", texture->array_index());
 
-  // position stuff
-  const float f = 1;//0.707106781f; // sqrt(2)/2
-  glm::vec3 bv0 = glm::vec3(-f, +f, 0);
-  glm::vec3 bv1 = glm::vec3(+f, +f, 0);
+  // camera basis in world space (rows of the view rotation)
+  glm::vec3 vRight(model_view[0][0], model_view[1][0], model_view[2][0]);
+  glm::vec3 vUp(model_view[0][1], model_view[1][1], model_view[2][1]);
+  glm::vec3 vDir(model_view[0][2], model_view[1][2], model_view[2][2]);
 
   std::vector<std::uint16_t> indices;
   std::vector<glm::vec3> vertices;
@@ -326,16 +391,6 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
   std::vector<glm::vec2> texcoords;
 
   std::uint16_t indice = 0;
-
-  if (billboard) 
-  {
-      vRight = model_view[0]; 
-      vUp = model_view[1];
-
-    //vRight = glm::vec3(model_view[0][0], model_view[1][0], model_view[2][0]);
-    //vUp = glm::vec3(model_view[0][1], model_view[1][1], model_view[2][1]); // Spherical billboarding
-    //vUp = glm::vec3(0,1,0); // Cylindrical billboarding
-  }
 
   auto add_quad_indices([] (std::vector<std::uint16_t>& indices, std::uint16_t& start)
   {
@@ -350,128 +405,130 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
     start += 4;
   });
 
-  /*
-  * type:
-  * 0   "normal" particle
-  * 1  large quad from the particle's origin to its position (used in Moonwell water effects)
-  * 2  seems to be the same as 0 (found some in the Deeprun Tram blinky-lights-sign thing)
-  */
-  if (type == 0 || type == 2) 
+  std::size_t pi = 0;
+  for (ParticleList::iterator it = particles.begin(); it != particles.end(); ++it, ++pi)
   {
-    //! \todo figure out type 2 (deeprun tram subway sign)
-    // - doesn't seem to be any different from 0 -_-
-    // regular particles
-
-    if (billboard) 
+    if (it->tile >= tiles.size() || vertices.size() + 8 > 65535)
     {
-      //! \todo per-particle rotation in a non-expensive way?? :|
-      for (ParticleList::iterator it = particles.begin(); it != particles.end(); ++it) 
-      {
-        if (tiles.size() - 1 < it->tile) // Alfred, 2009.08.07, error prevent
-        {
-          break;
-        }
-
-        const float size = it->size;// / 2;
-
-        texcoords.push_back(tiles[it->tile].tc[0]);
-        vertices.push_back(it->pos);
-        offsets.push_back(-(vRight + vUp) * size);
-        colors_data.push_back(it->color);
-
-        texcoords.push_back(tiles[it->tile].tc[1]);
-        vertices.push_back(it->pos);
-        offsets.push_back((vRight - vUp) * size);
-        colors_data.push_back(it->color);
-
-        texcoords.push_back(tiles[it->tile].tc[2]);
-        vertices.push_back(it->pos);
-        offsets.push_back((vRight + vUp) * size);
-        colors_data.push_back(it->color);
-
-        texcoords.push_back(tiles[it->tile].tc[3]);
-        vertices.push_back(it->pos);
-        offsets.push_back(-(vRight - vUp) * size);
-        colors_data.push_back(it->color);
-
-        add_quad_indices(indices, indice);
-      }
+      break;
     }
-    else 
+
+    TexCoordSet const& tc = tiles[it->tile];
+    float const sx = it->size.x * it->scale_mul.x;
+    float const sy = it->size.y * it->scale_mul.y;
+
+    if (render_head)
     {
-      for (ParticleList::iterator it = particles.begin(); it != particles.end(); ++it) 
+      glm::vec3 right = vRight;
+      glm::vec3 up = vUp;
+
+      // VelocityOrient (flag 0x4): head's long axis follows screen-space
+      // velocity, falling back to the plain billboard when the projection is
+      // too short (CParticleEmitter2::BuildVertex HEAD-1, threshold 1/1296)
+      bool velocity_basis = false;
+      if (flags & 0x4)
       {
-        if (tiles.size() - 1 < it->tile) // Alfred, 2009.08.07, error prevent
+        float vx = glm::dot(vRight, -it->speed);
+        float vy = glm::dot(vUp, -it->speed);
+        float xy_len_sq = vx * vx + vy * vy;
+        if (xy_len_sq > 1.0f / 1296.0f)
         {
-          break;
+          float inv = 1.0f / std::sqrt(xy_len_sq);
+          vx *= inv;
+          vy *= inv;
+          right = vx * vRight + vy * vUp;
+          up = -vy * vRight + vx * vUp;
+          velocity_basis = true;
         }
-
-        texcoords.push_back(tiles[it->tile].tc[0]);
-        vertices.push_back(it->pos + it->corners[0] * it->size);
-        colors_data.push_back(it->color);
-
-        texcoords.push_back(tiles[it->tile].tc[1]);
-        vertices.push_back(it->pos + it->corners[1] * it->size);
-        colors_data.push_back(it->color);
-
-        texcoords.push_back(tiles[it->tile].tc[2]);
-        vertices.push_back(it->pos + it->corners[2] * it->size);
-        colors_data.push_back(it->color);
-
-        texcoords.push_back(tiles[it->tile].tc[3]);
-        vertices.push_back(it->pos + it->corners[3] * it->size);
-        colors_data.push_back(it->color);
-
-        add_quad_indices(indices, indice);
       }
-    }
-  }  
-  else if (type == 1) 
-  { // Sphere particles
-    // particles from origin to position
-    /*
-    bv0 = mbb * glm::vec3(0,-1.0f,0);
-    bv1 = mbb * glm::vec3(0,+1.0f,0);
 
-
-    bv0 = mbb * glm::vec3(-1.0f,0,0);
-    bv1 = mbb * glm::vec3(1.0f,0,0);
-    */
-
-    for (ParticleList::iterator it = particles.begin(); it != particles.end(); ++it) 
-    {
-      if (tiles.size() - 1 < it->tile) // Alfred, 2009.08.07, error prevent
+      if (!velocity_basis)
       {
-        break;
+        // tumble (flag 0x1000) recomputes the angle from age with the base
+        // values instead of the integrated per-particle spin; flag 0x200 flips
+        // the sign for every other particle (BuildVertex parity flip)
+        float angle = tumble ? it->life * spin_speed + base_spin : it->spin_angle;
+        if ((flags & 0x200) && (pi & 1))
+        {
+          angle = -angle;
+        }
+        if (angle != 0.0f)
+        {
+          float c = std::cos(angle);
+          float s = std::sin(angle);
+          right = vRight * c + vUp * s;
+          up = vUp * c - vRight * s;
+        }
       }
 
-      texcoords.push_back(tiles[it->tile].tc[0]);
-      vertices.push_back(it->pos + bv0 * it->size);
-      colors_data.push_back(it->color);
+      vertices.insert(vertices.end(), 4, it->pos);
+      offsets.push_back(-(right * sx + up * sy));
+      offsets.push_back(right * sx - up * sy);
+      offsets.push_back(right * sx + up * sy);
+      offsets.push_back(-(right * sx - up * sy));
 
-      texcoords.push_back(tiles[it->tile].tc[1]);
-      vertices.push_back(it->pos + bv1 * it->size);
-      colors_data.push_back(it->color);
+      for (int i = 0; i < 4; ++i)
+      {
+        texcoords.push_back(tc.tc[i]);
+        colors_data.push_back(it->color);
+      }
 
-      texcoords.push_back(tiles[it->tile].tc[2]);
-      vertices.push_back(it->origin + bv1 * it->size);
-      colors_data.push_back(it->color);
+      add_quad_indices(indices, indice);
+    }
 
-      texcoords.push_back(tiles[it->tile].tc[3]);
-      vertices.push_back(it->origin + bv0 * it->size);
-      colors_data.push_back(it->color);
+    if (render_tail)
+    {
+      float vlen = glm::length(it->speed);
+
+      if (vlen > 1e-4f)
+      {
+        glm::vec3 axis = it->speed / vlen;
+        glm::vec3 tail_pos = it->pos - axis * (tail_length * vlen);
+        glm::vec3 perp = glm::cross(axis, vDir);
+        float plen = glm::length(perp);
+        perp = plen > 1e-4f ? perp / plen : vRight;
+
+        vertices.push_back(it->pos + perp * sx);
+        vertices.push_back(it->pos - perp * sx);
+        vertices.push_back(tail_pos - perp * sx);
+        vertices.push_back(tail_pos + perp * sx);
+        offsets.insert(offsets.end(), 4, glm::vec3(0.f));
+      }
+      else if (!render_head)
+      {
+        vertices.insert(vertices.end(), 4, it->pos);
+        offsets.push_back(-(vRight * sx + vUp * sy));
+        offsets.push_back(vRight * sx - vUp * sy);
+        offsets.push_back(vRight * sx + vUp * sy);
+        offsets.push_back(-(vRight * sx - vUp * sy));
+      }
+      else
+      {
+        continue;
+      }
+
+      for (int i = 0; i < 4; ++i)
+      {
+        texcoords.push_back(tc.tc[i]);
+        colors_data.push_back(it->color);
+      }
 
       add_quad_indices(indices, indice);
     }
   }
 
+  if (indices.empty())
+  {
+    return;
+  }
+
   gl.bufferData<GL_ARRAY_BUFFER, glm::vec3>(_vertices_vbo, vertices, GL_STREAM_DRAW);
+  gl.bufferData<GL_ARRAY_BUFFER, glm::vec3>(_offsets_vbo, offsets, GL_STREAM_DRAW);
   gl.bufferData<GL_ARRAY_BUFFER, glm::vec4>(_colors_vbo, colors_data, GL_STREAM_DRAW);
   gl.bufferData<GL_ARRAY_BUFFER, glm::vec2>(_texcoord_vbo, texcoords, GL_STREAM_DRAW);
   gl.bufferData<GL_ELEMENT_ARRAY_BUFFER, std::uint16_t>(_indices_vbo, indices, GL_STREAM_DRAW);
 
   shader.uniform("alpha_test", alpha_test);
-  shader.uniform("billboard", (int)billboard);
 
   OpenGL::Scoped::vao_binder const _ (_vao);
 
@@ -479,10 +536,7 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
     OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const vertices_binder (_vertices_vbo);
     shader.attrib("position", 3, GL_FLOAT, GL_FALSE, 0, 0);
   }
-  if(billboard)
   {
-    gl.bufferData<GL_ARRAY_BUFFER, glm::vec3>(_offsets_vbo, offsets, GL_STREAM_DRAW);
-
     OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const offset_binder (_offsets_vbo);
     shader.attrib("offset", 3, GL_FLOAT, GL_FALSE, 0, 0);
   }
@@ -501,7 +555,6 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
 
   OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> const indices_binder (_indices_vbo);
   gl.drawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_SHORT, nullptr, instances_count);
-
 }
 
 void ParticleSystem::upload()
@@ -518,160 +571,29 @@ void ParticleSystem::unload()
   _uploaded = false;
 }
 
-namespace
+Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2)
 {
-  //Generates the rotation matrix based on spread
-  glm::mat4x4 CalcSpreadMatrix(float Spread1, float Spread2, float w, float l)
-  {
-    int i, j;
-    float a[2], c[2], s[2];
-
-    glm::mat4x4 SpreadMat = glm::mat4x4(1);
-
-    a[0] = misc::randfloat(-Spread1, Spread1) / 2.0f;
-    a[1] = misc::randfloat(-Spread2, Spread2) / 2.0f;
-
-    /*SpreadMat.m[0][0]*=l;
-    SpreadMat.m[1][1]*=l;
-    SpreadMat.m[2][2]*=w;*/
-
-    for (i = 0; i<2; ++i)
-    {
-      c[i] = cos(a[i]);
-      s[i] = sin(a[i]);
-    }
-
-    {
-        glm::mat4x4 Temp = glm::mat4x4(1);
-        Temp[1][1] = c[0];
-        Temp[2][1] = s[0];
-        Temp[2][2] = c[0];
-        Temp[1][2] = -s[0];
-
-       SpreadMat = SpreadMat * Temp;
-    }
-
-    {
-        glm::mat4x4 Temp = glm::mat4x4(1);
-      Temp[0][0]= c[1];
-      Temp[1][0]= s[1];
-      Temp[1][1]= c[1];
-      Temp[0][1]= -s[1];
-
-      SpreadMat = SpreadMat*Temp;
-    }
-
-    float Size = std::abs(c[0])*l + std::abs(s[0])*w;
-    for (i = 0; i<3; ++i)
-      for (j = 0; j<3; j++)
-        SpreadMat[i][j] = SpreadMat[i][j] * Size;
-
-    return SpreadMat;
-  }
-}
-
-Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float /*spr2*/)
-{
-  // Model Flags - *shrug* gotta write this down somewhere.
-  // 0x1 =
-  // 0x2 =
-  // 0x4 =
-  // 0x8 =
-  // 0x10 =
-  // 19 = 0x13 = blue ball in thunderfury = should be billboarded?
-
-  // Particle Flags
-  // 0x0  / 0    = Basilisk has no flags?
-  // 0x1  / 1    = Pretty much everything I know of except Basilisks have this flag..  Billboard?
-  // 0x2  / 2    =
-  // 0x4  / 4    =
-  // 0x8  / 8    =
-  // 0x10  / 16  = Position Relative to bone pivot?
-  // 0x20  / 32  =
-  // 0x40  / 64  =
-  // 0x80 / 128  =
-  // 0x100 / 256  =
-  // 0x200 / 512  =
-  // 0x400 / 1024 =
-  // 0x800 / 2048 =
-  // 0x1000/ 4096 =
-  // 0x0000/ 1593 = [1,8,16,32,512,1024]"Warp Storm" - aura type particle effect
-  // 0x419 / 1049 = [1,8,16,1024] Forest Wind shoulders
-  // 0x411 / 1041 = [1,16,1024] Halo
-  // 0x000 / 541  = [1,4,8,16,512] Staff glow
-  // 0x000 / 537 = "Warp Storm"
-  // 0x31 / 49 = [1,16,32] particle moving up?
-  // 0x00 / 41 = [1,8,32] Blood elf broom, dust spread out on the ground (X, Z axis)
-  // 0x1D / 29 = [1,4,8,16] particle being static
-  // 0x19 / 25 = [1,8,16] flame on weapon - move up/along the weapon
-  // 17 = 0x11 = [1,16] glow on weapon - static, random direction.  - Aurastone Hammer
-  // 1 = 0x1 = perdition blade
-  // 4121 = water ele
-  // 4097 = water elemental
-  // 1041 = Transcendance Halo
-  // 1039 = water ele
-
   Particle p;
 
-  //Spread Calculation
-  auto mrot = sys->parent->mrot*CalcSpreadMatrix(spr, spr, 1.0f, 1.0f);
+  p.pos = sys->pos + glm::vec3(misc::randfloat(-0.5f, 0.5f) * w, 0, misc::randfloat(-0.5f, 0.5f) * l);
+  p.pos = sys->parent->mat * glm::vec4(p.pos, 1);
 
-  if (sys->flags == 1041) { // Trans Halo
-    p.pos = sys->parent->mat * (glm::vec4(sys->pos,0) + glm::vec4(misc::randfloat(-l, l), 0, misc::randfloat(-w, w),0));
+  // velocity in spherical coords off the emitter up axis, polar/azimuth signed
+  // (CPlaneParticleEmitter::CreateParticle @ 0x9815C0)
+  float polar = misc::randfloat(-spr, spr);
+  float azim = misc::randfloat(-spr2, spr2);
+  glm::vec3 dir(sinf(polar) * cosf(azim), cosf(polar), sinf(polar) * sinf(azim));
+  dir = sys->parent->mrot * glm::vec4(dir, 0);
 
-    const float t = misc::randfloat(0.0f, 2.0f * glm::pi<float>());
-
-    p.pos = glm::vec3(0.0f, sys->pos.y + 0.15f, sys->pos.z) + glm::vec3(cos(t) / 8, 0.0f, sin(t) / 8); // Need to manually correct for the halo - why?
-
-    // var isn't being used, which is set to 1.0f,  whats the importance of this?
-    // why does this set of values differ from other particles
-
-    glm::vec3 dir(0.0f, 1.0f, 0.0f);
-    p.dir = dir;
-
-    p.speed = glm::normalize(dir) * spd * misc::randfloat(0, var);
-  }
-  else if (sys->flags == 25 && sys->parent->parent<1) { // Weapon Flame
-    p.pos = sys->parent->pivot + (sys->pos + glm::vec3(misc::randfloat(-l, l), misc::randfloat(-l, l), misc::randfloat(-w, w)));
-    glm::vec3 dir = mrot * glm::vec4(0.0f, 1.0f, 0.0f,0.0f);
-    p.dir = glm::normalize(dir);
-    //glm::vec3 dir = sys->model->bones[sys->parent->parent].mrot * sys->parent->mrot * glm::vec3(0.0f, 1.0f, 0.0f);
-    //p.speed = dir.normalize() * spd;
-
-  }
-  else if (sys->flags == 25 && sys->parent->parent > 0) { // Weapon with built-in Flame (Avenger lightsaber!)
-    p.pos = sys->parent->mat * (glm::vec4(sys->pos,0) + glm::vec4(misc::randfloat(-l, l), misc::randfloat(-l, l), misc::randfloat(-w, w),0));
-    glm::vec3 dir = glm::vec4(sys->parent->mat[1][0], sys->parent->mat[1][1], sys->parent->mat [1][2],0.0f) + glm::vec4(0.0f, 1.0f, 0.0f,0.0f);
-    p.speed = glm::normalize(dir) * spd * misc::randfloat(0, var * 2);
-
-  }
-  else if (sys->flags == 17 && sys->parent->parent<1) { // Weapon Glow
-    p.pos = sys->parent->pivot + (sys->pos + glm::vec3(misc::randfloat(-l, l), misc::randfloat(-l, l), misc::randfloat(-w, w)));
-    glm::vec3 dir = mrot * glm::vec4(0, 1, 0,0);
-    p.dir = glm::normalize(dir);
-
-  }
-  else {
-    p.pos = sys->pos + glm::vec3(misc::randfloat(-l, l), 0, misc::randfloat(-w, w));
-    p.pos = sys->parent->mat * glm::vec4(p.pos,0);
-
-    //glm::vec3 dir = mrot * glm::vec3(0,1,0);
-    glm::vec3 dir = sys->parent->mrot * glm::vec4(0, 1, 0,0);
-
-    p.dir = dir;//.normalize();
-    p.down = glm::vec3(0, -1.0f, 0); // dir * -1.0f;
-    p.speed = glm::normalize(dir) * spd * (1.0f + misc::randfloat(-var, var));
-  }
-
-  if (!sys->billboard)  {
-    p.corners[0] = mrot * glm::vec4(-1, 0, +1, 0);
-    p.corners[1] = mrot * glm::vec4(+1, 0, +1, 0);
-    p.corners[2] = mrot * glm::vec4(+1, 0, -1, 0);
-    p.corners[3] = mrot * glm::vec4(-1, 0, -1, 0);
-  }
+  p.dir = glm::normalize(dir);
+  p.down = glm::vec3(0, -1.0f, 0);
+  p.speed = p.dir * spd * (1.0f - var * misc::frand());
 
   p.life = 0;
-  p.maxlife = sys->lifespan.getValue(anim, time, animtime);
+  p.maxlife = sys->lifespan.getValue(anim, time, animtime)
+            + sys->lifespan_vary * misc::randfloat(-1.0f, 1.0f);
+  p.size = glm::vec2(1.0f, 1.0f);
+  p.color = glm::vec4(1.0f);
 
   p.origin = p.pos;
 
@@ -682,100 +604,35 @@ Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int ti
 Particle SphereParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2)
 {
   Particle p;
+
+  // area width = outer radius, length = inner radius; elevation/azimuth signed
+  // (CSphereParticleEmitter::CreateParticle @ 0x981950)
+  float radius_outer = w;
+  float radius_inner = std::min(l, radius_outer);
+  float radius = radius_inner + (radius_outer - radius_inner) * misc::frand();
+
+  float elev = misc::randfloat(-spr, spr);
+  float azim = misc::randfloat(-spr2, spr2);
+  glm::vec3 normal(cosf(elev) * cosf(azim), sinf(elev), cosf(elev) * sinf(azim));
+
+  p.pos = sys->parent->mat * glm::vec4(sys->pos + normal * radius, 1);
+
   glm::vec3 dir;
-  float radius;
-
-  radius = misc::randfloat(0, 1);
-
-  // Old method
-  //float t = misc::randfloat(0,2*math::constants::pi);
-
-  // New
-  // Spread should never be zero for sphere particles ?
-  math::radians t (0);
-  if (spr == 0)
-    t._ = misc::randfloat(-glm::pi<float>(), glm::pi<float>());
+  if (sys->flags & 0x100)
+    dir = sys->parent->mrot * glm::vec4(0, 1, 0, 0);
   else
-    t._ = misc::randfloat(-spr, spr);
+    dir = sys->parent->mrot * glm::vec4(normal, 0);
 
-  //Spread Calculation
-  auto mrot =  sys->parent->mrot*CalcSpreadMatrix(spr * 2, spr2 * 2, w, l);
-
-  // New
-  // Length should never technically be zero ?
-  //if (l==0)
-  //  l = w;
-
-  // New method
-  // glm::vec3 bdir(w*math::cos(t), 0.0f, l*math::sin(t));
-  // --
-
-  //! \todo fix shpere emitters to work properly
-  /* // Old Method
-  //glm::vec3 bdir(l*math::cos(t), 0, w*math::sin(t));
-  //glm::vec3 bdir(0, w*math::cos(t), l*math::sin(t));
-
-
-  float theta_range = sys->spread.getValue(anim, time, animtime);
-  float theta = -0.5f* theta_range + misc::randfloat(0, theta_range);
-  glm::vec3 bdir(0, l*math::cos(theta), w*math::sin(theta));
-
-  float phi_range = sys->lat.getValue(anim, time, animtime);
-  float phi = misc::randfloat(0, phi_range);
-  rotate(0,0, &bdir.z, &bdir.x, phi);
-  */
-
-  if (sys->flags == 57 || sys->flags == 313) { // Faith Halo
-    glm::vec3 bdir(w*glm::cos(t._)*1.6f, 0.0f, l*glm::sin(t._)*1.6f);
-
-    p.pos = sys->pos + bdir;
-    p.pos = sys->parent->mat * glm::vec4(p.pos,0);
-
-    if (glm::length(bdir) * glm::length(bdir) == 0)
-      p.speed = glm::vec3(0, 0, 0);
-    else {
-      dir = sys->parent->mrot * glm::vec4((glm::normalize(bdir)),0);//mrot * glm::vec3(0, 1.0f,0);
-      p.speed = glm::normalize(dir) * spd * (1.0f + misc::randfloat(-var, var));   // ?
-    }
-
-  }
-  else {
-    glm::vec3 bdir;
-    float temp;
-
-    bdir = mrot * glm::vec4(0, 1, 0, 0) * radius;
-    temp = bdir.z;
-    bdir.z = bdir.y;
-    bdir.y = temp;
-
-    p.pos = sys->parent->mat * glm::vec4(sys->pos,0) + glm::vec4(bdir,0);
-
-
-    //p.pos = sys->pos + bdir;
-    //p.pos = sys->parent->mat * p.pos;
-
-
-    if (!(glm::length(bdir) * glm::length(bdir)) && !(sys->flags & 0x100))
-    {
-      p.speed = glm::vec3(0, 0, 0);
-      dir = sys->parent->mrot * glm::vec4(0, 1, 0, 0);
-    }
-    else
-    {
-      if (sys->flags & 0x100)
-        dir = sys->parent->mrot * glm::vec4(0, 1, 0, 0);
-      else
-        dir = glm::normalize(bdir);
-
-      p.speed = glm::normalize(dir) * spd * (1.0f + misc::randfloat(-var, var));   // ?
-    }
-  }
-
-  p.dir = glm::normalize(dir);//mrot * glm::vec3(0, 1.0f,0);
+  float dlen = glm::length(dir);
+  p.dir = dlen > 1e-6f ? dir / dlen : glm::vec3(0, 1, 0);
   p.down = glm::vec3(0, -1.0f, 0);
+  p.speed = p.dir * spd * (1.0f - var * misc::frand());
 
   p.life = 0;
-  p.maxlife = sys->lifespan.getValue(anim, time, animtime);
+  p.maxlife = sys->lifespan.getValue(anim, time, animtime)
+            + sys->lifespan_vary * misc::randfloat(-1.0f, 1.0f);
+  p.size = glm::vec2(1.0f, 1.0f);
+  p.color = glm::vec4(1.0f);
 
   p.origin = p.pos;
 
@@ -922,6 +779,11 @@ void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
                         , int instances_count
                         )
 {
+  if (segs.size() < 2 || _texture_ids.empty() || _texture_ids[0] >= model->_textures.size())
+  {
+    return;
+  }
+
   if (!_uploaded)
   {
     upload();
@@ -931,10 +793,14 @@ void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
   std::vector<glm::vec3> vertices;
   std::vector<glm::vec2> texcoords;
 
-  //model->_textures[_texture_ids[0]]->bind();
+  auto& texture = model->_textures[_texture_ids[0]];
+  texture->upload();
+  gl.activeTexture(GL_TEXTURE0);
+  gl.bindTexture(GL_TEXTURE_2D_ARRAY, texture->texture_array());
+  shader.uniform("tex_index", texture->array_index());
 
   gl.enable(GL_BLEND);
-  
+
   shader.uniform("color", tcolor);
 
   std::uint16_t indice = 0;
@@ -967,14 +833,15 @@ void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
     add_quad_indices(indices, indice);
   }
 
-  if (segs.size() > 1) 
+  if (segs.size() > 1)
   {
     // last segment...?
     --it;
+    float t = it->len0 > 0.f ? it->len / it->len0 : 0.f;
     texcoords.emplace_back(1, 0);
-    vertices.push_back(it->pos + tabove * it->up + (it->len / it->len0) * it->back);
+    vertices.push_back(it->pos + tabove * it->up + t * it->back);
     texcoords.emplace_back(1, 1);
-    vertices.push_back(it->pos - tbelow * it->up + (it->len / it->len0) * it->back);
+    vertices.push_back(it->pos - tbelow * it->up + t * it->back);
   }
 
   gl.bufferData<GL_ARRAY_BUFFER, glm::vec3>(_vertices_vbo, vertices, GL_STREAM_DRAW);

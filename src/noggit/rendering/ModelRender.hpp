@@ -130,6 +130,8 @@ namespace Noggit::Rendering
         , bool animate
         , bool draw_fake_geometry_box
         , bool draw_animation_box
+        , bool draw_particles
+        , std::unordered_map<Model*, std::size_t>& models_with_particles
     );
 
     void drawParticles(glm::mat4x4 const& model_view

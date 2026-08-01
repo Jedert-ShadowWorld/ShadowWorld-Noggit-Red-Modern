@@ -1318,11 +1318,7 @@ selection_result World::intersect (glm::mat4x4 const& model_view
 void World::update_models_emitters(float dt)
 {
   ZoneScoped;
-  while (dt > 0.1f)
-  {
-    ModelManager::updateEmitters(0.1f);
-    dt -= 0.1f;
-  }
+  // dt is ignored: ModelManager self-clocks so multiple views can tick safely
   ModelManager::updateEmitters(dt);
 }
 

@@ -1019,6 +1019,8 @@ void WorldRender::draw (glm::mat4x4 const& model_view
                 , render_settings.draw_model_animations
                 , render_settings.editing_mode == editing_mode::object
                 , draw_animated_boxes
+                , render_settings.draw_model_animations && !render_settings.minimap_render
+                , model_with_particles
             );
             _world->_n_rendered_objects += pair.second.size();
           }
@@ -1196,43 +1198,38 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       water_shader.uniform("use_transform", 1);
     }
   }
-  /*
-  // model particles
-  if (draw_model_animations && !model_with_particles.empty())
+  if (render_settings.draw_model_animations && !model_with_particles.empty())
   {
     OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
     OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
 
-    OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
-
-    particles_shader.uniform("model_view_projection", mvp);
-    OpenGL::texture::set_active_texture(0);
-
-    for (auto& it : model_with_particles)
     {
-      it.first->draw_particles(model_view, particles_shader, it.second);
+      OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
+
+      particles_shader.uniform("model_view_projection", mvp);
+
+      for (auto& it : model_with_particles)
+      {
+        it.first->renderer()->drawParticles(model_view, particles_shader, it.second);
+      }
     }
-  }
 
-
-  if (draw_model_animations && !model_with_particles.empty())
-  {
-    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
-    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
-
-    OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
-
-    ribbon_shader.uniform("model_view_projection", mvp);
-
-    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
-
-    for (auto& it : model_with_particles)
     {
-      it.first->draw_ribbons(ribbon_shader, it.second);
-    }
-  }
+      OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
 
-   */
+      ribbon_shader.uniform("model_view_projection", mvp);
+
+      gl.enable(GL_BLEND);
+      gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+
+      for (auto& it : model_with_particles)
+      {
+        it.first->renderer()->drawRibbons(ribbon_shader, it.second);
+      }
+    }
+
+    gl.depthMask(GL_TRUE);
+  }
 
   gl.enable(GL_BLEND);
   gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1673,7 +1670,6 @@ void WorldRender::upload()
     m2_shader_instanced.uniform("tex2", 2);
   }
 
-  /*
   {
     OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
     particles_shader.uniform("tex", 0);
@@ -1683,8 +1679,6 @@ void WorldRender::upload()
     OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
     ribbon_shader.uniform("tex", 0);
   }
-
-   */
 
   {
     OpenGL::Scoped::use_program liquid_render {*_liquid_program.get()};

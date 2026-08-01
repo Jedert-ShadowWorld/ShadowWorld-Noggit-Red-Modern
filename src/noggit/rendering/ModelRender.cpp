@@ -170,6 +170,8 @@ void ModelRender::draw(glm::mat4x4 const& model_view
     , bool animate
     , bool draw_fake_geometry_box
     , bool draw_animation_box
+    , bool draw_particles
+    , std::unordered_map<Model*, std::size_t>& models_with_particles
 )
 {
   ZoneScopedN(NOGGIT_CURRENT_FUNCTION);
@@ -222,12 +224,10 @@ void ModelRender::draw(glm::mat4x4 const& model_view
       model_boxes_to_draw.emplace(_model, instances.size());
     }
 
-    /*
-    if (draw_particles && (!_particles.empty() || !_ribbons.empty()))
+    if (draw_particles && (!_model->_particles.empty() || !_model->_ribbons.empty()))
     {
-      models_with_particles.emplace(this, n_visible_instances);
+      models_with_particles.emplace(_model, instances.size());
     }
-     */
 
     OpenGL::Scoped::vao_binder const _ (_vao);
 
