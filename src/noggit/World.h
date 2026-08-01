@@ -82,8 +82,6 @@ public:
 
   SceneObject* getObjectInstance(std::uint32_t uid);
 
-  void update_models_emitters(float dt);
-
   unsigned int getAreaID (glm::vec3 const&);
   void setAreaID(glm::vec3 const& pos, int id, bool adt,  float radius = -1.0f);
 

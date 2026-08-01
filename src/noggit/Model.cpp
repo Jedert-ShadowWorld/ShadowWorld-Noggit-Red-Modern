@@ -1033,18 +1033,45 @@ void Model::lightsOff(OpenGL::light lbase)
 }
 
 
-void Model::updateEmitters(float dt)
+bool Model::has_emitters() const
 {
-  if (finished)
+  return !_particles.empty() || !_ribbons.empty();
+}
+
+void Model::updateEmitters(float dt, glm::mat4x4 const& instance_mat, ModelEmitterStates& states)
+{
+  if (!finished)
   {
-    for (auto& particle : _particles)
+    return;
+  }
+
+  if (states.particles.size() != _particles.size())
+  {
+    states.particles.resize(_particles.size());
+  }
+
+  if (states.ribbons.size() != _ribbons.size())
+  {
+    states.ribbons.resize(_ribbons.size());
+  }
+
+  // visibility-gated ticking: instances re-entering view get no catch-up
+  // beyond a second, and big steps are cut into 0.1s substeps for stability
+  dt = std::min(dt, 1.0f);
+
+  while (dt > 0.0f)
+  {
+    float step = std::min(dt, 0.1f);
+    dt -= step;
+
+    for (std::size_t i = 0; i < _particles.size(); ++i)
     {
-      particle.update (dt);
+      _particles[i].update(step, instance_mat, states.particles[i]);
     }
 
-    for (auto& ribbon : _ribbons)
+    for (std::size_t i = 0; i < _ribbons.size(); ++i)
     {
-      ribbon.update (dt);
+      _ribbons[i].update(step, instance_mat, states.ribbons[i]);
     }
   }
 }

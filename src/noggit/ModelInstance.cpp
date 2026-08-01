@@ -43,6 +43,7 @@ ModelInstance::ModelInstance(BlizzardArchive::Listfile::FileKey const& file_key
 ModelInstance::ModelInstance(ModelInstance&& other) noexcept
   : SceneObject(other._type, other._context)
   , model(std::move(other.model))
+  , emitter_states(std::move(other.emitter_states))
   , light_color(other.light_color)
   , size_cat(other.size_cat)
   , _need_recalc_extents(other._need_recalc_extents)
@@ -60,6 +61,7 @@ ModelInstance::ModelInstance(ModelInstance&& other) noexcept
 ModelInstance& ModelInstance::operator= (ModelInstance&& other) noexcept
 {
   std::swap(model, other.model);
+  std::swap(emitter_states, other.emitter_states);
   std::swap(pos, other.pos);
   std::swap(dir, other.dir);
   std::swap(light_color, other.light_color);
@@ -73,6 +75,14 @@ ModelInstance& ModelInstance::operator= (ModelInstance&& other) noexcept
   return *this;
 }
 
+
+void ModelInstance::updateEmitters(float dt)
+{
+  if (model->finishedLoading() && model->has_emitters())
+  {
+    model->updateEmitters(dt, transformMatrix(), emitter_states);
+  }
+}
 
 void ModelInstance::draw_box (glm::mat4x4 const& model_view
                              , glm::mat4x4 const& projection

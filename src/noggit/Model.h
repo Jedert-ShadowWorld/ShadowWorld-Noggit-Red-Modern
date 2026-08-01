@@ -172,7 +172,12 @@ public:
     , bool first_occurence
     , bool only_opaque_tris);
 
-  void updateEmitters(float dt);
+  // advances one placement's emitter state in world space; states is lazily
+  // sized against this model's emitter lists
+  void updateEmitters(float dt, glm::mat4x4 const& instance_mat, ModelEmitterStates& states);
+
+  [[nodiscard]]
+  bool has_emitters() const;
 
   // the model loaded but its .skin didn't: the mesh is invisible
   [[nodiscard]]

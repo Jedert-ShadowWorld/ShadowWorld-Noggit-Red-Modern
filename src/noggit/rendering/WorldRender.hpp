@@ -15,6 +15,7 @@
 
 #include <noggit/rendering/Primitives.hpp>
 
+#include <chrono>
 #include <memory>
 
 namespace OpenGL
@@ -130,6 +131,9 @@ namespace Noggit::Rendering
 
     World* _world;
     float _cull_distance;
+
+    // clock for the per-instance particle/ribbon sims (real elapsed time)
+    std::chrono::steady_clock::time_point _last_fx_update = std::chrono::steady_clock::now();
 
     // shaders
     std::unique_ptr<OpenGL::program> _mcnk_program;;

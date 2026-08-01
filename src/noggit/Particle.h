@@ -126,19 +126,31 @@ class ParticleEmitter {
 public:
   explicit ParticleEmitter() {}
   virtual ~ParticleEmitter() {}
-  virtual Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs) = 0;
+  virtual Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs, glm::mat4x4 const& emit_mat, glm::mat4x4 const& emit_rot) = 0;
 };
 
 class PlaneParticleEmitter : public ParticleEmitter {
 public:
   explicit PlaneParticleEmitter() {}
-  Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs);
+  Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs, glm::mat4x4 const& emit_mat, glm::mat4x4 const& emit_rot);
 };
 
 class SphereParticleEmitter : public ParticleEmitter {
 public:
   explicit SphereParticleEmitter() {}
-  Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs);
+  Particle newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs, glm::mat4x4 const& emit_mat, glm::mat4x4 const& emit_rot);
+};
+
+// mutable emitter state owned by a single placement: the ParticleSystem /
+// RibbonEmitter objects in the shared Model hold only the immutable
+// definition (tracks, load-time params), each ModelInstance sims its own
+// world-space copy of this state (client: one CParticleEmitter2 per CM2Model)
+struct ParticleEmitterInstance
+{
+  ParticleList particles;
+  float rem = 0.0f;
+  glm::vec3 prev_emit_pos = glm::vec3(0.0f);
+  bool prev_emit_valid = false;
 };
 
 struct TexCoordSet {
@@ -168,11 +180,8 @@ class ParticleSystem
   float wind_time;
   bool follow;      // FollowPosition: particles inherit a fraction of emitter movement
   float follow_slope, follow_intercept;
-  glm::vec3 prev_emit_pos;
-  bool prev_emit_valid;
   glm::vec3 pos;
   uint16_t _texture_id;
-  ParticleList particles;
   int blend, order, type;
   int manim, mtime;
   int manimtime;
@@ -180,7 +189,6 @@ class ParticleSystem
   std::vector<TexCoordSet> tiles;
   void initTile(glm::vec2 *tc, int num);
 
-  float rem;
   //bool transform;
 
   // unknown parameters omitted for now ...
@@ -198,13 +206,12 @@ public:
   ParticleSystem& operator= (ParticleSystem const&) = delete;
   ParticleSystem& operator= (ParticleSystem&&) = delete;
 
-  void update(float dt);
+  void update(float dt, glm::mat4x4 const& instance_mat, ParticleEmitterInstance& state);
 
   void setup(int anim, int time, int animtime);
   void draw( glm::mat4x4 const& model_view
            , OpenGL::Scoped::use_program& shader
-           , GLuint const& transform_vbo
-           , int instances_count
+           , std::vector<ParticleEmitterInstance const*> const& states
            );
 
   friend class PlaneParticleEmitter;
@@ -244,6 +251,33 @@ struct RibbonEdge
   {}
 };
 
+// per-placement ribbon state, same ownership model as ParticleEmitterInstance
+struct RibbonEmitterInstance
+{
+  std::list<RibbonEdge> edges; // front = newest
+  float accum = 0.0f;
+};
+
+// all per-placement emitter state for one ModelInstance; sized lazily against
+// the model's emitter lists once it has loaded. Copies deliberately start a
+// fresh sim instead of sharing the source's particles.
+struct ModelEmitterStates
+{
+  std::vector<ParticleEmitterInstance> particles;
+  std::vector<RibbonEmitterInstance> ribbons;
+
+  ModelEmitterStates() = default;
+  ModelEmitterStates(ModelEmitterStates const&) {}
+  ModelEmitterStates& operator=(ModelEmitterStates const&)
+  {
+    particles.clear();
+    ribbons.clear();
+    return *this;
+  }
+  ModelEmitterStates(ModelEmitterStates&&) = default;
+  ModelEmitterStates& operator=(ModelEmitterStates&&) = default;
+};
+
 class RibbonEmitter
 {
   Model *model;
@@ -267,15 +301,12 @@ class RibbonEmitter
   int rows, cols;
   std::size_t max_edges;
 
-  float accum;
   glm::vec4 tcolor;
   int cur_tile;
   int blend;
 
   std::vector<uint16_t> _texture_ids;
   std::vector<uint16_t> _material_ids;
-
-  std::list<RibbonEdge> edges; // front = newest
 
 public:
   RibbonEmitter(Model*, const BlizzardArchive::ClientFile &f, ModelRibbonEmitterDef const& mta, int *globals
@@ -287,10 +318,9 @@ public:
   RibbonEmitter& operator= (RibbonEmitter&&) = delete;
 
   void setup(int anim, int time, int animtime);
-  void update(float dt);
+  void update(float dt, glm::mat4x4 const& instance_mat, RibbonEmitterInstance& state);
   void draw( OpenGL::Scoped::use_program& shader
-           , GLuint const& transform_vbo
-           , int instances_count
+           , std::vector<RibbonEmitterInstance const*> const& states
            );
 
   void unload();

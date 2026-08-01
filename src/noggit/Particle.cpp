@@ -9,6 +9,7 @@
 #include <opengl/shader.hpp>
 #include <ClientFile.hpp>
 #include <glm/vec3.hpp>
+#include <glm/mat3x3.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -81,7 +82,6 @@ ParticleSystem::ParticleSystem(Model* model_
   , wind (fixCoordSystem(glm::vec3(mta.p.Rot2[2], mta.p.Trans[0], mta.p.Trans[1])))
   , wind_time (mta.p.Trans[2])
   , follow ((mta.flags & 0x4000) != 0)
-  , prev_emit_valid (false)
   , pos (fixCoordSystem(mta.pos))
   , _texture_id (mta.texture)
   , blend (mta.blend)
@@ -92,7 +92,6 @@ ParticleSystem::ParticleSystem(Model* model_
   , manimtime (0)
   , rows (std::max<int>(1, mta.rows))
   , cols (std::max<int>(1, mta.cols))
-  , rem(0)
   , parent (&model->bones[mta.bone])
   , flags(mta.flags)
   , tofs (misc::frand())
@@ -180,11 +179,8 @@ ParticleSystem::ParticleSystem(ParticleSystem const& other)
   , follow(other.follow)
   , follow_slope(other.follow_slope)
   , follow_intercept(other.follow_intercept)
-  , prev_emit_pos(other.prev_emit_pos)
-  , prev_emit_valid(other.prev_emit_valid)
   , pos(other.pos)
   , _texture_id(other._texture_id)
-  , particles(other.particles)
   , blend(other.blend)
   , order(other.order)
   , type(other.type)
@@ -194,7 +190,6 @@ ParticleSystem::ParticleSystem(ParticleSystem const& other)
   , rows(other.rows)
   , cols(other.cols)
   , tiles(other.tiles)
-  , rem(other.rem)
   , parent(other.parent)
   , flags(other.flags)
   , tofs(other.tofs)
@@ -243,11 +238,8 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , follow(other.follow)
   , follow_slope(other.follow_slope)
   , follow_intercept(other.follow_intercept)
-  , prev_emit_pos(other.prev_emit_pos)
-  , prev_emit_valid(other.prev_emit_valid)
   , pos(other.pos)
   , _texture_id(other._texture_id)
-  , particles(other.particles)
   , blend(other.blend)
   , order(other.order)
   , type(other.type)
@@ -257,7 +249,6 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , rows(other.rows)
   , cols(other.cols)
   , tiles(other.tiles)
-  , rem(other.rem)
   , parent(other.parent)
   , flags(other.flags)
   , tofs(other.tofs)
@@ -290,9 +281,15 @@ void ParticleSystem::initTile(glm::vec2 *tc, int num)
 }
 
 
-void ParticleSystem::update(float dt)
+void ParticleSystem::update(float dt, glm::mat4x4 const& instance_mat, ParticleEmitterInstance& state)
 {
   float grav = gravity.getValue(manim, mtime, manimtime);
+
+  // world-space emission frame for this placement: instance transform on top
+  // of the animated bone. Directions only pick up the rotation part; the
+  // uniform placement scale washes out in the normalize.
+  glm::mat4x4 emit_mat = instance_mat * parent->mat;
+  glm::mat4x4 emit_rot = glm::mat4x4(glm::mat3(instance_mat)) * parent->mrot;
 
   // FollowPosition: the emitter's frame movement, scaled by the speed fit,
   // is picked up by every particle past its spawn frame (MoveParticle
@@ -300,17 +297,19 @@ void ParticleSystem::update(float dt)
   glm::vec3 follow_delta(0.0f);
   if (follow && dt > 0.0f)
   {
-    glm::vec3 emit_pos = glm::vec3(parent->mat * glm::vec4(pos, 1.0f));
-    if (prev_emit_valid)
+    glm::vec3 emit_pos = glm::vec3(emit_mat * glm::vec4(pos, 1.0f));
+    if (state.prev_emit_valid)
     {
-      glm::vec3 dp = emit_pos - prev_emit_pos;
+      glm::vec3 dp = emit_pos - state.prev_emit_pos;
       float emit_speed = glm::length(dp) / dt;
       float factor = std::clamp(emit_speed * follow_slope + follow_intercept, 0.0f, 1.0f);
       follow_delta = dp * factor;
     }
-    prev_emit_pos = emit_pos;
-    prev_emit_valid = true;
+    state.prev_emit_pos = emit_pos;
+    state.prev_emit_valid = true;
   }
+
+  ParticleList& particles = state.particles;
 
   if (emitter)
   {
@@ -323,9 +322,9 @@ void ParticleSystem::update(float dt)
       // per-tick rate jitter (CParticleEmitter2::Update: rate + vary * U[-1,1])
       float frate = std::max(0.0f, rate.getValue(manim, mtime, manimtime)
                                    + rate_vary * misc::randfloat(-1.0f, 1.0f));
-      float ftospawn = frate * dt + rem;
+      float ftospawn = frate * dt + state.rem;
       int tospawn = static_cast<int>(ftospawn + 0.5f);
-      rem = ftospawn - static_cast<float>(tospawn);
+      state.rem = ftospawn - static_cast<float>(tospawn);
 
       if (particles.size() + static_cast<std::size_t>(tospawn) > MAX_PARTICLES)
         tospawn = static_cast<int>(MAX_PARTICLES - particles.size());
@@ -342,10 +341,10 @@ void ParticleSystem::update(float dt)
 
         // InheritBoneScale (disk flag 0x20 -> runtime 0x400): sprite size scales
         // with the emission frame's world scale (CParticleEmitter2::BuildVertex)
-        float bone_scale = (flags & 0x20) ? glm::length(glm::vec3(parent->mat[0])) : 1.0f;
+        float bone_scale = (flags & 0x20) ? glm::length(glm::vec3(emit_mat[0])) : 1.0f;
 
         for (int i = 0; i<tospawn; ++i) {
-          Particle p = emitter->newParticle(this, manim, mtime, manimtime, w, l, spd, var, spr, spr2, zs);
+          Particle p = emitter->newParticle(this, manim, mtime, manimtime, w, l, spd, var, spr, spr2, zs, emit_mat, emit_rot);
           p.life = misc::frand() * dt;
 
           p.spin_angle = base_spin + base_spin_vary * misc::randfloat(-1.0f, 1.0f);
@@ -413,11 +412,25 @@ void ParticleSystem::setup(int anim, int time, int animtime)
 
 void ParticleSystem::draw( glm::mat4x4 const& model_view
                          , OpenGL::Scoped::use_program& shader
-                         , GLuint const& transform_vbo
-                         , int instances_count
+                         , std::vector<ParticleEmitterInstance const*> const& states
 )
 {
-  if (particles.empty() || (!render_head && !render_tail) || _texture_id >= model->_textures.size())
+  if ((!render_head && !render_tail) || _texture_id >= model->_textures.size())
+  {
+    return;
+  }
+
+  bool any_particles = false;
+  for (auto const* state : states)
+  {
+    if (!state->particles.empty())
+    {
+      any_particles = true;
+      break;
+    }
+  }
+
+  if (!any_particles)
   {
     return;
   }
@@ -503,132 +516,150 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
     start += 4;
   });
 
-  std::size_t pi = 0;
-  for (ParticleList::iterator it = particles.begin(); it != particles.end(); ++it, ++pi)
+  // one concatenated batch across every visible placement; the particle slot
+  // index (twinkle noise / parity flip) restarts per placement like the
+  // client's per-emitter-instance slots
+  bool batch_full = false;
+  for (auto const* state : states)
   {
-    if (it->tile >= tiles.size() || vertices.size() + 8 > 65535)
+    std::size_t pi = 0;
+    for (ParticleList::const_iterator it = state->particles.begin(); it != state->particles.end(); ++it, ++pi)
+    {
+      if (it->tile >= tiles.size())
+      {
+        continue;
+      }
+
+      if (vertices.size() + 8 > 65535)
+      {
+        batch_full = true;
+        break;
+      }
+
+      TexCoordSet const& tc = tiles[it->tile];
+
+      // twinkle (CParticleEmitter2::BuildVertex prologue): a noise-table sample
+      // indexed by particle slot + age*speed scales the quad, and twinklePercent
+      // below 1 culls particles whose sample exceeds it. The common case
+      // (percent >= 1, min == max) skips the sample and reduces to min.
+      float twinkle = twinkle_base;
+      if (twinkle_percent < 1.0f || twinkle_range != 0.0f)
+      {
+        int frame = static_cast<int>(twinkle_speed * it->life);
+        float sample = TWINKLE_TABLE[(pi + static_cast<std::size_t>(frame)) & 0x7F];
+        if (twinkle_percent < 1.0f && twinkle_percent < sample)
+        {
+          continue;
+        }
+        twinkle = sample * twinkle_range + twinkle_base;
+      }
+
+      float const sx = it->size.x * it->scale_mul.x * twinkle;
+      float const sy = it->size.y * it->scale_mul.y * twinkle;
+
+      if (render_head)
+      {
+        glm::vec3 right = vRight;
+        glm::vec3 up = vUp;
+
+        // VelocityOrient (flag 0x4): head's long axis follows screen-space
+        // velocity, falling back to the plain billboard when the projection is
+        // too short (CParticleEmitter2::BuildVertex HEAD-1, threshold 1/1296)
+        bool velocity_basis = false;
+        if (flags & 0x4)
+        {
+          float vx = glm::dot(vRight, -it->speed);
+          float vy = glm::dot(vUp, -it->speed);
+          float xy_len_sq = vx * vx + vy * vy;
+          if (xy_len_sq > 1.0f / 1296.0f)
+          {
+            float inv = 1.0f / std::sqrt(xy_len_sq);
+            vx *= inv;
+            vy *= inv;
+            right = vx * vRight + vy * vUp;
+            up = -vy * vRight + vx * vUp;
+            velocity_basis = true;
+          }
+        }
+
+        if (!velocity_basis)
+        {
+          // tumble (flag 0x1000) recomputes the angle from age with the base
+          // values instead of the integrated per-particle spin; flag 0x200 flips
+          // the sign for every other particle (BuildVertex parity flip)
+          float angle = tumble ? it->life * spin_speed + base_spin : it->spin_angle;
+          if ((flags & 0x200) && (pi & 1))
+          {
+            angle = -angle;
+          }
+          if (angle != 0.0f)
+          {
+            float c = std::cos(angle);
+            float s = std::sin(angle);
+            right = vRight * c + vUp * s;
+            up = vUp * c - vRight * s;
+          }
+        }
+
+        vertices.insert(vertices.end(), 4, it->pos);
+        offsets.push_back(-(right * sx + up * sy));
+        offsets.push_back(right * sx - up * sy);
+        offsets.push_back(right * sx + up * sy);
+        offsets.push_back(-(right * sx - up * sy));
+
+        for (int i = 0; i < 4; ++i)
+        {
+          texcoords.push_back(tc.tc[i]);
+          colors_data.push_back(it->color);
+        }
+
+        add_quad_indices(indices, indice);
+      }
+
+      if (render_tail)
+      {
+        float vlen = glm::length(it->speed);
+
+        if (vlen > 1e-4f)
+        {
+          glm::vec3 axis = it->speed / vlen;
+          glm::vec3 tail_pos = it->pos - axis * (tail_length * vlen);
+          glm::vec3 perp = glm::cross(axis, vDir);
+          float plen = glm::length(perp);
+          perp = plen > 1e-4f ? perp / plen : vRight;
+
+          vertices.push_back(it->pos + perp * sx);
+          vertices.push_back(it->pos - perp * sx);
+          vertices.push_back(tail_pos - perp * sx);
+          vertices.push_back(tail_pos + perp * sx);
+          offsets.insert(offsets.end(), 4, glm::vec3(0.f));
+        }
+        else if (!render_head)
+        {
+          vertices.insert(vertices.end(), 4, it->pos);
+          offsets.push_back(-(vRight * sx + vUp * sy));
+          offsets.push_back(vRight * sx - vUp * sy);
+          offsets.push_back(vRight * sx + vUp * sy);
+          offsets.push_back(-(vRight * sx - vUp * sy));
+        }
+        else
+        {
+          continue;
+        }
+
+        for (int i = 0; i < 4; ++i)
+        {
+          texcoords.push_back(tc.tc[i]);
+          colors_data.push_back(it->color);
+        }
+
+        add_quad_indices(indices, indice);
+      }
+    }
+
+    if (batch_full)
     {
       break;
-    }
-
-    TexCoordSet const& tc = tiles[it->tile];
-
-    // twinkle (CParticleEmitter2::BuildVertex prologue): a noise-table sample
-    // indexed by particle slot + age*speed scales the quad, and twinklePercent
-    // below 1 culls particles whose sample exceeds it. The common case
-    // (percent >= 1, min == max) skips the sample and reduces to min.
-    float twinkle = twinkle_base;
-    if (twinkle_percent < 1.0f || twinkle_range != 0.0f)
-    {
-      int frame = static_cast<int>(twinkle_speed * it->life);
-      float sample = TWINKLE_TABLE[(pi + static_cast<std::size_t>(frame)) & 0x7F];
-      if (twinkle_percent < 1.0f && twinkle_percent < sample)
-      {
-        continue;
-      }
-      twinkle = sample * twinkle_range + twinkle_base;
-    }
-
-    float const sx = it->size.x * it->scale_mul.x * twinkle;
-    float const sy = it->size.y * it->scale_mul.y * twinkle;
-
-    if (render_head)
-    {
-      glm::vec3 right = vRight;
-      glm::vec3 up = vUp;
-
-      // VelocityOrient (flag 0x4): head's long axis follows screen-space
-      // velocity, falling back to the plain billboard when the projection is
-      // too short (CParticleEmitter2::BuildVertex HEAD-1, threshold 1/1296)
-      bool velocity_basis = false;
-      if (flags & 0x4)
-      {
-        float vx = glm::dot(vRight, -it->speed);
-        float vy = glm::dot(vUp, -it->speed);
-        float xy_len_sq = vx * vx + vy * vy;
-        if (xy_len_sq > 1.0f / 1296.0f)
-        {
-          float inv = 1.0f / std::sqrt(xy_len_sq);
-          vx *= inv;
-          vy *= inv;
-          right = vx * vRight + vy * vUp;
-          up = -vy * vRight + vx * vUp;
-          velocity_basis = true;
-        }
-      }
-
-      if (!velocity_basis)
-      {
-        // tumble (flag 0x1000) recomputes the angle from age with the base
-        // values instead of the integrated per-particle spin; flag 0x200 flips
-        // the sign for every other particle (BuildVertex parity flip)
-        float angle = tumble ? it->life * spin_speed + base_spin : it->spin_angle;
-        if ((flags & 0x200) && (pi & 1))
-        {
-          angle = -angle;
-        }
-        if (angle != 0.0f)
-        {
-          float c = std::cos(angle);
-          float s = std::sin(angle);
-          right = vRight * c + vUp * s;
-          up = vUp * c - vRight * s;
-        }
-      }
-
-      vertices.insert(vertices.end(), 4, it->pos);
-      offsets.push_back(-(right * sx + up * sy));
-      offsets.push_back(right * sx - up * sy);
-      offsets.push_back(right * sx + up * sy);
-      offsets.push_back(-(right * sx - up * sy));
-
-      for (int i = 0; i < 4; ++i)
-      {
-        texcoords.push_back(tc.tc[i]);
-        colors_data.push_back(it->color);
-      }
-
-      add_quad_indices(indices, indice);
-    }
-
-    if (render_tail)
-    {
-      float vlen = glm::length(it->speed);
-
-      if (vlen > 1e-4f)
-      {
-        glm::vec3 axis = it->speed / vlen;
-        glm::vec3 tail_pos = it->pos - axis * (tail_length * vlen);
-        glm::vec3 perp = glm::cross(axis, vDir);
-        float plen = glm::length(perp);
-        perp = plen > 1e-4f ? perp / plen : vRight;
-
-        vertices.push_back(it->pos + perp * sx);
-        vertices.push_back(it->pos - perp * sx);
-        vertices.push_back(tail_pos - perp * sx);
-        vertices.push_back(tail_pos + perp * sx);
-        offsets.insert(offsets.end(), 4, glm::vec3(0.f));
-      }
-      else if (!render_head)
-      {
-        vertices.insert(vertices.end(), 4, it->pos);
-        offsets.push_back(-(vRight * sx + vUp * sy));
-        offsets.push_back(vRight * sx - vUp * sy);
-        offsets.push_back(vRight * sx + vUp * sy);
-        offsets.push_back(-(vRight * sx - vUp * sy));
-      }
-      else
-      {
-        continue;
-      }
-
-      for (int i = 0; i < 4; ++i)
-      {
-        texcoords.push_back(tc.tc[i]);
-        colors_data.push_back(it->color);
-      }
-
-      add_quad_indices(indices, indice);
     }
   }
 
@@ -663,13 +694,9 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
     OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const colors_binder (_colors_vbo);
     shader.attrib("color", 4, GL_FLOAT, GL_FALSE, 0, 0);
   }
-  {
-    OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder (transform_vbo);
-    shader.attrib("transform", 0, 1);
-  }
 
   OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> const indices_binder (_indices_vbo);
-  gl.drawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_SHORT, nullptr, instances_count);
+  gl.drawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_SHORT, nullptr);
 }
 
 void ParticleSystem::upload()
@@ -686,12 +713,12 @@ void ParticleSystem::unload()
   _uploaded = false;
 }
 
-Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs)
+Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs, glm::mat4x4 const& emit_mat, glm::mat4x4 const& emit_rot)
 {
   Particle p;
 
   glm::vec3 local(misc::randfloat(-0.5f, 0.5f) * w, 0, misc::randfloat(-0.5f, 0.5f) * l);
-  p.pos = sys->parent->mat * glm::vec4(sys->pos + local, 1);
+  p.pos = emit_mat * glm::vec4(sys->pos + local, 1);
 
   // velocity in spherical coords off the emitter up axis, polar/azimuth signed
   // (CPlaneParticleEmitter::CreateParticle @ 0x9815C0)
@@ -708,7 +735,7 @@ Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int ti
     if (dlen > 1e-6f)
       dir = zdir / dlen;
   }
-  dir = sys->parent->mrot * glm::vec4(dir, 0);
+  dir = emit_rot * glm::vec4(dir, 0);
 
   p.dir = glm::normalize(dir);
   p.down = glm::vec3(0, -1.0f, 0);
@@ -726,7 +753,7 @@ Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int ti
   return p;
 }
 
-Particle SphereParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs)
+Particle SphereParticleEmitter::newParticle(ParticleSystem* sys, int anim, int time, int animtime, float w, float l, float spd, float var, float spr, float spr2, float zs, glm::mat4x4 const& emit_mat, glm::mat4x4 const& emit_rot)
 {
   Particle p;
 
@@ -741,16 +768,16 @@ Particle SphereParticleEmitter::newParticle(ParticleSystem* sys, int anim, int t
   glm::vec3 normal(cosf(elev) * cosf(azim), sinf(elev), cosf(elev) * sinf(azim));
   glm::vec3 local = normal * radius;
 
-  p.pos = sys->parent->mat * glm::vec4(sys->pos + local, 1);
+  p.pos = emit_mat * glm::vec4(sys->pos + local, 1);
 
   glm::vec3 dir;
   // zSource > 0 overrides both the radial and flag-0x100 directions
   if (zs > 0.0f && glm::length(local - glm::vec3(0.0f, zs, 0.0f)) > 1e-6f)
-    dir = sys->parent->mrot * glm::vec4(glm::normalize(local - glm::vec3(0.0f, zs, 0.0f)), 0);
+    dir = emit_rot * glm::vec4(glm::normalize(local - glm::vec3(0.0f, zs, 0.0f)), 0);
   else if (sys->flags & 0x100)
-    dir = sys->parent->mrot * glm::vec4(0, 1, 0, 0);
+    dir = emit_rot * glm::vec4(0, 1, 0, 0);
   else
-    dir = sys->parent->mrot * glm::vec4(normal, 0);
+    dir = emit_rot * glm::vec4(normal, 0);
 
   float dlen = glm::length(dir);
   p.dir = dlen > 1e-6f ? dir / dlen : glm::vec3(0, 1, 0);
@@ -793,7 +820,6 @@ RibbonEmitter::RibbonEmitter(Model* model_
   , gravity (mta.gravity)
   , rows (std::max<int>(1, mta.textureRows))
   , cols (std::max<int>(1, mta.textureCols))
-  , accum (0.0f)
   , tcolor (1.0f)
   , cur_tile (0)
   , blend (4)
@@ -831,13 +857,11 @@ RibbonEmitter::RibbonEmitter(RibbonEmitter const& other)
   , rows(other.rows)
   , cols(other.cols)
   , max_edges(other.max_edges)
-  , accum(other.accum)
   , tcolor(other.tcolor)
   , cur_tile(other.cur_tile)
   , blend(other.blend)
   , _texture_ids(other._texture_ids)
   , _material_ids(other._material_ids)
-  , edges(other.edges)
   , _context(other._context)
 {
 
@@ -862,13 +886,11 @@ RibbonEmitter::RibbonEmitter(RibbonEmitter&& other)
   , rows(other.rows)
   , cols(other.cols)
   , max_edges(other.max_edges)
-  , accum(other.accum)
   , tcolor(other.tcolor)
   , cur_tile(other.cur_tile)
   , blend(other.blend)
   , _texture_ids(other._texture_ids)
   , _material_ids(other._material_ids)
-  , edges(other.edges)
   , _context(other._context)
 {
 
@@ -887,7 +909,7 @@ void RibbonEmitter::setup(int anim, int time, int animtime)
   cur_tile = tex_slot.uses(anim) ? tex_slot.getValue(anim, time, animtime) : 0;
 }
 
-void RibbonEmitter::update(float dt)
+void RibbonEmitter::update(float dt, glm::mat4x4 const& instance_mat, RibbonEmitterInstance& state)
 {
   // CRibbonEmitter::Update caps dt at the edge lifetime; with the ring sized
   // ceil(rate * lifetime) + 2 this makes overflow impossible in steady state
@@ -896,11 +918,12 @@ void RibbonEmitter::update(float dt)
   bool visible = !visibility.uses(manim) || visibility.getValue(manim, mtime, manimtime) != 0;
   if (visible)
   {
-    glm::vec3 emit_pos = parent->mat * glm::vec4(pos, 1.0f);
+    glm::mat4x4 emit_mat = instance_mat * parent->mat;
+    glm::vec3 emit_pos = emit_mat * glm::vec4(pos, 1.0f);
 
     // the client widens the strip along the bone's Y axis; that basis vector
     // is -Z in the converted coordinate system
-    glm::vec3 up = -glm::vec3(parent->mat[2]);
+    glm::vec3 up = -glm::vec3(emit_mat[2]);
     float up_len = glm::length(up);
     up = up_len > 1e-6f ? up / up_len : glm::vec3(0.0f, 1.0f, 0.0f);
 
@@ -908,34 +931,48 @@ void RibbonEmitter::update(float dt)
     float above_now = std::max(0.0f, above.getValue(manim, mtime, manimtime));
     float below_now = std::max(0.0f, below.getValue(manim, mtime, manimtime));
 
-    accum += edges_per_second * dt;
-    while (accum >= 1.0f)
+    state.accum += edges_per_second * dt;
+    while (state.accum >= 1.0f)
     {
-      accum -= 1.0f;
-      edges.emplace_front(emit_pos, up, above_now, below_now);
-      if (edges.size() > max_edges)
-        edges.pop_back();
+      state.accum -= 1.0f;
+      state.edges.emplace_front(emit_pos, up, above_now, below_now);
+      if (state.edges.size() > max_edges)
+        state.edges.pop_back();
     }
   }
 
   // closed-form gravity sag: (age*2 + dt) * gravity * dt on the vertical,
   // cumulative g*t^2 (CRibbonEmitter::Update @ 0x98035C)
-  for (auto& e : edges)
+  for (auto& e : state.edges)
   {
     e.pos.y += (e.age * 2.0f + dt) * gravity * dt;
     e.age += dt;
   }
 
-  while (!edges.empty() && edges.back().age >= edge_lifetime)
-    edges.pop_back();
+  while (!state.edges.empty() && state.edges.back().age >= edge_lifetime)
+    state.edges.pop_back();
 }
 
 void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
-                        , GLuint const& transform_vbo
-                        , int instances_count
+                        , std::vector<RibbonEmitterInstance const*> const& states
                         )
 {
-  if (edges.size() < 2 || _texture_ids.empty() || _texture_ids[0] >= model->_textures.size())
+  if (_texture_ids.empty() || _texture_ids[0] >= model->_textures.size())
+  {
+    return;
+  }
+
+  bool any_strip = false;
+  for (auto const* state : states)
+  {
+    if (state->edges.size() >= 2)
+    {
+      any_strip = true;
+      break;
+    }
+  }
+
+  if (!any_strip)
   {
     return;
   }
@@ -1010,26 +1047,43 @@ void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
   float v_top = static_cast<float>((tile / cols) % rows) * tile_h;
   float v_bot = v_top + tile_h;
 
-  for (auto it = edges.begin(); it != edges.end(); ++it)
+  // one strip per placement, concatenated into a single batch; indices never
+  // bridge two placements' strips
+  for (auto const* state : states)
   {
-    float u = base_u + (it->age / edge_lifetime) * tile_w;
+    if (state->edges.size() < 2 || vertices.size() + state->edges.size() * 2 > 65535)
+    {
+      continue;
+    }
 
-    texcoords.emplace_back(u, v_top);
-    vertices.push_back(it->pos + it->up * it->above);
-    texcoords.emplace_back(u, v_bot);
-    vertices.push_back(it->pos - it->up * it->below);
+    std::uint16_t const base_vertex = static_cast<std::uint16_t>(vertices.size());
+
+    for (auto it = state->edges.begin(); it != state->edges.end(); ++it)
+    {
+      float u = base_u + (it->age / edge_lifetime) * tile_w;
+
+      texcoords.emplace_back(u, v_top);
+      vertices.push_back(it->pos + it->up * it->above);
+      texcoords.emplace_back(u, v_bot);
+      vertices.push_back(it->pos - it->up * it->below);
+    }
+
+    for (std::uint16_t e = 0; e + 1 < static_cast<std::uint16_t>(state->edges.size()); ++e)
+    {
+      std::uint16_t base = base_vertex + e * 2;
+      indices.push_back(base + 0);
+      indices.push_back(base + 1);
+      indices.push_back(base + 2);
+
+      indices.push_back(base + 2);
+      indices.push_back(base + 1);
+      indices.push_back(base + 3);
+    }
   }
 
-  for (std::uint16_t e = 0; e + 1 < static_cast<std::uint16_t>(edges.size()); ++e)
+  if (indices.empty())
   {
-    std::uint16_t base = e * 2;
-    indices.push_back(base + 0);
-    indices.push_back(base + 1);
-    indices.push_back(base + 2);
-
-    indices.push_back(base + 2);
-    indices.push_back(base + 1);
-    indices.push_back(base + 3);
+    return;
   }
 
   gl.bufferData<GL_ARRAY_BUFFER, glm::vec3>(_vertices_vbo, vertices, GL_STREAM_DRAW);
@@ -1046,13 +1100,9 @@ void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
     OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const texcoord_binder(_texcoord_vbo);
     shader.attrib("uv", 2, GL_FLOAT, GL_FALSE, 0, 0);
   }
-  {
-    OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder(transform_vbo);
-    shader.attrib("transform", 0, 1);
-  }
 
   OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> const indices_binder(_indices_vbo);
-  gl.drawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_SHORT, nullptr, instances_count);
+  gl.drawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_SHORT, nullptr);
 }
 
 void RibbonEmitter::upload()

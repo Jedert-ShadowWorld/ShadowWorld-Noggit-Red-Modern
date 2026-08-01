@@ -50,30 +50,6 @@ void ModelManager::resetAnim()
           );
 }
 
-void ModelManager::updateEmitters(float)
-{
-  // The particle sim is shared per model file but several views (map view,
-  // asset browser, preset editor) tick it independently, so advancing by the
-  // caller's dt would run emitters N times too fast with N views open.
-  // Advance by real elapsed time instead, making extra calls per frame no-ops.
-  static auto last_update = std::chrono::steady_clock::now();
-  auto now = std::chrono::steady_clock::now();
-  float dt = std::min(std::chrono::duration<float>(now - last_update).count(), 1.0f);
-  last_update = now;
-
-  while (dt > 0.0f)
-  {
-    float step = std::min(dt, 0.1f);
-    dt -= step;
-
-    _.apply ( [&] (BlizzardArchive::Listfile::FileKey const&, Model& model)
-              {
-                model.updateEmitters (step);
-              }
-            );
-  }
-}
-
 void ModelManager::clear_hidden_models()
 {
   _.apply ( [&] (BlizzardArchive::Listfile::FileKey const&, Model& model)

@@ -1315,13 +1315,6 @@ selection_result World::intersect (glm::mat4x4 const& model_view
   return std::move(results);
 }
 
-void World::update_models_emitters(float dt)
-{
-  ZoneScoped;
-  // dt is ignored: ModelManager self-clocks so multiple views can tick safely
-  ModelManager::updateEmitters(dt);
-}
-
 unsigned int World::getAreaID (glm::vec3 const& pos)
 {
   ZoneScoped;

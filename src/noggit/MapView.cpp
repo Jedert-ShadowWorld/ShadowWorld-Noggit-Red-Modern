@@ -3230,10 +3230,7 @@ void MapView::tick (float dt)
   _world->time += this->mTimespeed * dt;
   _world->animtime += dt * 1000.0f;
 
-  if (_draw_model_animations.get())
-  {
-    _world->update_models_emitters(dt);
-  }
+  // emitters now tick per instance from the render pass
 
   if (_world->has_selection())
   {

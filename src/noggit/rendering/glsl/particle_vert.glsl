@@ -1,7 +1,6 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #version 330 core
 
-in mat4 transform;
 in vec4 position;
 in vec3 offset;
 in vec2 uv;
@@ -16,7 +15,5 @@ void main()
 {
   f_uv = uv;
   f_color = color;
-  vec4 pos = transform*position;
-  pos.xyz += offset;
-  gl_Position = model_view_projection * pos;
+  gl_Position = model_view_projection * vec4(position.xyz + offset, 1.0);
 }

@@ -11,6 +11,7 @@
 
 #include <math/frustum.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -247,7 +248,8 @@ void PreviewRenderer::draw()
 
   // draw M2
   std::unordered_map<Model*, std::size_t> model_boxes_to_draw;
-  std::unordered_map<Model*, std::size_t> model_with_particles;
+  std::unordered_map<Model*, std::vector<ModelInstance*>> model_with_particles;
+  bool const collect_fx = _draw_animated.get() && _draw_particles.get();
 
   if (_draw_models.get() && !(_model_instances.empty() && _wmo_doodads.empty()))
   {
@@ -280,6 +282,11 @@ void PreviewRenderer::draw()
       instance[0] = &model_instance;
       instance_mtx[0] = model_instance.transformMatrix();
 
+      if (collect_fx && model_instance.model->has_emitters())
+      {
+        model_with_particles[model_instance.model.get()].push_back(&model_instance);
+      }
+
       model_instance.model->renderer()->draw(
         mv
         , instance_mtx
@@ -296,18 +303,21 @@ void PreviewRenderer::draw()
         , _draw_animated.get()
         , true
         , false
-        , _draw_animated.get() && _draw_particles.get()
-        , model_with_particles
       );
     }
 
     for (auto& it : _wmo_doodads)
     {
       instance_mtx.clear();
-      
+
       for (auto& instance : it.second)
       {
         instance_mtx.push_back(instance->transformMatrix());
+
+        if (collect_fx && instance->model->finishedLoading() && instance->model->has_emitters())
+        {
+          model_with_particles[instance->model.get()].push_back(instance);
+        }
       }
 
       it.second[0]->model->renderer()->draw(
@@ -326,8 +336,6 @@ void PreviewRenderer::draw()
           , _draw_animated.get()
           , false
           , false
-          , _draw_animated.get() && _draw_particles.get()
-          , model_with_particles
       );
     }
 
@@ -360,8 +368,22 @@ void PreviewRenderer::draw()
   gl.bindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
   // model particles
+  {
+    auto const fx_now = std::chrono::steady_clock::now();
+    float const fx_dt = std::chrono::duration<float>(fx_now - _last_fx_update).count();
+    _last_fx_update = fx_now;
+
   if (_draw_animated.get() && !model_with_particles.empty())
   {
+    // per-instance FX tick (capped in updateEmitters, so no catch-up burst)
+    for (auto& it : model_with_particles)
+    {
+      for (ModelInstance* instance : it.second)
+      {
+        instance->updateEmitters(fx_dt);
+      }
+    }
+
     OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
     OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
 
@@ -393,6 +415,7 @@ void PreviewRenderer::draw()
     }
 
     gl.depthMask(GL_TRUE);
+  }
   }
 
   gl.enable(GL_BLEND);
@@ -530,22 +553,13 @@ void PreviewRenderer::setLightDirection(float y, float z)
 }
 
 
-void PreviewRenderer::update_emitters(float dt)
-{
-  // dt is ignored: ModelManager self-clocks so multiple views can tick safely
-  ModelManager::updateEmitters(dt);
-}
-
 void PreviewRenderer::tick(float dt)
 {
   dt = std::min(dt, 1.0f);
 
   _animtime += dt * 1000.0f;
 
-  if (_draw_animated.get())
-  {
-    update_emitters(dt);
-  }
+  // emitters now tick per instance from the draw pass
 }
 
 

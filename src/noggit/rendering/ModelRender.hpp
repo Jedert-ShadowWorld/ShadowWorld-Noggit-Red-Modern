@@ -130,17 +130,15 @@ namespace Noggit::Rendering
         , bool animate
         , bool draw_fake_geometry_box
         , bool draw_animation_box
-        , bool draw_particles
-        , std::unordered_map<Model*, std::size_t>& models_with_particles
     );
 
     void drawParticles(glm::mat4x4 const& model_view
         , OpenGL::Scoped::use_program& particles_shader
-        , std::size_t instance_count
+        , std::vector<ModelInstance*> const& instances
     );
 
     void drawRibbons(OpenGL::Scoped::use_program& ribbons_shader
-        , std::size_t instance_count
+        , std::vector<ModelInstance*> const& instances
     );
 
     void drawBox(OpenGL::Scoped::use_program& m2_box_shader, std::size_t box_count);

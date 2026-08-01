@@ -14,6 +14,8 @@
 #include <noggit/Misc.h>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
+
+#include <chrono>
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/World.h>
 
@@ -423,7 +425,10 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     _sphere_render.draw(mvp, _world->vertexCenter(), cursor_color, 2.f);
   }
 
-  std::unordered_map<Model*, std::size_t> model_with_particles;
+  // visible placements with emitters: their per-instance sims are ticked and
+  // drawn (one concatenated batch per emitter) after the m2 pass
+  std::unordered_map<Model*, std::vector<ModelInstance*>> model_with_particles;
+  bool const collect_fx = render_settings.draw_model_animations && !render_settings.minimap_render;
 
   tsl::robin_map<Model*, std::vector<glm::mat4x4>> models_to_draw;
   std::vector<WMOInstance*> wmos_to_draw;
@@ -487,6 +492,11 @@ void WorldRender::draw (glm::mat4x4 const& model_view
         auto& instances = models_to_draw[doodad.model.get()];
 
         instances.emplace_back(doodad.transformMatrix());
+
+        if (collect_fx && doodad.model->finishedLoading() && doodad.model->has_emitters())
+        {
+          model_with_particles[doodad.model.get()].push_back(&doodad);
+        }
       }
     }
   };
@@ -595,6 +605,11 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
           instances.emplace_back(m2_instance->transformMatrix());
           m2_instance->_rendered_last_frame = true;
+
+          if (collect_fx && m2_instance->model->has_emitters())
+          {
+            model_with_particles[m2_instance->model.get()].push_back(m2_instance);
+          }
 
 
           // if (render && !draw_models_with_box /* && !m2_instance->model->is_hidden()*/)
@@ -1019,8 +1034,6 @@ void WorldRender::draw (glm::mat4x4 const& model_view
                 , render_settings.draw_model_animations
                 , render_settings.editing_mode == editing_mode::object
                 , draw_animated_boxes
-                , render_settings.draw_model_animations && !render_settings.minimap_render
-                , model_with_particles
             );
             _world->_n_rendered_objects += pair.second.size();
           }
@@ -1198,37 +1211,54 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       water_shader.uniform("use_transform", 1);
     }
   }
-  if (render_settings.draw_model_animations && !model_with_particles.empty())
+  // per-instance FX clock: real elapsed time, advanced every frame so hidden
+  // stretches don't accumulate into a catch-up burst (capped in updateEmitters)
   {
-    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
-    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
+    auto const fx_now = std::chrono::steady_clock::now();
+    float const fx_dt = std::chrono::duration<float>(fx_now - _last_fx_update).count();
+    _last_fx_update = fx_now;
 
+    if (render_settings.draw_model_animations && !model_with_particles.empty())
     {
-      OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
-
-      particles_shader.uniform("model_view_projection", mvp);
-
+      // only instances that survived culling this frame tick their emitters
       for (auto& it : model_with_particles)
       {
-        it.first->renderer()->drawParticles(model_view, particles_shader, it.second);
+        for (ModelInstance* instance : it.second)
+        {
+          instance->updateEmitters(fx_dt);
+        }
       }
-    }
 
-    {
-      OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
+      OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
+      OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
 
-      ribbon_shader.uniform("model_view_projection", mvp);
-
-      gl.enable(GL_BLEND);
-      gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
-
-      for (auto& it : model_with_particles)
       {
-        it.first->renderer()->drawRibbons(ribbon_shader, it.second);
-      }
-    }
+        OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
 
-    gl.depthMask(GL_TRUE);
+        particles_shader.uniform("model_view_projection", mvp);
+
+        for (auto& it : model_with_particles)
+        {
+          it.first->renderer()->drawParticles(model_view, particles_shader, it.second);
+        }
+      }
+
+      {
+        OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
+
+        ribbon_shader.uniform("model_view_projection", mvp);
+
+        gl.enable(GL_BLEND);
+        gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+
+        for (auto& it : model_with_particles)
+        {
+          it.first->renderer()->drawRibbons(ribbon_shader, it.second);
+        }
+      }
+
+      gl.depthMask(GL_TRUE);
+    }
   }
 
   gl.enable(GL_BLEND);
