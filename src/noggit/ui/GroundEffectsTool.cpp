@@ -447,6 +447,11 @@ namespace Noggit
             // std::unordered_map<unsigned int, int> texture_effect_ids;
 
             MapTile* tile(_map_view->getWorld()->mapIndex.getTile(tile_index));
+            if (!tile || !tile->finishedLoading())
+            {
+                return;
+            }
+
             for (int x = 0; x < 16; x++)
             {
                 for (int y = 0; y < 16; y++)
@@ -551,7 +556,7 @@ namespace Noggit
                 // TODO : Can use id instead of count?
                 float r = modf(sin(glm::dot(glm::vec2(color_count), glm::vec2(12.9898, 78.233))) * 43758.5453, &partr);
                 float g = modf(sin(glm::dot(glm::vec2(color_count), glm::vec2(11.5591, 70.233))) * 43569.5451, &partg);
-                float b = modf(sin(glm::dot(glm::vec2(color_count), glm::vec2(13.1234, 76.234))) * 43765.5452, &partg);
+                float b = modf(sin(glm::dot(glm::vec2(color_count), glm::vec2(13.1234, 76.234))) * 43765.5452, &partb);
                 color_count++;
                 _effects_colors.push_back(glm::vec3(r, g, b));
             }
@@ -708,6 +713,10 @@ namespace Noggit
         void GroundEffectsTool::updateDoodadPreviewRender(int slot_index)
         {
             QListWidgetItem* list_item = _object_list->item(slot_index);
+            if (!list_item) // item(-1) when nothing is selected
+            {
+                return;
+            }
 
             QString filename = list_item->text();
 
@@ -771,7 +780,8 @@ namespace Noggit
 
         void GroundEffectsTool::delete_renderer()
         {
-          delete _preview_renderer;
+          // unload() nulls the pointer so the destructor doesn't free it twice
+          unload();
         }
 
         void GroundEffectsTool::showEvent(QShowEvent* event)
@@ -879,7 +889,6 @@ namespace Noggit
             catch (GroundEffectTextureDB::NotFound)
             {
                 ID = 0;
-                assert(false);
                 LogError << "Couldn't find ground effect Id : " << effect_id << "in GroundEffectTexture.dbc" << std::endl;
             }
         }

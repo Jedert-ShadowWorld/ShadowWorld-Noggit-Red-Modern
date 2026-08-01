@@ -1641,7 +1641,7 @@ void TextureSet::updateDoodadMapping()
                 uint8_t blizzard_layer_id = blizzard_mapping_readable[unit_y][unit_x];
                 uint8_t blizzard_layer_id2 = getDoodadActiveLayerIdAt(unit_x, unit_y); // make sure both work the same
                 if (blizzard_layer_id != blizzard_layer_id2)
-                    throw;
+                    LogError << "doodad mapping mismatch at unit (" << unit_x << ", " << unit_y << ")" << std::endl;
                 // bool test_doodads_enabled = local_chunk->getTextureSet()->getDoodadDisabledAt(x, y);
 
                 if (max_layer_index < blizzard_layer_id)

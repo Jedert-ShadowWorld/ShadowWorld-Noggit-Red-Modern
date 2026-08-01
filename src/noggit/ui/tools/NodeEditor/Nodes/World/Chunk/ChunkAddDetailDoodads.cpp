@@ -168,6 +168,18 @@ auto DetailDoodadMgr::genCoord(BlizzardRandomizer& randomizer, float& value) -> 
 
 void ChunkAddDetailDoodads::compute()
 {
+  // this port of the client's detail-doodad placement is unfinished: the
+  // noise table is stubbed out (wild out-of-bounds reads), part of the
+  // algorithm is missing, and it spawns permanent M2s at ground level
+  // instead of previewing. Disabled until the detail-doodad renderer exists.
+  setValidationState(NodeValidationState::Error);
+  setValidationMessage("Error: AddDetailDoodads is not implemented yet.");
+  return;
+}
+
+#if 0
+void ChunkAddDetailDoodads::compute_disabled()
+{
   assert(gGroundEffectTextureDB.getRecordCount());
   World* const world{gCurrentContext->getWorld()};
   gCurrentContext->getViewport()->makeCurrent();
@@ -345,6 +357,7 @@ void ChunkAddDetailDoodads::compute()
   _out_ports[0].out_value = std::make_shared<LogicData>(true);
   _node->onDataUpdated(0);
 }
+#endif
 
 
 NodeValidationState ChunkAddDetailDoodads::validate()
