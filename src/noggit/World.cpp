@@ -5,6 +5,7 @@
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Brush.h> // brush
 #include <noggit/ChunkWater.hpp>
+#include <noggit/DBC.h>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
@@ -1875,6 +1876,183 @@ void World::paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool 
             return true;
         }
     );
+}
+
+namespace
+{
+    // Assigns effect_id to every layer of the chunk matching the texture
+    // (empty texture matches every layer); returns whether anything changed.
+    bool apply_ground_effect_to_chunk(MapChunk* chunk, std::string const& texture, unsigned int effect_id, bool override_existing, bool register_action)
+    {
+        auto texture_set = chunk->getTextureSet();
+        bool changed = false;
+        for (int layer = 0; layer < texture_set->num(); ++layer)
+        {
+            if (!texture.empty() && texture_set->filename(layer) != texture)
+            {
+                continue;
+            }
+            unsigned int const current = texture_set->getEffectForLayer(layer);
+            if (current == effect_id)
+            {
+                continue;
+            }
+            if (!override_existing && current && current != 0xFFFFFFFF)
+            {
+                continue;
+            }
+            if (!changed && register_action)
+            {
+                NOGGIT_CUR_ACTION->registerChunkLayerInfoChange(chunk);
+            }
+            changed = true;
+            texture_set->setEffect(layer, static_cast<int>(effect_id));
+        }
+        return changed;
+    }
+}
+
+void World::paintGroundEffect(glm::vec3 const& pos, float radius, std::string const& texture, unsigned int effect_id)
+{
+    ZoneScoped;
+    for_all_chunks_in_range
+    (pos, radius
+        , [&](MapChunk* chunk)
+        {
+            return apply_ground_effect_to_chunk(chunk, texture, effect_id, true, true);
+        }
+    );
+}
+
+void World::applyGroundEffectToTileAt(glm::vec3 const& pos, std::string const& texture, unsigned int effect_id, bool override_existing)
+{
+    ZoneScoped;
+    MapTile* tile(mapIndex.getTile(pos));
+    if (!tile || !tile->finishedLoading())
+    {
+        return;
+    }
+
+    bool tile_changed = false;
+    for (int cx = 0; cx < 16; ++cx)
+    {
+        for (int cz = 0; cz < 16; ++cz)
+        {
+            if (apply_ground_effect_to_chunk(tile->getChunk(cx, cz), texture, effect_id, override_existing, true))
+            {
+                tile_changed = true;
+            }
+        }
+    }
+
+    if (tile_changed)
+    {
+        mapIndex.setChanged(tile);
+    }
+}
+
+void World::applyGroundEffectToArea(int area_id, bool whole_zone, std::string const& texture, unsigned int effect_id, bool override_existing)
+{
+    ZoneScoped;
+    for (MapTile* tile : mapIndex.loaded_tiles())
+    {
+        if (!tile->finishedLoading())
+        {
+            continue;
+        }
+
+        bool tile_changed = false;
+        for (int cx = 0; cx < 16; ++cx)
+        {
+            for (int cz = 0; cz < 16; ++cz)
+            {
+                MapChunk* chunk = tile->getChunk(cx, cz);
+
+                int chunk_area = chunk->getAreaID();
+                if (whole_zone)
+                {
+                    chunk_area = AreaDB::resolve_zone_id(chunk_area);
+                }
+                if (chunk_area != area_id)
+                {
+                    continue;
+                }
+
+                if (apply_ground_effect_to_chunk(chunk, texture, effect_id, override_existing, true))
+                {
+                    tile_changed = true;
+                }
+            }
+        }
+
+        if (tile_changed)
+        {
+            mapIndex.setChanged(tile);
+        }
+    }
+}
+
+void World::applyGroundEffectGlobal(std::string const& texture, unsigned int effect_id, bool override_existing, int area_filter, bool whole_zone)
+{
+    ZoneScoped;
+    for (size_t z = 0; z < 64; z++)
+    {
+        for (size_t x = 0; x < 64; x++)
+        {
+            TileIndex tile_index(x, z);
+
+            bool unload = !mapIndex.tileLoaded(tile_index) && !mapIndex.tileAwaitingLoading(tile_index);
+            MapTile* tile = mapIndex.loadTile(tile_index);
+
+            if (!tile)
+            {
+                continue;
+            }
+
+            tile->wait_until_loaded();
+
+            bool tile_changed = false;
+            for (int cx = 0; cx < 16; ++cx)
+            {
+                for (int cz = 0; cz < 16; ++cz)
+                {
+                    MapChunk* chunk = tile->getChunk(cx, cz);
+
+                    if (area_filter >= 0)
+                    {
+                        int chunk_area = chunk->getAreaID();
+                        if (whole_zone)
+                        {
+                            chunk_area = AreaDB::resolve_zone_id(chunk_area);
+                        }
+                        if (chunk_area != area_filter)
+                        {
+                            continue;
+                        }
+                    }
+
+                    // no undo registration: swept tiles unload again below
+                    if (apply_ground_effect_to_chunk(chunk, texture, effect_id, override_existing, false))
+                    {
+                        tile_changed = true;
+                    }
+                }
+            }
+
+            // only tiles that actually contained the texture get rewritten
+            if (tile_changed)
+            {
+                tile->saveTile(this);
+                mapIndex.markOnDisc(tile_index, true);
+                mapIndex.unsetChanged(tile_index);
+            }
+
+            if (unload)
+            {
+                mapIndex.unloadTile(tile_index);
+            }
+        }
+    }
 }
 
 void World::setHole(glm::vec3 const& pos, float radius, bool big, bool hole)

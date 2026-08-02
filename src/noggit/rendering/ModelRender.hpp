@@ -102,6 +102,9 @@ namespace Noggit::Rendering
     void upload() override;
     void unload() override;
 
+    [[nodiscard]]
+    bool uploaded() const { return _uploaded; }
+
     void draw(glm::mat4x4 const& model_view
         , ModelInstance& instance
         , OpenGL::Scoped::use_program& m2_shader

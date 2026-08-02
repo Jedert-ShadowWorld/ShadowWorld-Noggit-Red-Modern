@@ -174,23 +174,28 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
           _split_drawcall = true;
         }
       }
-      // this isn't exactly rendering but...
-      // TODO : this is extremely slow and shouldn't happen on initial texture loading, it's just read from file
-      // if (!_texture_not_loaded)
-      // {
-      //   if (flags & ChunkUpdateFlags::ALPHAMAP)
-      //   {
-      //       // recalculate doodad mapping.
-      //       // chunk->getTextureSet()->updateDoodadMapping();
-      //       // update render
-      //      setChunkGroundEffectActiveData(chunk.get());
-      //   }
-      //   else if (_require_geffect_active_texture_update)
-      //   {
-      //       // active texture render changed, just update render
-      //       setChunkGroundEffectActiveData(chunk.get());
-      //   }
-      // }
+      // ground effect active-layer overlay. loading is not an edit
+      // (doodadMappingNeedsUpdate is only set by alpha edits), so initial
+      // uploads keep the stored doodadMapping and only refresh the overlay
+      // bits; the recompute waits until the temp edit values have been
+      // applied (stroke end) so it reads the real alphamaps
+      if (!_texture_not_loaded)
+      {
+        if (flags & ChunkUpdateFlags::ALPHAMAP)
+        {
+          if (chunk->doodadMappingNeedsUpdate() && !chunk->texture_set->getTempAlphamaps())
+          {
+            chunk->texture_set->updateDoodadMapping();
+            chunk->clearDoodadMappingNeedsUpdate();
+          }
+          setChunkGroundEffectActiveData(chunk.get());
+        }
+        else if (_require_geffect_active_texture_update)
+        {
+          // active texture changed, just refresh the overlay bits
+          setChunkGroundEffectActiveData(chunk.get());
+        }
+      }
 
       if (!flags)
         continue;
@@ -272,7 +277,7 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
       chunk->endChunkUpdates();
 
       if (_texture_not_loaded || skip_upload_alphamap)
-        chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+        chunk->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
 
     }
 
@@ -732,24 +737,23 @@ void Noggit::Rendering::TileRender::setChunkGroundEffectActiveData(MapChunk* chu
   int32_t active_map1 = 0;
   int32_t active_map2 = 0;
 
-  // convert layer id to bool (Is Active)
-  int bit = 0;
-  for (unsigned int x = 0; x < 8; x++)
+  // convert layer id to bool (Is Active). packed like the exclusion map and
+  // the on-disk doodadMapping: bit = unit_z * 8 + unit_x (row = z, slot = x)
+  for (unsigned int y = 0; y < 8; y++)
   {
-      for (unsigned int y = 0; y < 8; y++)
+      for (unsigned int x = 0; x < 8; x++)
       {
           uint8_t unit_layer_id = chunk->texture_set->getDoodadActiveLayerIdAt(x, y);
-          bool is_active = layer_id == unit_layer_id;
 
-          if (is_active)
-          {
-            if (bit < 32)
-              active_map1 |= (1 << bit);
-            else
-              active_map2 |= (1 << (bit-32));
-          }
+          if (layer_id != unit_layer_id)
+              continue;
 
-          bit++;
+          int bit = y * 8 + x;
+
+          if (bit < 32)
+            active_map1 |= (1 << bit);
+          else
+            active_map2 |= (1 << (bit-32));
       }
   }
 

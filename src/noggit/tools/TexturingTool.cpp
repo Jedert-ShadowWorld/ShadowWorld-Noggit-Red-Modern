@@ -23,6 +23,7 @@
 #include <QDockWidget>
 #include <QMenu>
 #include <QSettings>
+#include <QStatusBar>
 
 #include <random>
 
@@ -430,28 +431,87 @@ namespace Noggit
 
         if (_texturingTool->getTexturingMode() == Noggit::Ui::texturing_mode::ground_effect)
         {
+            auto ge_tool = _texturingTool->getGroundEffectsTool();
+
             if (params.mod_shift_down)
             {
-                if (_texturingTool->getGroundEffectsTool()->brush_mode() == Noggit::Ui::ground_effect_brush_mode::exclusion)
+                if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::exclusion)
                 {
                     NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNK_DOODADS_EXCLUSION,
                         Noggit::ActionModalityControllers::eSHIFT
                         | Noggit::ActionModalityControllers::eLMB);
-                    mv->getWorld()->paintGroundEffectExclusion(mv->cursorPosition(), _texturingTool->getGroundEffectsTool()->radius(), true);
+                    mv->getWorld()->paintGroundEffectExclusion(mv->cursorPosition(), ge_tool->radius(), true);
                     // mv->getWorld()->setHole(mv->cursorPosition(), holeTool->brushRadius(), _mod_alt_down, false);
                 }
-                else if (_texturingTool->getGroundEffectsTool()->brush_mode() == Noggit::Ui::ground_effect_brush_mode::effect)
+                else if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::effect)
                 {
+                    auto effect = ge_tool->getSelectedGroundEffect();
+                    std::string const texture = _texturingTool->_current_texture->filename();
 
+                    // the paint targets the selected texture's layers and silently
+                    // does nothing without one; say so instead (once per stroke,
+                    // onTick fires every frame the button is held)
+                    if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
+                    {
+                        if (!_ge_brush_warning_shown)
+                        {
+                            mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a texture first - the effect is painted onto that texture's layers.", 2000);
+                            _ge_brush_warning_shown = true;
+                        }
+                    }
+                    // unsaved sets have id 0; painting that would clear instead
+                    else if (!effect.has_value() || !effect->ID)
+                    {
+                        if (!_ge_brush_warning_shown)
+                        {
+                            mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a saved set first (unsaved sets have no id to paint).", 2000);
+                            _ge_brush_warning_shown = true;
+                        }
+                    }
+                    else if (!params.underMap)
+                    {
+                        NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_LAYERINFO,
+                            Noggit::ActionModalityControllers::eSHIFT
+                            | Noggit::ActionModalityControllers::eLMB);
+                        mv->getWorld()->paintGroundEffect(mv->cursorPosition(), ge_tool->radius(),
+                            texture, effect->ID);
+                        ge_tool->refreshOverlayForChunksInRange(mv->cursorPosition(), ge_tool->radius());
+                    }
                 }
 
             }
             else if (params.mod_ctrl_down && !params.underMap)
             {
-                NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNK_DOODADS_EXCLUSION,
-                    Noggit::ActionModalityControllers::eCTRL
-                    | Noggit::ActionModalityControllers::eLMB);
-                mv->getWorld()->paintGroundEffectExclusion(mv->cursorPosition(), _texturingTool->getGroundEffectsTool()->radius(), false);
+                if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::exclusion)
+                {
+                    NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNK_DOODADS_EXCLUSION,
+                        Noggit::ActionModalityControllers::eCTRL
+                        | Noggit::ActionModalityControllers::eLMB);
+                    mv->getWorld()->paintGroundEffectExclusion(mv->cursorPosition(), ge_tool->radius(), false);
+                }
+                else if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::effect)
+                {
+                    std::string const texture = _texturingTool->_current_texture->filename();
+
+                    if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
+                    {
+                        if (!_ge_brush_warning_shown)
+                        {
+                            mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a texture first - the clear removes the effect from that texture's layers.", 2000);
+                            _ge_brush_warning_shown = true;
+                        }
+                    }
+                    else
+                    {
+                        // ctrl clears the effect id from the layer
+                        NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_LAYERINFO,
+                            Noggit::ActionModalityControllers::eCTRL
+                            | Noggit::ActionModalityControllers::eLMB);
+                        mv->getWorld()->paintGroundEffect(mv->cursorPosition(), ge_tool->radius(),
+                            texture, 0);
+                        ge_tool->refreshOverlayForChunksInRange(mv->cursorPosition(), ge_tool->radius());
+                    }
+                }
             }
         }
         else
@@ -517,6 +577,14 @@ namespace Noggit
         }
 
         mapView()->doSelection(false, false);
+    }
+
+    void TexturingTool::onMouseRelease(MouseReleaseParameters const& params)
+    {
+        if (params.button == Qt::MouseButton::LeftButton)
+        {
+            _ge_brush_warning_shown = false;
+        }
     }
 
     void TexturingTool::onMouseMove(MouseMoveParameters const& params)

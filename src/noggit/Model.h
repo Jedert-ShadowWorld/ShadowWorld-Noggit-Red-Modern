@@ -208,6 +208,12 @@ public:
   [[nodiscard]]
   Noggit::Rendering::ModelRender* renderer();
 
+  // read access for the detail doodad batch builder
+  std::vector<ModelVertex> const& vertexData() const { return _vertices; }
+  std::vector<uint16_t> const& indexData() const { return _indices; }
+  std::vector<scoped_blp_texture_reference> const& textureRefs() const { return _textures; }
+  std::vector<uint16_t> const& textureLookup() const { return _texture_lookup; }
+
   uint32_t get_anim_lenght(int16_t anim_id);
 
   // only useful if model has multiple anims with varying bound sizes
