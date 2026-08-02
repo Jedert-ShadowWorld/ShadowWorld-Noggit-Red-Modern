@@ -91,6 +91,10 @@ public:
 
   bool _grouped = false;
 
+  // set on the first move/rotate/scale this session; lets the loader tell a
+  // stale multi-tile row of an edited object apart from a genuine uid clash
+  bool _transformed_this_session = false;
+
 protected:
   SceneObjectTypes _type;
 
