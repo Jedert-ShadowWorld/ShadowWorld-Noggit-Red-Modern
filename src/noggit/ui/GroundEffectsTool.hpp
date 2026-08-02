@@ -173,6 +173,8 @@ namespace Noggit
       QComboBox* _cbbox_terrain_type;
       QCheckBox* _apply_override_cb;
       QCheckBox* _clear_all_textures_cb;
+      // zone/area scope: sweep every ADT on disk instead of only loaded tiles
+      QCheckBox* _scope_disk_sweep_cb;
       // 0 = zone, 1 = area, 2 = tile, 3 = global
       QButtonGroup* _generate_type_group;
       QGroupBox* _brush_grup_box;

@@ -287,12 +287,12 @@ namespace Noggit
                 _generate_type_group = new QButtonGroup(apply_group);
 
                 auto generate_effect_zone = new QRadioButton("Current Zone", this);
-                generate_effect_zone->setToolTip("Only affects currently LOADED tiles of the zone; undoable.\nUse Global to reach the whole map on disk.");
+                generate_effect_zone->setToolTip("Only affects currently LOADED tiles of the zone; undoable.\nCheck \"Include unloaded tiles\" to sweep the whole zone on disk.");
                 _generate_type_group->addButton(generate_effect_zone, 0);
                 buttons_layout->addWidget(generate_effect_zone, 0, 0);
 
                 auto generate_effect_area = new QRadioButton("Current Area (Subzone)", this);
-                generate_effect_area->setToolTip("Only affects currently LOADED tiles of the area; undoable.\nUse Global to reach the whole map on disk.");
+                generate_effect_area->setToolTip("Only affects currently LOADED tiles of the area; undoable.\nCheck \"Include unloaded tiles\" to sweep the whole area on disk.");
                 _generate_type_group->addButton(generate_effect_area, 1);
                 buttons_layout->addWidget(generate_effect_area, 0, 1);
 
@@ -314,6 +314,12 @@ namespace Noggit
             _apply_override_cb->setToolTip("If the texture already had a ground effect, replace it.");
             _apply_override_cb->setChecked(true);
             apply_layout->addWidget(_apply_override_cb);
+
+            _scope_disk_sweep_cb = new QCheckBox("Include unloaded tiles (disk sweep)", this);
+            _scope_disk_sweep_cb->setToolTip("Zone/Area scope: sweeps every ADT of the map on disk instead of only loaded tiles,\
+            \nkeeping chunks whose area matches. Changed tiles are written immediately; NOT undoable.");
+            _scope_disk_sweep_cb->setChecked(false);
+            apply_layout->addWidget(_scope_disk_sweep_cb);
 
             // In-world preview of the detail doodads the client would generate.
             {
@@ -1452,9 +1458,25 @@ namespace Noggit
                     }
                 }
 
-                NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eCHUNKS_LAYERINFO);
-                world->applyGroundEffectToArea(target_area, whole_zone, texture, effect_id, override_existing);
-                NOGGIT_ACTION_MGR->endAction();
+                if (_scope_disk_sweep_cb->isChecked())
+                {
+                    QString const area_name(gAreaDB.getAreaFullName(target_area).c_str());
+                    if (QMessageBox::question(this
+                        , effect_id ? "Apply ground effect to area on disk" : "Clear ground effects from area on disk"
+                        , QString("%1 \"%2\" (area %3) across every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone.")
+                            .arg(effect_id ? "Apply the effect to" : "Clear ground effects from").arg(area_name).arg(target_area)
+                        , QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+                    {
+                        return;
+                    }
+                    world->applyGroundEffectGlobal(texture, effect_id, override_existing, target_area, whole_zone);
+                }
+                else
+                {
+                    NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eCHUNKS_LAYERINFO);
+                    world->applyGroundEffectToArea(target_area, whole_zone, texture, effect_id, override_existing);
+                    NOGGIT_ACTION_MGR->endAction();
+                }
                 break;
             }
             case 2: // current tile

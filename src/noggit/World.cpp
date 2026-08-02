@@ -2007,7 +2007,7 @@ void World::applyGroundEffectToArea(int area_id, bool whole_zone, std::string co
     }
 }
 
-void World::applyGroundEffectGlobal(std::string const& texture, unsigned int effect_id, bool override_existing)
+void World::applyGroundEffectGlobal(std::string const& texture, unsigned int effect_id, bool override_existing, int area_filter, bool whole_zone)
 {
     ZoneScoped;
     for (size_t z = 0; z < 64; z++)
@@ -2031,8 +2031,27 @@ void World::applyGroundEffectGlobal(std::string const& texture, unsigned int eff
             {
                 for (int tx = 0; tx < 16; ++tx)
                 {
+                    MapChunk* chunk = tile->getChunk(ty, tx);
+
+                    if (area_filter >= 0)
+                    {
+                        int chunk_area = chunk->getAreaID();
+                        if (whole_zone)
+                        {
+                            std::uint32_t const parent = AreaDB::get_area_parent(chunk_area);
+                            if (parent)
+                            {
+                                chunk_area = static_cast<int>(parent);
+                            }
+                        }
+                        if (chunk_area != area_filter)
+                        {
+                            continue;
+                        }
+                    }
+
                     // no undo registration: swept tiles unload again below
-                    if (apply_ground_effect_to_chunk(tile->getChunk(ty, tx), texture, effect_id, override_existing, false))
+                    if (apply_ground_effect_to_chunk(chunk, texture, effect_id, override_existing, false))
                     {
                         tile_changed = true;
                     }
