@@ -1512,9 +1512,15 @@ void MapChunk::save(util::sExtendableArray& lADTFile
 
   if(texture_set)
   {
-    // hackfix -- temp hackfix to bruteforce update + save
     texture_set->apply_alpha_changes();
-    texture_set->updateDoodadMapping();
+
+    // untouched chunks keep the doodadMapping loaded from the ADT; the
+    // recompute is an approximation and only runs when alphas were edited
+    if (_doodad_mapping_needs_update)
+    {
+      texture_set->updateDoodadMapping();
+      _doodad_mapping_needs_update = false;
+    }
 
     std::copy(texture_set->getDoodadMappingBase(), texture_set->getDoodadMappingBase() + 8
     , lMCNK_header->doodadMapping);
