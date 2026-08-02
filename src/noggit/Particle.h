@@ -26,8 +26,23 @@ namespace BlizzardArchive
   class ClientFile;
 }
 
+// M2 particle emitter flags (disk values); only the ones the simulation and
+// renderer use are named here
+enum M2ParticleFlags : uint32_t
+{
+  ParticleFlag_VelocityOrient    = 0x4,     // head's long axis follows screen-space velocity
+  ParticleFlag_InheritBoneScale  = 0x20,    // sprite size scales with the emission frame's world scale
+  ParticleFlag_TravelUp          = 0x100,   // sphere emitter launches along model-space up
+  ParticleFlag_SpinParityFlip    = 0x200,   // spin sign flips for every other particle
+  ParticleFlag_Tumble            = 0x1000,
+  ParticleFlag_FollowPosition    = 0x4000,
+  ParticleFlag_RenderHead        = 0x20000,
+  ParticleFlag_RenderTail        = 0x40000,
+  ParticleFlag_IndependentScaleY = 0x80000, // y scale variance rolled independently of x
+};
+
 struct Particle {
-  glm::vec3 pos, speed, down, origin, dir;
+  glm::vec3 pos, speed;
   //glm::vec3 tpos;
   glm::vec2 size;
   glm::vec2 scale_mul;  // per-particle scale variance roll, applied on top of the size track

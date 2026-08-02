@@ -41,6 +41,64 @@ static const float TWINKLE_TABLE[128] = {
   0.7308f, 0.5425f, 0.3844f, 0.1695f, 0.9620f, 0.0162f, 0.4795f, 0.8759f,
 };
 
+// client particle blend table (CGxDeviceD3d::s_srcBlend / s_dstBlend): sets the
+// GL blend state for an M2 blend mode and returns the matching alpha-test
+// threshold (-1 = no test). Out-of-range modes fall back to additive when
+// additive_fallback is set (ribbons), plain opaque otherwise (particles).
+static float apply_m2_blend_state(int blend, bool additive_fallback)
+{
+  float alpha_test = -1.f;
+
+  switch (blend)
+  {
+  case 0:
+    gl.disable(GL_BLEND);
+    break;
+  case 1:
+    gl.disable(GL_BLEND);
+    alpha_test = 224.0f / 255.0f;
+    break;
+  case 2:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 3:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_ONE, GL_ONE);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 4:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 5:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_DST_COLOR, GL_ZERO);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  case 6:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+    alpha_test = 1.0f / 255.0f;
+    break;
+  default:
+    if (additive_fallback)
+    {
+      gl.enable(GL_BLEND);
+      gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+    }
+    else
+    {
+      gl.disable(GL_BLEND);
+    }
+    break;
+  }
+
+  return alpha_test;
+}
+
 ParticleSystem::ParticleSystem(Model* model_
                                , const BlizzardArchive::ClientFile& f
                                , const ModelParticleEmitterDef &mta
@@ -64,8 +122,8 @@ ParticleSystem::ParticleSystem(Model* model_
   , z_source (mta.zSource, f, globals)
   , enabled (mta.en, f, globals)
   , tail_length (mta.p.tailLength)
-  , render_head ((mta.flags & 0x20000) != 0)
-  , render_tail ((mta.flags & 0x40000) != 0)
+  , render_head ((mta.flags & ParticleFlag_RenderHead) != 0)
+  , render_tail ((mta.flags & ParticleFlag_RenderTail) != 0)
   , slowdown (mta.p.slowdown)
   , lifespan_vary (mta.lifespanVary)
   , rate_vary (mta.emissionRateVary)
@@ -78,10 +136,10 @@ ParticleSystem::ParticleSystem(Model* model_
   , spin_speed (mta.p.rotation)
   , spin_vary (mta.p.spinVary)
   , scale_vary (mta.p.scaleVary[0], mta.p.scaleVary[1])
-  , tumble ((mta.flags & 0x1000) != 0)
+  , tumble ((mta.flags & ParticleFlag_Tumble) != 0)
   , wind (fixCoordSystem(glm::vec3(mta.p.Rot2[2], mta.p.Trans[0], mta.p.Trans[1])))
   , wind_time (mta.p.Trans[2])
-  , follow ((mta.flags & 0x4000) != 0)
+  , follow ((mta.flags & ParticleFlag_FollowPosition) != 0)
   , pos (fixCoordSystem(mta.pos))
   , _texture_id (mta.texture)
   , blend (mta.blend)
@@ -100,7 +158,7 @@ ParticleSystem::ParticleSystem(Model* model_
   // FollowPosition 2-point fit (CParticleEmitter2::SetFollowParams): factor =
   // clamp(emitter_speed * slope + intercept, 0, 1); equal speeds disable it
   float follow_span = mta.p.followSpeed2 - mta.p.followSpeed1;
-  if (std::fabs(follow_span) < 2.38e-7f)
+  if (std::fabs(follow_span) < 2.38e-7f) // ~2^-22, the client's span epsilon
   {
     follow_slope = 0.0f;
     follow_intercept = 0.0f;
@@ -202,21 +260,21 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   : model(other.model)
   , emitter_type(other.emitter_type)
   , emitter(std::move(other.emitter))
-  , speed(other.speed)
-  , variation(other.variation)
-  , spread(other.spread)
-  , lat(other.lat)
-  , gravity(other.gravity)
-  , lifespan(other.lifespan)
-  , rate(other.rate)
-  , areal(other.areal)
-  , areaw(other.areaw)
-  , z_source(other.z_source)
-  , enabled(other.enabled)
-  , color_track(other.color_track)
-  , alpha_track(other.alpha_track)
-  , scale_track(other.scale_track)
-  , cell_track(other.cell_track)
+  , speed(std::move(other.speed))
+  , variation(std::move(other.variation))
+  , spread(std::move(other.spread))
+  , lat(std::move(other.lat))
+  , gravity(std::move(other.gravity))
+  , lifespan(std::move(other.lifespan))
+  , rate(std::move(other.rate))
+  , areal(std::move(other.areal))
+  , areaw(std::move(other.areaw))
+  , z_source(std::move(other.z_source))
+  , enabled(std::move(other.enabled))
+  , color_track(std::move(other.color_track))
+  , alpha_track(std::move(other.alpha_track))
+  , scale_track(std::move(other.scale_track))
+  , cell_track(std::move(other.cell_track))
   , tail_length(other.tail_length)
   , render_head(other.render_head)
   , render_tail(other.render_tail)
@@ -248,7 +306,7 @@ ParticleSystem::ParticleSystem(ParticleSystem&& other)
   , manimtime(other.manimtime)
   , rows(other.rows)
   , cols(other.cols)
-  , tiles(other.tiles)
+  , tiles(std::move(other.tiles))
   , parent(other.parent)
   , flags(other.flags)
   , tofs(other.tofs)
@@ -341,7 +399,7 @@ void ParticleSystem::update(float dt, glm::mat4x4 const& instance_mat, ParticleE
 
         // InheritBoneScale (disk flag 0x20 -> runtime 0x400): sprite size scales
         // with the emission frame's world scale (CParticleEmitter2::BuildVertex)
-        float bone_scale = (flags & 0x20) ? glm::length(glm::vec3(emit_mat[0])) : 1.0f;
+        float bone_scale = (flags & ParticleFlag_InheritBoneScale) ? glm::length(glm::vec3(emit_mat[0])) : 1.0f;
 
         for (int i = 0; i<tospawn; ++i) {
           Particle p = emitter->newParticle(this, manim, mtime, manimtime, w, l, spd, var, spr, spr2, zs, emit_mat, emit_rot);
@@ -350,9 +408,9 @@ void ParticleSystem::update(float dt, glm::mat4x4 const& instance_mat, ParticleE
           p.spin_angle = base_spin + base_spin_vary * misc::randfloat(-1.0f, 1.0f);
           p.spin_rate = spin_speed + spin_vary * misc::randfloat(-1.0f, 1.0f);
 
-          // scale variance: x always rolled; y independent only with flag 0x80000
+          // scale variance: x always rolled; y independent only with IndependentScaleY
           p.scale_mul.x = std::max(0.0f, 1.0f + scale_vary.x * misc::randfloat(-1.0f, 1.0f));
-          p.scale_mul.y = (flags & 0x80000)
+          p.scale_mul.y = (flags & ParticleFlag_IndependentScaleY)
                         ? std::max(0.0f, 1.0f + scale_vary.y * misc::randfloat(-1.0f, 1.0f))
                         : p.scale_mul.x;
           p.scale_mul *= bone_scale;
@@ -369,7 +427,7 @@ void ParticleSystem::update(float dt, glm::mat4x4 const& instance_mat, ParticleE
     if (slowdown > 0)
       p.speed *= expf(-slowdown * dt);
 
-    p.speed += p.down * grav * dt;
+    p.speed += glm::vec3(0, -1.0f, 0) * grav * dt;
 
     // wind: constant acceleration for the first wind_time seconds of a
     // particle's life, then it stops (no wind at all when wind_time is 0)
@@ -440,47 +498,7 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
     upload();
   }
 
-  // client particle blend table (CGxDeviceD3d::s_srcBlend / s_dstBlend)
-  float alpha_test = -1.f;
-
-  switch (blend)
-  {
-  case 0:
-    gl.disable(GL_BLEND);
-    break;
-  case 1:
-    gl.disable(GL_BLEND);
-    alpha_test = 224.0f / 255.0f;
-    break;
-  case 2:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  case 3:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_ONE, GL_ONE);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  case 4:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  case 5:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_DST_COLOR, GL_ZERO);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  case 6:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_DST_COLOR, GL_SRC_COLOR);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  default:
-    gl.disable(GL_BLEND);
-    break;
-  }
+  float alpha_test = apply_m2_blend_state(blend, false);
 
   gl.depthMask(blend <= 1 ? GL_TRUE : GL_FALSE);
 
@@ -542,6 +560,8 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
       // indexed by particle slot + age*speed scales the quad, and twinklePercent
       // below 1 culls particles whose sample exceeds it. The common case
       // (percent >= 1, min == max) skips the sample and reduces to min.
+      // NOTE: pi is the particle's current list position, which shifts as older
+      // particles die; the client keeps a stable per-particle slot instead.
       float twinkle = twinkle_base;
       if (twinkle_percent < 1.0f || twinkle_range != 0.0f)
       {
@@ -566,7 +586,7 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
         // velocity, falling back to the plain billboard when the projection is
         // too short (CParticleEmitter2::BuildVertex HEAD-1, threshold 1/1296)
         bool velocity_basis = false;
-        if (flags & 0x4)
+        if (flags & ParticleFlag_VelocityOrient)
         {
           float vx = glm::dot(vRight, -it->speed);
           float vy = glm::dot(vUp, -it->speed);
@@ -588,7 +608,7 @@ void ParticleSystem::draw( glm::mat4x4 const& model_view
           // values instead of the integrated per-particle spin; flag 0x200 flips
           // the sign for every other particle (BuildVertex parity flip)
           float angle = tumble ? it->life * spin_speed + base_spin : it->spin_angle;
-          if ((flags & 0x200) && (pi & 1))
+          if ((flags & ParticleFlag_SpinParityFlip) && (pi & 1))
           {
             angle = -angle;
           }
@@ -736,18 +756,15 @@ Particle PlaneParticleEmitter::newParticle(ParticleSystem* sys, int anim, int ti
       dir = zdir / dlen;
   }
   dir = emit_rot * glm::vec4(dir, 0);
+  dir = glm::normalize(dir);
 
-  p.dir = glm::normalize(dir);
-  p.down = glm::vec3(0, -1.0f, 0);
-  p.speed = p.dir * spd * (1.0f - var * misc::frand());
+  p.speed = dir * spd * (1.0f - var * misc::frand());
 
   p.life = 0;
   p.maxlife = sys->lifespan.getValue(anim, time, animtime)
             + sys->lifespan_vary * misc::randfloat(-1.0f, 1.0f);
   p.size = glm::vec2(1.0f, 1.0f);
   p.color = glm::vec4(1.0f);
-
-  p.origin = p.pos;
 
   p.tile = misc::randint(0, sys->rows*sys->cols - 1);
   return p;
@@ -774,23 +791,21 @@ Particle SphereParticleEmitter::newParticle(ParticleSystem* sys, int anim, int t
   // zSource > 0 overrides both the radial and flag-0x100 directions
   if (zs > 0.0f && glm::length(local - glm::vec3(0.0f, zs, 0.0f)) > 1e-6f)
     dir = emit_rot * glm::vec4(glm::normalize(local - glm::vec3(0.0f, zs, 0.0f)), 0);
-  else if (sys->flags & 0x100)
+  else if (sys->flags & ParticleFlag_TravelUp)
     dir = emit_rot * glm::vec4(0, 1, 0, 0);
   else
     dir = emit_rot * glm::vec4(normal, 0);
 
   float dlen = glm::length(dir);
-  p.dir = dlen > 1e-6f ? dir / dlen : glm::vec3(0, 1, 0);
-  p.down = glm::vec3(0, -1.0f, 0);
-  p.speed = p.dir * spd * (1.0f - var * misc::frand());
+  dir = dlen > 1e-6f ? dir / dlen : glm::vec3(0, 1, 0);
+
+  p.speed = dir * spd * (1.0f - var * misc::frand());
 
   p.life = 0;
   p.maxlife = sys->lifespan.getValue(anim, time, animtime)
             + sys->lifespan_vary * misc::randfloat(-1.0f, 1.0f);
   p.size = glm::vec2(1.0f, 1.0f);
   p.color = glm::vec4(1.0f);
-
-  p.origin = p.pos;
 
   p.tile = misc::randint(0, sys->rows*sys->cols - 1);
   return p;
@@ -869,12 +884,12 @@ RibbonEmitter::RibbonEmitter(RibbonEmitter const& other)
 
 RibbonEmitter::RibbonEmitter(RibbonEmitter&& other)
   : model(other.model)
-  , color(other.color)
-  , opacity(other.opacity)
-  , above(other.above)
-  , below(other.below)
-  , tex_slot(other.tex_slot)
-  , visibility(other.visibility)
+  , color(std::move(other.color))
+  , opacity(std::move(other.opacity))
+  , above(std::move(other.above))
+  , below(std::move(other.below))
+  , tex_slot(std::move(other.tex_slot))
+  , visibility(std::move(other.visibility))
   , parent(other.parent)
   , pos(other.pos)
   , manim(other.manim)
@@ -889,8 +904,8 @@ RibbonEmitter::RibbonEmitter(RibbonEmitter&& other)
   , tcolor(other.tcolor)
   , cur_tile(other.cur_tile)
   , blend(other.blend)
-  , _texture_ids(other._texture_ids)
-  , _material_ids(other._material_ids)
+  , _texture_ids(std::move(other._texture_ids))
+  , _material_ids(std::move(other._material_ids))
   , _context(other._context)
 {
 
@@ -931,6 +946,8 @@ void RibbonEmitter::update(float dt, glm::mat4x4 const& instance_mat, RibbonEmit
     float above_now = std::max(0.0f, above.getValue(manim, mtime, manimtime));
     float below_now = std::max(0.0f, below.getValue(manim, mtime, manimtime));
 
+    // NOTE: a new edge only appears on accumulator rollover; the client also
+    // re-places the leading edge at the emitter every update.
     state.accum += edges_per_second * dt;
     while (state.accum >= 1.0f)
     {
@@ -993,46 +1010,7 @@ void RibbonEmitter::draw( OpenGL::Scoped::use_program& shader
   shader.uniform("tex_index", texture->array_index());
 
   // same client blend table as particles, mode from the referenced material
-  float alpha_test = -1.f;
-  switch (blend)
-  {
-  case 0:
-    gl.disable(GL_BLEND);
-    break;
-  case 1:
-    gl.disable(GL_BLEND);
-    alpha_test = 224.0f / 255.0f;
-    break;
-  case 2:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  case 3:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_ONE, GL_ONE);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  case 4:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  case 5:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_DST_COLOR, GL_ZERO);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  case 6:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_DST_COLOR, GL_SRC_COLOR);
-    alpha_test = 1.0f / 255.0f;
-    break;
-  default:
-    gl.enable(GL_BLEND);
-    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
-    break;
-  }
+  float alpha_test = apply_m2_blend_state(blend, true);
   shader.uniform("alpha_test", alpha_test);
   gl.depthMask(blend <= 1 ? GL_TRUE : GL_FALSE);
 

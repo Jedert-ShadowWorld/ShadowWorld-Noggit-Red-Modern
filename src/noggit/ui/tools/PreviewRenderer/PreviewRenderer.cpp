@@ -373,47 +373,47 @@ void PreviewRenderer::draw()
     float const fx_dt = std::chrono::duration<float>(fx_now - _last_fx_update).count();
     _last_fx_update = fx_now;
 
-  if (_draw_animated.get() && !model_with_particles.empty())
-  {
-    // per-instance FX tick (capped in updateEmitters, so no catch-up burst)
-    for (auto& it : model_with_particles)
+    if (_draw_animated.get() && !model_with_particles.empty())
     {
-      for (ModelInstance* instance : it.second)
-      {
-        instance->updateEmitters(fx_dt);
-      }
-    }
-
-    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
-    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
-
-    {
-      OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
-
-      particles_shader.uniform("model_view_projection", mvp);
-      particles_shader.uniform("tex", 0);
-
+      // per-instance FX tick (capped in updateEmitters, so no catch-up burst)
       for (auto& it : model_with_particles)
       {
-        it.first->renderer()->drawParticles(mv, particles_shader, it.second);
+        for (ModelInstance* instance : it.second)
+        {
+          instance->updateEmitters(fx_dt);
+        }
       }
-    }
 
-    {
-      OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
+      OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
+      OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
 
-      ribbon_shader.uniform("model_view_projection", mvp);
-      ribbon_shader.uniform("tex", 0);
-
-      gl.enable(GL_BLEND);
-      gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
-
-      for (auto& it : model_with_particles)
       {
-        it.first->renderer()->drawRibbons(ribbon_shader, it.second);
+        OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
+
+        particles_shader.uniform("model_view_projection", mvp);
+        particles_shader.uniform("tex", 0);
+
+        for (auto& it : model_with_particles)
+        {
+          it.first->renderer()->drawParticles(mv, particles_shader, it.second);
+        }
+      }
+
+      {
+        OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
+
+        ribbon_shader.uniform("model_view_projection", mvp);
+        ribbon_shader.uniform("tex", 0);
+
+        gl.enable(GL_BLEND);
+        gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+
+        for (auto& it : model_with_particles)
+        {
+          it.first->renderer()->drawRibbons(ribbon_shader, it.second);
+        }
       }
     }
-  }
   }
 
   gl.enable(GL_BLEND);
