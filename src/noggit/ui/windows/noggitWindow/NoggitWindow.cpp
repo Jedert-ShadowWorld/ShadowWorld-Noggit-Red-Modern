@@ -800,8 +800,7 @@ namespace Noggit::Ui::Windows
               auto archive = clientData->getMPQArchive(archive_name);
               if (archive.has_value())
               {
-                  auto progress_box = new QMessageBox(QMessageBox::Information, "Working...", std::format("Saving {} files to patch {}...\
-                      \nClosing the program now can corrupt the MPQ.", std::to_string(totalItems), archive_name ).c_str(), QMessageBox::StandardButton::NoButton, this);
+                  auto progress_box = new QMessageBox(QMessageBox::Information, "Working...", std::format("Saving {} files to patch {}...\nClosing the program now can corrupt the MPQ.", std::to_string(totalItems), archive_name ).c_str(), QMessageBox::StandardButton::NoButton, this);
                   progress_box->setStandardButtons(QMessageBox::NoButton);
                   progress_box->setWindowFlags(progress_box->windowFlags() & ~Qt::WindowCloseButtonHint);
                   // progress_box->exec(); // this stops code execution
@@ -819,9 +818,11 @@ namespace Noggit::Ui::Windows
                       {
                           if (processed % 20 != 0)
                               return;
-                          progress_box->setText(std::format("Saving file {} of {} to patch {}...\
-                              \nClosing the program now can corrupt the MPQ.", processed, totalItems, archive_name).c_str());
+                          progress_box->setText(std::format("Saving file {} of {} to patch {}...\nClosing the program now can corrupt the MPQ.", processed, totalItems, archive_name).c_str());
                           progress_box->repaint();
+                          // without pumping the loop Windows flags the window as
+                          // "Not Responding" after ~5s and the counter freezes
+                          qApp->processEvents();
                       };
 
                       std::array<int, 2> result = clientData->saveLocalFilesToArchive(archive.value(), mpq_compress_files_chk->isChecked(), mpq_compact_chk->isChecked(), progress);
