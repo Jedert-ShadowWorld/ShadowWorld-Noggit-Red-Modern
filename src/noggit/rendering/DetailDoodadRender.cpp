@@ -2,6 +2,7 @@
 
 #include <noggit/rendering/DetailDoodadRender.hpp>
 
+#include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/Model.h>
 #include <noggit/rendering/ModelRender.hpp>
@@ -25,6 +26,15 @@ namespace Noggit::Rendering
       std::uint32_t color;
       glm::vec2 uv;
     };
+
+    // the client computes doodad rotations on its own axes; conjugate its
+    // matrices into noggit space instead of re-deriving them, so the math
+    // below can stay a verbatim port of the binary.
+    // client world direction -> noggit world direction: (x, y, z) -> (-y, z, -x)
+    glm::mat3 const client_to_noggit{ { 0.f, 0.f, -1.f }, { -1.f, 0.f, 0.f }, { 0.f, 1.f, 0.f } };
+    // noggit model space -> client model space, undoes Model.cpp's
+    // fixCoordSystem (x, y, z) -> (x, z, -y) applied to the loaded vertices
+    glm::mat3 const noggit_model_to_client{ { 1.f, 0.f, 0.f }, { 0.f, 0.f, 1.f }, { 0.f, -1.f, 0.f } };
   }
 
   void DetailDoodadRender::deleteBuffers(ChunkGL& gl_data)
@@ -66,79 +76,217 @@ namespace Noggit::Rendering
     for (std::size_t i = 0; i < cache->models.size(); ++i)
     {
       Model* model = cache->models[i].get();
-      if (model->loading_failed() || model->skin_load_failed())
+      char const* reject = nullptr;
+
+      if (model->loading_failed())
+      {
+        reject = "model load failed";
+      }
+      else if (model->skin_load_failed())
+      {
+        reject = "skin load failed";
+      }
+      else if (model->renderer()->renderPasses().empty())
+      {
+        reject = "no render passes";
+      }
+      else if (model->vertexData().empty())
+      {
+        reject = "no vertex data";
+      }
+      else
+      {
+        // detail doodads never go through the regular M2 draw path, so the
+        // lazy first-draw upload that fills Model::_textures hasn't happened
+        if (!model->renderer()->uploaded())
+        {
+          model->renderer()->upload();
+        }
+
+        auto const& passes = model->renderer()->renderPasses();
+
+        // the client only draws submesh 0 with the first batch's texture
+        auto const pass = std::min_element(passes.begin(), passes.end()
+          , [](auto const& a, auto const& b) { return a.index_start < b.index_start; });
+
+        if (!pass->index_count)
+        {
+          reject = "empty pass";
+        }
+        else if (pass->textures[0] >= model->textureLookup().size())
+        {
+          reject = "texture lookup out of range";
+        }
+        else
+        {
+          // resolved like ModelRenderPass::bindTexture
+          std::uint16_t const tex = model->textureLookup()[pass->textures[0]];
+          if (tex >= model->textureRefs().size())
+          {
+            reject = "texture out of range";
+          }
+          else
+          {
+            ModelGeo& g = geo[i];
+            g.model = model;
+            g.texture_id = tex;
+            g.vertex_start = pass->vertex_start;
+            g.vertex_count = pass->vertex_end - pass->vertex_start;
+            g.index_start = pass->index_start;
+            g.index_count = pass->index_count;
+            g.ok = g.vertex_count && g.index_count;
+            if (!g.ok)
+            {
+              reject = "empty geometry range";
+            }
+          }
+        }
+      }
+
+      static int reject_logs = 0;
+      if (reject && reject_logs < 12)
+      {
+        reject_logs++;
+        Log << "DetailDoodadRender: " << model->file_key().filepath() << " rejected: " << reject << std::endl;
+      }
+    }
+
+    // CDetailDoodadInst::AddDoodad (0x7B31E0): 4 texture-keyed batches per
+    // chunk, each budgeted min(density * 64, 4096) verts/indices (strict <);
+    // a doodad no batch can take is silently dropped, so a 5th distinct
+    // texture on a chunk never renders
+    struct SimBatch
+    {
+      void const* tex = nullptr;
+      std::uint32_t vtx = 0;
+      std::uint32_t idx = 0;
+      std::size_t geo_index = 0;
+      std::vector<std::uint32_t> members;
+    };
+    SimBatch sim[4];
+    std::uint32_t const budget = static_cast<std::uint32_t>(
+        std::min(std::clamp(cache->density, 16, 256) * 64, 4096));
+    std::size_t dropped = 0;
+
+    for (std::size_t pi = 0; pi < cache->placements.size(); ++pi)
+    {
+      ModelGeo const& g = geo[cache->placements[pi].model_index];
+      if (!g.ok)
       {
         continue;
       }
 
-      auto const& passes = model->renderer()->renderPasses();
-      if (passes.empty() || model->vertexData().empty())
+      void const* key = g.model->textureRefs()[g.texture_id].get();
+
+      int use = -1;
+      for (int b = 0; b < 4; ++b)
       {
+        if (sim[b].tex == key
+          && sim[b].vtx + g.vertex_count < budget
+          && sim[b].idx + g.index_count < budget)
+        {
+          use = b;
+          break;
+        }
+      }
+      if (use < 0)
+      {
+        for (int b = 0; b < 4; ++b)
+        {
+          if (!sim[b].tex)
+          {
+            sim[b].tex = key;
+            sim[b].geo_index = cache->placements[pi].model_index;
+            use = b;
+            break;
+          }
+        }
+      }
+      if (use < 0)
+      {
+        ++dropped;
         continue;
       }
 
-      // the client only draws submesh 0 with the first batch's texture
-      auto const pass = std::min_element(passes.begin(), passes.end()
-        , [](auto const& a, auto const& b) { return a.index_start < b.index_start; });
-
-      if (pass->textures[0] >= model->textureRefs().size() || !pass->index_count)
-      {
-        continue;
-      }
-
-      ModelGeo& g = geo[i];
-      g.model = model;
-      g.texture_id = pass->textures[0];
-      g.vertex_start = pass->vertex_start;
-      g.vertex_count = pass->vertex_end - pass->vertex_start;
-      g.index_start = pass->index_start;
-      g.index_count = pass->index_count;
-      g.ok = g.vertex_count && g.index_count;
+      sim[use].vtx += g.vertex_count;
+      sim[use].idx += g.index_count;
+      sim[use].members.push_back(static_cast<std::uint32_t>(pi));
     }
 
     std::vector<DDVertex> vertices;
     std::vector<std::uint32_t> indices;
     gl_data.batches.clear();
 
-    // batches stay contiguous per model so one draw covers each texture
-    for (std::size_t mi = 0; mi < geo.size(); ++mi)
+    for (SimBatch const& sb : sim)
     {
-      ModelGeo const& g = geo[mi];
-      if (!g.ok)
+      if (sb.members.empty())
       {
         continue;
       }
 
       std::size_t const batch_index_offset = indices.size();
-      auto const& model_vertices = g.model->vertexData();
-      auto const& model_indices = g.model->indexData();
 
-      for (auto const& p : cache->placements)
+      // CDetailDoodad::BuildVertexBuffer (0x7B1B50) keeps 4 rotation
+      // matrices per batch with a dirty mask keyed on facetIdx & 0xFC (cell)
+      // and facetIdx & 3 (sub-triangle): in a run of aligned instances on
+      // one cell only the first to hit each sub-triangle builds a matrix
+      // from its own angle, the rest reuse it. A genuine client quirk that
+      // identical facing requires; upright instances neither use nor
+      // invalidate the cache.
+      glm::mat3 cached_rot[4];
+      std::uint16_t cached_cell = 0xFFFF;
+      std::uint8_t cached_mask = 0;
+
+      for (std::uint32_t pi : sb.members)
       {
-        if (p.model_index != mi)
-        {
-          continue;
-        }
+        auto const& p = cache->placements[pi];
+        ModelGeo const& g = geo[p.model_index];
+        auto const& model_vertices = g.model->vertexData();
+        auto const& model_indices = g.model->indexData();
 
         glm::mat3 rot3;
-        float const cs = std::cos(p.rot);
-        float const sn = std::sin(p.rot);
-        // rotation about the up axis; noggit's axes flip both horizontal
-        // directions relative to the client, so the angle negates
-        glm::mat3 const spin{ { cs, 0.f, sn }, { 0.f, 1.f, 0.f }, { -sn, 0.f, cs } };
-
         if (p.terrain_align)
         {
-          // align model up to the facet normal, then spin about it
-          glm::vec3 const up = p.normal;
-          glm::vec3 const ref = std::fabs(up.y) < 0.99f ? glm::vec3(0.f, 1.f, 0.f) : glm::vec3(1.f, 0.f, 0.f);
-          glm::vec3 const t0 = glm::normalize(glm::cross(ref, up));
-          glm::vec3 const t1 = glm::cross(up, t0);
-          rot3 = glm::mat3(t0, up, t1) * spin;
+          std::uint16_t const cell = p.facet_idx & 0xFC;
+          int const slot = p.facet_idx & 3;
+          if (cell != cached_cell)
+          {
+            cached_cell = cell;
+            cached_mask = 0;
+          }
+          if (!(cached_mask & (1 << slot)))
+          {
+            // the client's deterministic terrain-aligned basis
+            // (BuildRotationMatrix @0x7B1000) from the facet normal
+            // n = (a,b,c) on client axes; rows 0/1 span the terrain plane
+            // and get spun about the normal (row 2) by the instance angle
+            float const a = -p.normal.z;
+            float const b = -p.normal.x;
+            float const c = p.normal.y;
+            float const L = std::sqrt(b * b + c * c);
+            float const iL = 1.0f / L;
+            glm::vec3 const r0{ -L, a * b * iL, a * c * iL };
+            glm::vec3 const r1{ 0.f, c * iL, -b * iL };
+            glm::vec3 const r2{ a, b, c };
+            float const cs = std::cos(p.rot);
+            float const sn = std::sin(p.rot);
+            // the client transform is v' = v.x*row0 + v.y*row1 + v.z*row2,
+            // i.e. the rows as glm columns
+            cached_rot[slot] = client_to_noggit
+                             * glm::mat3(cs * r0 + sn * r1, cs * r1 - sn * r0, r2)
+                             * noggit_model_to_client;
+            cached_mask |= static_cast<std::uint8_t>(1 << slot);
+          }
+          rot3 = cached_rot[slot];
         }
         else
         {
-          rot3 = spin;
+          // upright: a plain spin about the client's up axis, per instance
+          float const cs = std::cos(p.rot);
+          float const sn = std::sin(p.rot);
+          rot3 = client_to_noggit
+               * glm::mat3(glm::vec3(cs, sn, 0.f), glm::vec3(-sn, cs, 0.f), glm::vec3(0.f, 0.f, 1.f))
+               * noggit_model_to_client;
         }
 
         std::uint32_t const base_vertex = static_cast<std::uint32_t>(vertices.size());
@@ -163,7 +311,8 @@ namespace Noggit::Rendering
       std::size_t const count = indices.size() - batch_index_offset;
       if (count)
       {
-        gl_data.batches.push_back({ g.model, g.texture_id
+        ModelGeo const& bg = geo[sb.geo_index];
+        gl_data.batches.push_back({ bg.model, bg.texture_id
                                   , static_cast<int>(count)
                                   , batch_index_offset * sizeof(std::uint32_t) });
       }
@@ -184,6 +333,16 @@ namespace Noggit::Rendering
 
     gl_data.revision = cache->revision;
     gl_data.ready = true;
+
+    static int build_logs = 0;
+    if (build_logs < 4)
+    {
+      build_logs++;
+      Log << "DetailDoodadRender::build: " << cache->placements.size() << " placements -> "
+          << vertices.size() << " verts, " << indices.size() << " indices, "
+          << gl_data.batches.size() << " batches (" << cache->models.size() << " models, "
+          << dropped << " dropped by the 4-batch budget)" << std::endl;
+    }
     return true;
   }
 

@@ -20,8 +20,11 @@
 
 #include <algorithm>
 #include <exception>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <string>
 
 #include <QDialog>
@@ -358,6 +361,94 @@ namespace Noggit
                             Log << "  " << pair.first << " : " << pair.second.placements
                                 << " placements, " << state << std::endl;
                         }
+                    });
+
+                auto preview_dump_btn = new QPushButton("Export placements (JSONL)", this);
+                preview_dump_btn->setToolTip("Writes every cached placement as JSONL in the wrath-tools !gedump schema,\
+                \nso an in-game client capture can be diffed against it record by record.");
+                preview_layout->addRow(preview_dump_btn);
+
+                connect(preview_dump_btn, &QPushButton::clicked, [this]()
+                    {
+                        std::ofstream out("noggit_gedump.jsonl", std::ios::binary | std::ios::trunc);
+                        if (!out)
+                        {
+                            LogError << "detail doodad export: cannot open noggit_gedump.jsonl" << std::endl;
+                            return;
+                        }
+                        out << std::fixed << std::setprecision(6);
+
+                        int records = 0;
+                        int chunks = 0;
+                        int cseq = 0;
+                        std::ostringstream body;
+                        body << std::fixed << std::setprecision(6);
+
+                        for (MapTile* tile : _map_view->getWorld()->mapIndex.loaded_tiles())
+                        {
+                            for (int px = 0; px < 16; ++px)
+                            {
+                                for (int pz = 0; pz < 16; ++pz)
+                                {
+                                    MapChunk* chunk = tile->getChunk(px, pz);
+                                    Noggit::ChunkDetailDoodads* cache = chunk->getDetailDoodads();
+                                    if (cache->density < 0 || cache->placements.empty())
+                                    {
+                                        continue;
+                                    }
+
+                                    // the client's cOffset: .x is the world Y axis
+                                    // (noggit x / px), .y the world X axis (noggit z / py)
+                                    int const cx = tile->index.x * 16 + chunk->px;
+                                    int const cy = tile->index.z * 16 + chunk->py;
+
+                                    for (auto const& p : cache->placements)
+                                    {
+                                        // back to the client's chunk-local frame (both axes <= 0,
+                                        // and the height is relative to the chunk's base like
+                                        // the client's topLeftCoords.z)
+                                        float const local_x = -(p.pos.z - chunk->zbase);
+                                        float const local_y = -(p.pos.x - chunk->xbase);
+                                        float const local_z = p.pos.y - chunk->ybase;
+
+                                        body << "{\"t\":\"ge\",\"i\":" << records
+                                             << ",\"cseq\":" << cseq
+                                             << ",\"chunk\":[" << cx << ',' << cy << ']'
+                                             << ",\"doodadId\":" << p.doodad_id
+                                             << ",\"effectId\":" << p.effect_id
+                                             << ",\"slot\":" << +p.table_slot
+                                             << ",\"facetIdx\":" << (4 * (p.cell_col + 8 * p.cell_row) + p.sub_tri)
+                                             << ",\"col\":" << +p.cell_col
+                                             << ",\"row\":" << +p.cell_row
+                                             << ",\"sub\":" << +p.sub_tri
+                                             << ",\"pos\":[" << local_x << ',' << local_y << ',' << local_z << ']'
+                                             << ",\"top\":[" << chunk->xbase << ',' << chunk->zbase << ',' << chunk->ybase << ']'
+                                             << ",\"world\":[" << p.pos.x << ',' << p.pos.y << ',' << p.pos.z << ']'
+                                             << ",\"rot\":" << p.rot
+                                             << ",\"scale\":" << p.scale
+                                             // stored noggit-side as (-b, c, -a); emit the client's a,b,c
+                                             << ",\"normal\":[" << -p.normal.z << ',' << -p.normal.x << ',' << p.normal.y << ']'
+                                             << ",\"colorBGRA\":[" << ((p.color >> 16) & 0xFF) << ',' << ((p.color >> 8) & 0xFF)
+                                             << ',' << (p.color & 0xFF) << ',' << ((p.color >> 24) & 0xFF) << "]}\n";
+                                        records++;
+                                    }
+
+                                    chunks++;
+                                    cseq++;
+                                }
+                            }
+                        }
+
+                        out << "{\"t\":\"meta\",\"source\":\"noggit\",\"records\":" << records
+                            << ",\"chunks\":" << chunks
+                            << ",\"groundEffectDensity\":" << _map_view->getWorld()->renderer()->_detail_doodad_density
+                            << ",\"groundEffectDist\":" << _map_view->getWorld()->renderer()->_detail_doodad_distance
+                            << "}\n";
+                        out << body.str();
+                        out << "{\"t\":\"end\",\"records\":" << records << ",\"chunks\":" << chunks << "}\n";
+
+                        Log << "Detail doodad export: " << records << " placements over " << chunks
+                            << " chunks -> noggit_gedump.jsonl" << std::endl;
                     });
             }
 

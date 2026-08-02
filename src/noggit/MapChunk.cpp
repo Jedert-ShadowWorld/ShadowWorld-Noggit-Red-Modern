@@ -45,8 +45,10 @@ MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAl
   {
 
     //  header.flags = 0;
-    px = chunk_idx / 16;
-    py = chunk_idx % 16;
+    // like the loaded path (px = header.ix = n % 16, py = header.iy = n / 16);
+    // these were transposed, which poisoned anything keyed on them
+    px = chunk_idx % 16;
+    py = chunk_idx / 16;
 
     zbase = ZEROPOINT - (maintile->zbase + py * CHUNKSIZE);
     xbase = ZEROPOINT - (maintile->xbase + px * CHUNKSIZE);

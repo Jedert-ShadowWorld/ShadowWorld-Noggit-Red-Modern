@@ -75,7 +75,10 @@ TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t 
       convertToBigAlpha();
     }
 
-    _chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP); 
+    // loading is not an edit: requeue the upload only. registerChunkUpdate would
+    // flag the doodadMapping for recompute and clobber the stored one we just
+    // read, which is what the client actually renders from
+    _chunk->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
   }
 }
 
