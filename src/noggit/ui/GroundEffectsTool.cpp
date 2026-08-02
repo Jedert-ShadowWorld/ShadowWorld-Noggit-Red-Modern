@@ -2,6 +2,7 @@
 #include <noggit/DBC.h>
 #include <noggit/DetailDoodads.hpp>
 #include <noggit/MapChunk.h>
+#include <noggit/Model.h>
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/MapTile.h>
 #include <noggit/MapView.h>
@@ -20,6 +21,7 @@
 #include <algorithm>
 #include <exception>
 #include <limits>
+#include <map>
 #include <string>
 
 #include <QDialog>
@@ -306,6 +308,55 @@ namespace Noggit
                 connect(preview_distance_spin, qOverload<int>(&QSpinBox::valueChanged), [this](int value)
                     {
                         _map_view->getWorld()->renderer()->_detail_doodad_distance = static_cast<float>(value);
+                    });
+
+                auto preview_log_btn = new QPushButton("Log placement stats", this);
+                preview_log_btn->setToolTip("Writes per-model placement counts and load states of all cached chunks to the log.");
+                preview_layout->addRow(preview_log_btn);
+
+                connect(preview_log_btn, &QPushButton::clicked, [this]()
+                    {
+                        struct ModelStats { int placements = 0; Model* model = nullptr; };
+                        std::map<std::string, ModelStats> per_model;
+                        int chunks_cached = 0;
+                        int placements_total = 0;
+
+                        for (MapTile* tile : _map_view->getWorld()->mapIndex.loaded_tiles())
+                        {
+                            for (int x = 0; x < 16; ++x)
+                            {
+                                for (int z = 0; z < 16; ++z)
+                                {
+                                    MapChunk* chunk = tile->getChunk(x, z);
+                                    Noggit::ChunkDetailDoodads* cache = chunk->getDetailDoodads();
+                                    if (cache->density < 0) // never generated
+                                    {
+                                        continue;
+                                    }
+                                    chunks_cached++;
+                                    for (auto const& model_batch : cache->models)
+                                    {
+                                        auto& stats = per_model[model_batch.first->file_key().filepath()];
+                                        stats.placements += static_cast<int>(model_batch.second.size());
+                                        stats.model = model_batch.first.get();
+                                        placements_total += static_cast<int>(model_batch.second.size());
+                                    }
+                                }
+                            }
+                        }
+
+                        Log << "Detail doodads: " << placements_total << " placements over "
+                            << chunks_cached << " cached chunks, " << per_model.size() << " distinct models:" << std::endl;
+                        for (auto const& pair : per_model)
+                        {
+                            char const* state = "loading";
+                            if (pair.second.model->loading_failed())
+                                state = "LOAD FAILED";
+                            else if (pair.second.model->finishedLoading())
+                                state = pair.second.model->skin_load_failed() ? "SKIN FAILED" : "ok";
+                            Log << "  " << pair.first << " : " << pair.second.placements
+                                << " placements, " << state << std::endl;
+                        }
                     });
             }
 
