@@ -2942,9 +2942,8 @@ void World::removeTextureGlobal(scoped_blp_texture_reference tex)
         bool tile_changed = false;
         for_all_chunks_on_tile(mTile, [&](MapChunk* chunk)
         {
-          if (chunk->texture_set->texture_id(tex) >= 0)
+          if (chunk->eraseTexture(tex))
           {
-            chunk->eraseTexture(tex);
             tile_changed = true;
           }
         });

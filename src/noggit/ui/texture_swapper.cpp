@@ -121,7 +121,7 @@ namespace Noggit
           }
           });
 
-      connect(remove_text_global, &QPushButton::clicked, [this]() {
+      connect(remove_text_global, &QPushButton::clicked, [this, map_view]() {
           if (_texture_to_swap)
           {
               // writes every affected ADT straight to disk, no undo — confirm first
@@ -130,6 +130,8 @@ namespace Noggit
                   , "Remove this texture from every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone."
                   , QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes)
               {
+                  map_view->context()->makeCurrent(map_view->context()->surface());
+                  OpenGL::context::scoped_setter const _ (::gl, map_view->context());
                   _world->removeTextureGlobal(_texture_to_swap.value());
               }
           }
