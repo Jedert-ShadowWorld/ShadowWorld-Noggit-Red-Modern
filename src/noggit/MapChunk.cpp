@@ -1329,7 +1329,7 @@ void MapChunk::eraseTextures()
   texture_set->eraseTextures();
 }
 
-void MapChunk::eraseTexture(scoped_blp_texture_reference const& tex)
+bool MapChunk::eraseTexture(scoped_blp_texture_reference const& tex)
 {
 
     int textureindex = texture_set->get_texture_index_or_add(tex, 0);
@@ -1337,7 +1337,10 @@ void MapChunk::eraseTexture(scoped_blp_texture_reference const& tex)
     if (textureindex != -1)
     {
         texture_set->eraseTexture(textureindex);
+        return true;
     }
+
+    return false;
 }
 
 void MapChunk::change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags)

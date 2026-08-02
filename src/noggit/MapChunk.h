@@ -178,7 +178,7 @@ public:
   int addTexture(scoped_blp_texture_reference texture);
   bool switchTexture(scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
   void eraseTextures();
-  void eraseTexture(scoped_blp_texture_reference const& tex);
+  bool eraseTexture(scoped_blp_texture_reference const& tex);
   void change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags);
 
   void clear_shadows();
