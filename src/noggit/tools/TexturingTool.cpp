@@ -449,15 +449,24 @@ namespace Noggit
                     std::string const texture = _texturingTool->_current_texture->filename();
 
                     // the paint targets the selected texture's layers and silently
-                    // does nothing without one; say so instead
+                    // does nothing without one; say so instead (once per stroke,
+                    // onTick fires every frame the button is held)
                     if (texture.empty() || texture == "tileset\\generic\\black.blp")
                     {
-                        mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a texture first - the effect is painted onto that texture's layers.", 2000);
+                        if (!_ge_brush_warning_shown)
+                        {
+                            mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a texture first - the effect is painted onto that texture's layers.", 2000);
+                            _ge_brush_warning_shown = true;
+                        }
                     }
                     // unsaved sets have id 0; painting that would clear instead
                     else if (!effect.has_value() || !effect->ID)
                     {
-                        mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a saved set first (unsaved sets have no id to paint).", 2000);
+                        if (!_ge_brush_warning_shown)
+                        {
+                            mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a saved set first (unsaved sets have no id to paint).", 2000);
+                            _ge_brush_warning_shown = true;
+                        }
                     }
                     else if (!params.underMap)
                     {
@@ -486,7 +495,11 @@ namespace Noggit
 
                     if (texture.empty() || texture == "tileset\\generic\\black.blp")
                     {
-                        mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a texture first - the clear removes the effect from that texture's layers.", 2000);
+                        if (!_ge_brush_warning_shown)
+                        {
+                            mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a texture first - the clear removes the effect from that texture's layers.", 2000);
+                            _ge_brush_warning_shown = true;
+                        }
                     }
                     else
                     {
@@ -564,6 +577,14 @@ namespace Noggit
         }
 
         mapView()->doSelection(false, false);
+    }
+
+    void TexturingTool::onMouseRelease(MouseReleaseParameters const& params)
+    {
+        if (params.button == Qt::MouseButton::LeftButton)
+        {
+            _ge_brush_warning_shown = false;
+        }
     }
 
     void TexturingTool::onMouseMove(MouseMoveParameters const& params)

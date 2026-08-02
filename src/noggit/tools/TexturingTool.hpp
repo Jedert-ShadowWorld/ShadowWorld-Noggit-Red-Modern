@@ -48,6 +48,8 @@ namespace Noggit
 
         void onMousePress(MousePressParameters const& params) override;
 
+        void onMouseRelease(MouseReleaseParameters const& params) override;
+
         void onMouseMove(MouseMoveParameters const& params) override;
 
         void onMouseWheel(MouseWheelParameters const& params) override;
@@ -63,6 +65,8 @@ namespace Noggit
         QDockWidget* _texturePaletteDock = nullptr;
         QDockWidget* _texturePickerDock = nullptr;
         bool _texturePickerNeedUpdate = false;
+        // onTick runs every frame the button is held; warn once per stroke
+        bool _ge_brush_warning_shown = false;
         Noggit::BoolToggleProperty _show_texture_browser_window = { false };
         Noggit::BoolToggleProperty _show_texture_palette_window = { false };
 
