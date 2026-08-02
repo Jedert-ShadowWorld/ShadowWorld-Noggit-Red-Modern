@@ -5,16 +5,26 @@
 #include <noggit/ContextObject.hpp>
 #include <noggit/ModelManager.h>
 
-#include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 class MapChunk;
 
 namespace Noggit
 {
+  struct DetailDoodadPlacement
+  {
+    std::uint16_t model_index;
+    bool terrain_align;   // GroundEffectDoodad flag 0x1
+    glm::vec3 pos;        // world space
+    float rot;            // [0, 2pi]
+    float scale;          // [0.67, 1.33]
+    glm::vec3 normal;     // terrain facet normal, written to every vertex
+    std::uint32_t color;  // RGBA8: MCCV with the MCSH shadow term baked in
+  };
+
   // Client-matching ground effect doodad placements for one chunk, cached and
   // regenerated when the chunk is edited, the ground effect DBCs change or the
   // density setting moves.
@@ -23,7 +33,9 @@ namespace Noggit
     std::uint32_t chunk_stamp = 0;
     std::uint32_t dbc_stamp = 0;
     int density = -1;
-    std::vector<std::pair<scoped_model_reference, std::vector<glm::mat4x4>>> models;
+    std::uint32_t revision = 0; // bumped per regeneration; keys the GL batch cache
+    std::vector<scoped_model_reference> models;
+    std::vector<DetailDoodadPlacement> placements;
   };
 
   namespace DetailDoodads
@@ -34,8 +46,9 @@ namespace Noggit
 
     // Reproduces CMapChunk::CreateDetailDoodads (Wow.exe 12340 @ 0x7D3390):
     // per-chunk deterministic seed, cell picks, stride-13 weighted doodad
-    // table and the jitter/slope/plane-snap math, so the editor shows the
-    // same layout the client will generate from the saved data.
+    // table, the jitter/slope/plane-snap math and the MCCV/MCSH colour terms,
+    // so the editor shows the same layout the client generates from the saved
+    // data.
     void generate(MapChunk* chunk, int density, NoggitRenderContext context, ChunkDetailDoodads& out);
   }
 }

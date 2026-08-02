@@ -334,12 +334,13 @@ namespace Noggit
                                         continue;
                                     }
                                     chunks_cached++;
-                                    for (auto const& model_batch : cache->models)
+                                    for (auto const& placement : cache->placements)
                                     {
-                                        auto& stats = per_model[model_batch.first->file_key().filepath()];
-                                        stats.placements += static_cast<int>(model_batch.second.size());
-                                        stats.model = model_batch.first.get();
-                                        placements_total += static_cast<int>(model_batch.second.size());
+                                        Model* model = cache->models[placement.model_index].get();
+                                        auto& stats = per_model[model->file_key().filepath()];
+                                        stats.placements++;
+                                        stats.model = model;
+                                        placements_total++;
                                     }
                                 }
                             }

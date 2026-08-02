@@ -684,11 +684,34 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
   }
 
-  // ground effect detail doodads: client-matching placements for chunks in
-  // range, cached per chunk and drawn through the regular m2 batches
+  // ground effect detail doodads: client-matching placements per chunk, drawn
+  // like the client (merged buffers, terrain normal, MCCV/MCSH colour, fade)
   if (_draw_detail_doodads && render_settings.draw_models && !render_settings.minimap_render)
   {
-    ZoneScopedN("World::draw() : Collect detail doodads");
+    ZoneScopedN("World::draw() : Detail doodads");
+
+    if (!_detail_doodads_program)
+    {
+      _detail_doodads_program.reset
+          ( new OpenGL::program
+                { { GL_VERTEX_SHADER,   OpenGL::shader::src_from_qrc("detail_doodad_vs") }
+                    , { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("detail_doodad_fs") }
+                }
+          );
+      OpenGL::Scoped::use_program shader {*_detail_doodads_program.get()};
+      shader.bind_uniform_block("matrices", 0);
+      shader.bind_uniform_block("lighting", 1);
+      shader.uniform("tex", 0);
+    }
+
+    OpenGL::Scoped::use_program shader {*_detail_doodads_program.get()};
+    shader.uniform("fade_dist", _detail_doodad_distance);
+
+    // the client draws these without backface culling, depth-writing, alpha-keyed
+    gl.disable(GL_CULL_FACE);
+    gl.disable(GL_BLEND);
+    gl.depthMask(GL_TRUE);
+
     for (auto const& pair : _world->_loaded_tiles_buffer)
     {
       MapTile* tile = pair.second;
@@ -724,22 +747,14 @@ void WorldRender::draw (glm::mat4x4 const& model_view
             Noggit::DetailDoodads::generate(chunk, _detail_doodad_density, _world->_context, *cache);
           }
 
-          for (auto& model_batch : cache->models)
-          {
-            Model* model = model_batch.first.get();
-
-            if (model->loading_failed() || !model->finishedLoading())
-            {
-              continue;
-            }
-
-            auto& instances = models_to_draw[model];
-            instances.insert(instances.end(), model_batch.second.begin(), model_batch.second.end());
-          }
+          _detail_doodads.drawChunk(shader, chunk, cache, frame);
         }
       }
     }
+
+    gl.enable(GL_CULL_FACE);
   }
+  _detail_doodads.endFrame(frame);
 
   // WMOs / map objects
   if (render_settings.draw_wmo || _world->mapIndex.hasAGlobalWMO())

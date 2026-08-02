@@ -9,6 +9,7 @@
 
 #include <noggit/tool_enums.hpp>
 #include <noggit/rendering/CursorRender.hpp>
+#include <noggit/rendering/DetailDoodadRender.hpp>
 #include <noggit/rendering/LiquidTextureManager.hpp>
 #include <noggit/map_horizon.h>
 #include <noggit/Sky.h>
@@ -143,6 +144,8 @@ namespace Noggit::Rendering
     std::unique_ptr<OpenGL::program> _m2_instanced_program;
     std::unique_ptr<OpenGL::program> _m2_particles_program;
     std::unique_ptr<OpenGL::program> _m2_ribbons_program;
+    std::unique_ptr<OpenGL::program> _detail_doodads_program;
+    DetailDoodadRender _detail_doodads;
     std::unique_ptr<OpenGL::program> _m2_box_program;
     std::unique_ptr<OpenGL::program> _wmo_program;
     std::unique_ptr<OpenGL::program> _liquid_program;

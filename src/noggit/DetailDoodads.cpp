@@ -7,10 +7,9 @@
 #include <noggit/MapTile.h>
 #include <noggit/texture_set.hpp>
 
-#include <glm/gtc/matrix_transform.hpp>
-
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -99,23 +98,23 @@ namespace
   constexpr float CELL = 4.1666665f;
   constexpr float HALF_CELL = 2.0833333f;
 
+  // the 4-triangle cell fan through the centre vertex (CFacet::Set @ 0x7912C0)
+  constexpr int VTX_A[4] = { 17, 0, 18, 1 };
+  constexpr int VTX_B[4] = { 0, 1, 17, 18 };
+  constexpr int CRN_A[4] = { 3, 0, 2, 1 };
+  constexpr int CRN_B[4] = { 0, 1, 3, 2 };
+  constexpr float CORNER[4][2] = { { 0.f, 0.f }, { 0.f, -CELL }, { -CELL, -CELL }, { -CELL, 0.f } };
+
   struct Facet
   {
     float a, b, c, d; // unit plane normal + offset
   };
 
-  // CFacet::Set (@ 0x7912C0) over the standard 4-triangle cell fan through the
-  // centre vertex. Axes follow the client convention: x = the x17 vertex row
-  // (noggit z), y = the in-row column (noggit x). Heights are absolute, which
-  // only shifts the plane's d, so the plane evaluates to absolute height.
+  // Axes follow the client convention: x = the x17 vertex row (noggit z),
+  // y = the in-row column (noggit x). Heights are absolute, which only shifts
+  // the plane's d, so the plane evaluates to absolute height.
   Facet build_facet(MapChunk* chunk, int row, int col, int t)
   {
-    static constexpr int VTX_A[4] = { 17, 0, 18, 1 };
-    static constexpr int VTX_B[4] = { 0, 1, 17, 18 };
-    static constexpr int CRN_A[4] = { 3, 0, 2, 1 };
-    static constexpr int CRN_B[4] = { 0, 1, 3, 2 };
-    static constexpr float CORNER[4][2] = { { 0.f, 0.f }, { 0.f, -CELL }, { -CELL, -CELL }, { -CELL, 0.f } };
-
     int const base = 17 * row + col;
     float const base_x = -CELL * row;
     float const base_y = -CELL * col;
@@ -149,7 +148,9 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
   out.chunk_stamp = chunk->detailDoodadStamp();
   out.dbc_stamp = dbcStamp();
   out.density = density;
+  out.revision++;
   out.models.clear();
+  out.placements.clear();
 
   TextureSet* texture_set = chunk->getTextureSet();
   if (!texture_set->num())
@@ -258,7 +259,46 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
     return data;
   };
 
-  std::unordered_map<std::int32_t, std::vector<glm::mat4x4>> placements;
+  struct DoodadModel
+  {
+    int index = -1;
+    bool align = false;
+  };
+  std::unordered_map<std::int32_t, DoodadModel> doodad_models;
+
+  auto resolve_doodad = [&](std::int32_t id) -> DoodadModel const&
+  {
+    auto it = doodad_models.find(id);
+    if (it != doodad_models.end())
+    {
+      return it->second;
+    }
+
+    DoodadModel& dm = doodad_models[id];
+    if (!gGroundEffectDoodadDB.CheckIfIdExists(id))
+    {
+      return dm;
+    }
+
+    DBCFile::Record record = gGroundEffectDoodadDB.getByID(id);
+
+    std::string path = "world/nodxt/detail/";
+    path += record.getString(GroundEffectDoodadDB::Filename);
+    if (path.size() > 4)
+    {
+      std::string ext = path.substr(path.size() - 4);
+      std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+      if (ext == ".mdx" || ext == ".mdl")
+      {
+        path.replace(path.size() - 4, 4, ".m2");
+      }
+    }
+
+    dm.align = record.getUInt(GroundEffectDoodadDB::Flags) & 1;
+    dm.index = static_cast<int>(out.models.size());
+    out.models.emplace_back(path, context);
+    return dm;
+  };
 
   // pass 2: per pick, masks -> layer -> effect record -> spawn attempts
   for (int i = 0; i < D; ++i)
@@ -322,58 +362,66 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
       float const rot = (rand_signed(rnd) + 1.0f) * 3.1415927f; // [0, 2pi]
       float const scale = rand_signed(rnd) * 0.33f + 1.0f;      // [0.67, 1.33]
 
-      glm::vec3 const world_pos{ chunk->xbase + (o_col + col * CELL)
-                               , height
-                               , chunk->zbase + (o_row + row * CELL) };
-
-      glm::mat4x4 mat = glm::translate(glm::mat4x4(1.f), world_pos);
-      mat = glm::rotate(mat, -rot, glm::vec3(0.f, 1.f, 0.f));
-      mat = glm::scale(mat, glm::vec3(scale));
-
-      placements[doodad_id].push_back(mat);
-    }
-  }
-
-  if (placements.empty())
-  {
-    return;
-  }
-
-  // resolve doodad ids to model paths; several ids can share one model
-  std::unordered_map<std::string, std::vector<glm::mat4x4>> by_path;
-  for (auto& pair : placements)
-  {
-    if (!gGroundEffectDoodadDB.CheckIfIdExists(pair.first))
-    {
-      continue;
-    }
-
-    std::string path = "world/nodxt/detail/";
-    path += gGroundEffectDoodadDB.getByID(pair.first).getString(GroundEffectDoodadDB::Filename);
-    if (path.size() > 4)
-    {
-      std::string ext = path.substr(path.size() - 4);
-      std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-      if (ext == ".mdx" || ext == ".mdl")
+      // all randoms of this attempt are consumed; unresolvable ids drop here
+      DoodadModel const& dm = resolve_doodad(doodad_id);
+      if (dm.index < 0)
       {
-        path.replace(path.size() - 4, 4, ".m2");
+        continue;
       }
-    }
 
-    auto& matrices = by_path[path];
-    if (matrices.empty())
-    {
-      matrices = std::move(pair.second);
-    }
-    else
-    {
-      matrices.insert(matrices.end(), pair.second.begin(), pair.second.end());
-    }
-  }
+      // MCCV over the facet: the same jitter randoms drive the barycentric
+      // weights, so colour and position stay correlated like the client
+      float wgt, tt;
+      if (std::fabs(r2) >= std::fabs(r1))
+      {
+        wgt = std::fabs(r2);
+        tt = 0.5f - r1 * 0.5f;
+      }
+      else
+      {
+        wgt = std::fabs(r1);
+        tt = 0.5f - r2 * 0.5f;
+      }
+      if (o_row - o_col < 0.0f)
+      {
+        tt = 1.0f - tt;
+      }
 
-  out.models.reserve(by_path.size());
-  for (auto& pair : by_path)
-  {
-    out.models.emplace_back(scoped_model_reference(pair.first, context), std::move(pair.second));
+      int const base = 17 * row + col;
+      glm::vec3 const& cC = chunk->mccv[base + 9];
+      glm::vec3 const& cA = chunk->mccv[base + VTX_A[t]];
+      glm::vec3 const& cB = chunk->mccv[base + VTX_B[t]];
+      glm::vec3 rgb = cC + wgt * (cA - cC) + (wgt * tt) * (cB - cA);
+      rgb = glm::min(rgb, glm::vec3(1.0f));
+
+      // MCSH: a shadowed doodad is darkened to 70% (lit is 65254/65536)
+      float shade = 0.99570f;
+      int sx = std::clamp(static_cast<int>(std::floor((o_col + col * CELL) * 1.92f)), 0, 63);
+      int sy = std::clamp(static_cast<int>(std::floor((o_row + row * CELL) * 1.92f)), 0, 63);
+      if (chunk->_shadow_map[sy * 64 + sx])
+      {
+        shade = 0.70f;
+      }
+      rgb *= shade;
+
+      std::uint32_t const color = (static_cast<std::uint32_t>(rgb.r * 255.f))
+                                | (static_cast<std::uint32_t>(rgb.g * 255.f) << 8)
+                                | (static_cast<std::uint32_t>(rgb.b * 255.f) << 16)
+                                | 0xFF000000u;
+
+      DetailDoodadPlacement placement;
+      placement.model_index = static_cast<std::uint16_t>(dm.index);
+      placement.terrain_align = dm.align;
+      placement.pos = { chunk->xbase + (o_col + col * CELL)
+                      , height
+                      , chunk->zbase + (o_row + row * CELL) };
+      placement.rot = rot;
+      placement.scale = scale;
+      // facet normal converted from client axes to noggit axes
+      placement.normal = { -f.b, f.c, -f.a };
+      placement.color = color;
+
+      out.placements.push_back(placement);
+    }
   }
 }

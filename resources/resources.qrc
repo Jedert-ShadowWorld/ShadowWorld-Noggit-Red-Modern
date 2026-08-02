@@ -28,6 +28,8 @@
       <file alias="m2_fs">../src/noggit/rendering/glsl/m2_frag.glsl</file>
       <file alias="m2_box_vs">../src/noggit/rendering/glsl/m2_box_vert.glsl</file>
       <file alias="m2_box_fs">../src/noggit/rendering/glsl/m2_box_frag.glsl</file>
+      <file alias="detail_doodad_vs">../src/noggit/rendering/glsl/detail_doodad_vert.glsl</file>
+      <file alias="detail_doodad_fs">../src/noggit/rendering/glsl/detail_doodad_frag.glsl</file>
       <file alias="particle_vs">../src/noggit/rendering/glsl/particle_vert.glsl</file>
       <file alias="particle_fs">../src/noggit/rendering/glsl/particle_frag.glsl</file>
       <file alias="ribbon_vs">../src/noggit/rendering/glsl/ribbon_vert.glsl</file>
