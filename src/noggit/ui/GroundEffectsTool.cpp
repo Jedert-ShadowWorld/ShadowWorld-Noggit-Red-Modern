@@ -108,6 +108,10 @@ namespace Noggit
             auto button_scan_adt_loaded = new QPushButton("Scan for sets in loaded Tiles", this);
             left_side_layout->addWidget(button_scan_adt_loaded);
 
+            auto button_load_all_dbc = new QPushButton("Load all sets from DBC", this);
+            button_load_all_dbc->setToolTip("Adds every GroundEffectTexture.dbc record to the list, not just the ones found by scanning.");
+            left_side_layout->addWidget(button_load_all_dbc);
+
             // Selection.
             auto selection_group = new QGroupBox("Effect Set Selection", this);
             selection_group->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
@@ -115,10 +119,26 @@ namespace Noggit
             auto selection_layout(new QVBoxLayout(selection_group));
             selection_group->setLayout(selection_layout);
 
+            auto set_buttons_widget = new QWidget(this);
+            auto set_buttons_layout = new QHBoxLayout(set_buttons_widget);
+            set_buttons_layout->setContentsMargins(0, 0, 0, 0);
+            selection_layout->addWidget(set_buttons_widget);
+
             auto button_create_new = new QPushButton("Create New", this);
-            selection_layout->addWidget(button_create_new);
+            set_buttons_layout->addWidget(button_create_new);
+
+            auto button_duplicate = new QPushButton("Duplicate", this);
+            button_duplicate->setToolTip("Copies the selected set into a new unsaved set to edit from.");
+            set_buttons_layout->addWidget(button_duplicate);
+
+            auto button_delete = new QPushButton("Delete", this);
+            button_delete->setToolTip("Removes the selected set's GroundEffectTexture record from the dbc.\
+            \nChunks still referencing the id simply spawn nothing, like the client with a missing record.");
+            set_buttons_layout->addWidget(button_delete);
 
             connect(button_create_new, &QPushButton::clicked, [this]() { createNewSet(); });
+            connect(button_duplicate, &QPushButton::clicked, [this]() { duplicateSelectedSet(); });
+            connect(button_delete, &QPushButton::clicked, [this]() { deleteSelectedSet(); });
 
             auto _cbbox_effect_sets = new QComboBox(this);
             _cbbox_effect_sets->addItem("Noggit Default");
@@ -182,9 +202,29 @@ namespace Noggit
                     _weight_spinboxes[i]->setToolTip("Relative chance of this doodad being picked for a placement.");
                     _weight_spinboxes[i]->setFixedWidth(_object_list->iconSize().width());
                     weights_layout->addWidget(_weight_spinboxes[i]);
+
+                    connect(_weight_spinboxes[i], qOverload<int>(&QSpinBox::valueChanged),
+                        [this](int) { updateWeightShares(); });
                 }
                 weights_layout->addStretch();
                 settings_layout->addRow(weights_widget);
+
+                // The share of the client's 16-slot spawn table each slot really
+                // gets - weights are not straight percentages.
+                auto shares_widget = new QWidget(this);
+                auto shares_layout = new QHBoxLayout(shares_widget);
+                shares_layout->setContentsMargins(0, 0, 0, 0);
+                for (int i = 0; i < 4; i++)
+                {
+                    _weight_share_labels[i] = new QLabel("-", this);
+                    _weight_share_labels[i]->setAlignment(Qt::AlignHCenter);
+                    _weight_share_labels[i]->setToolTip("The slot's actual share of the client's 16-entry spawn table\
+                    \nbuilt from the weights. \"empty\" table entries spawn nothing.");
+                    _weight_share_labels[i]->setFixedWidth(_object_list->iconSize().width());
+                    shares_layout->addWidget(_weight_share_labels[i]);
+                }
+                shares_layout->addStretch();
+                settings_layout->addRow(shares_widget);
 
                 _preview_renderer = new Tools::PreviewRenderer(_object_list->iconSize().width(),
                     _object_list->iconSize().height(),
@@ -252,18 +292,22 @@ namespace Noggit
                 _generate_type_group = new QButtonGroup(apply_group);
 
                 auto generate_effect_zone = new QRadioButton("Current Zone", this);
+                generate_effect_zone->setToolTip("Only affects currently LOADED tiles of the zone; undoable.\nUse Global to reach the whole map on disk.");
                 _generate_type_group->addButton(generate_effect_zone, 0);
                 buttons_layout->addWidget(generate_effect_zone, 0, 0);
 
                 auto generate_effect_area = new QRadioButton("Current Area (Subzone)", this);
+                generate_effect_area->setToolTip("Only affects currently LOADED tiles of the area; undoable.\nUse Global to reach the whole map on disk.");
                 _generate_type_group->addButton(generate_effect_area, 1);
                 buttons_layout->addWidget(generate_effect_area, 0, 1);
 
                 auto generate_effect_adt = new QRadioButton("Current ADT (Tile)", this);
+                generate_effect_adt->setToolTip("The tile under the camera; undoable.");
                 _generate_type_group->addButton(generate_effect_adt, 2);
                 buttons_layout->addWidget(generate_effect_adt, 1, 0);
 
                 auto generate_effect_global = new QRadioButton("Global (Entire Map)", this);
+                generate_effect_global->setToolTip("Sweeps all 64x64 ADTs on disk. Changed tiles are written immediately; NOT undoable.");
                 _generate_type_group->addButton(generate_effect_global, 3);
                 buttons_layout->addWidget(generate_effect_global, 1, 1);
 
@@ -480,6 +524,39 @@ namespace Noggit
                 }
             );
 
+            // appends to whatever is listed instead of replacing scan results
+            connect(button_load_all_dbc, &QPushButton::clicked
+                , [=]()
+                {
+                    for (auto it = gGroundEffectTextureDB.begin(); it != gGroundEffectTextureDB.end(); ++it)
+                    {
+                        unsigned int const id = it->getUInt(GroundEffectTextureDB::ID);
+
+                        bool known = false;
+                        for (auto const& effect : _loaded_effects)
+                        {
+                            if (effect.ID == id)
+                            {
+                                known = true;
+                                break;
+                            }
+                        }
+                        if (known)
+                        {
+                            continue;
+                        }
+
+                        ground_effect_set set;
+                        set.load_from_id(id);
+                        if (!set.empty())
+                        {
+                            _loaded_effects.push_back(set);
+                        }
+                    }
+                    updateSetsList();
+                }
+            );
+
             connect(_cbbox_effect_sets, qOverload<int>(&QComboBox::currentIndexChanged)
                 , [=](int index)
                 {
@@ -549,6 +626,7 @@ namespace Noggit
                         item->setText(STRING_EMPTY_DISPLAY);
                         item->setToolTip("");
                         updateDoodadPreviewRender(_object_list->row(item));
+                        updateWeightShares();
                     }
                 }
             );
@@ -888,6 +966,8 @@ namespace Noggit
                 _weight_spinboxes[i]->setValue(1);
                 updateDoodadPreviewRender(i);
             }
+
+            updateWeightShares();
         }
 
         bool GroundEffectsTool::render_active_sets_overlay() const
@@ -928,17 +1008,26 @@ namespace Noggit
 
         void GroundEffectsTool::setDoodadSlotFromBrowser(QString doodad_path)
         {
+            // the dbc stores a bare filename that the client resolves under
+            // world/nodxt/detail/ (hardcoded prefix) - a model anywhere else
+            // could never render, in noggit or in game
+            QString normalized = doodad_path;
+            normalized.replace('\\', '/');
+            if (!normalized.startsWith("world/nodxt/detail/", Qt::CaseInsensitive))
+            {
+                QMessageBox::warning(this, "Ground Effect Doodad"
+                    , "Detail doodads must be models under world\\nodxt\\detail\\.\nThe client resolves the dbc filename relative to that folder, so this model would never render.");
+                return;
+            }
+
             const QFileInfo info(doodad_path);
             const QString filename(info.fileName());
-
-            // _button_effect_doodad[active_doodad_widget]->setText(filename);
 
             if (_object_list->currentItem())
                 _object_list->currentItem()->setText(filename);
 
-            // _object_list->item(active_doodad_widget)->setText(filename);
-
             updateDoodadPreviewRender(_object_list->currentRow());
+            updateWeightShares();
         }
 
         void GroundEffectsTool::updateDoodadPreviewRender(int slot_index)
@@ -1082,6 +1171,132 @@ namespace Noggit
             _loaded_effects.push_back(new_set);
             updateSetsList();
             _effect_sets_list->setCurrentRow(_effect_sets_list->count() - 1);
+        }
+
+        void GroundEffectsTool::duplicateSelectedSet()
+        {
+            int const index = _effect_sets_list->currentIndex().row();
+            if (_loaded_effects.empty() || index < 0 || index >= static_cast<int>(_loaded_effects.size()))
+            {
+                QMessageBox::information(this, "Duplicate Ground Effect Set", "Select a set to duplicate first.");
+                return;
+            }
+
+            ground_effect_set copy = _loaded_effects[index];
+            copy.Name = (copy.ID ? std::to_string(copy.ID) : copy.Name) + " copy (unsaved)";
+            copy.ID = 0;
+            _loaded_effects.push_back(copy);
+            updateSetsList();
+            _effect_sets_list->setCurrentRow(_effect_sets_list->count() - 1);
+        }
+
+        void GroundEffectsTool::deleteSelectedSet()
+        {
+            int const index = _effect_sets_list->currentIndex().row();
+            if (_loaded_effects.empty() || index < 0 || index >= static_cast<int>(_loaded_effects.size()))
+            {
+                QMessageBox::information(this, "Delete Ground Effect Set", "Select a set to delete first.");
+                return;
+            }
+
+            ground_effect_set const& set = _loaded_effects[index];
+
+            if (set.ID)
+            {
+                if (QMessageBox::question(this
+                    , "Delete Ground Effect Set"
+                    , QString("Delete GroundEffectTexture record %1 from the dbc?\nEvery map using this id loses its effect (chunks referencing it spawn nothing).\nThis cannot be undone.").arg(set.ID)
+                    , QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+                {
+                    return;
+                }
+
+                gGroundEffectTextureDB.removeRecord(set.ID);
+                gGroundEffectTextureDB.save();
+
+                // cached per-chunk placements rebuild without the record
+                DetailDoodads::bumpDbcStamp();
+
+                auto it = std::find(_project_set_ids.begin(), _project_set_ids.end(), set.ID);
+                if (it != _project_set_ids.end())
+                {
+                    _project_set_ids.erase(it);
+                    saveProjectSetRegistry();
+                }
+
+                // the shared GroundEffectDoodad records stay: other sets may use them
+            }
+
+            _loaded_effects.erase(_loaded_effects.begin() + index);
+            updateSetsList();
+        }
+
+        void GroundEffectsTool::updateWeightShares()
+        {
+            // spinbox valueChanged fires during construction, before the labels exist
+            if (!_weight_share_labels[3])
+            {
+                return;
+            }
+
+            // replicates the client's stride-13, 16-slot spawn table build (see
+            // DetailDoodads.cpp): later writes win, the padding cycles all id
+            // slots including empty ones
+            int tbl[16];
+            std::fill(tbl, tbl + 16, -1);
+
+            int w = 0;
+            int total = 0;
+            for (int k = 0; k < 4; ++k)
+            {
+                int weight = static_cast<int>(_weight_spinboxes[k]->value());
+                if (weight <= 0)
+                {
+                    continue;
+                }
+                total += weight;
+                while (weight--)
+                {
+                    tbl[w & 15] = k;
+                    w += 13;
+                }
+            }
+            while (total < 16)
+            {
+                tbl[w & 15] = total & 3;
+                ++total;
+                w += 13;
+            }
+
+            int counts[4] = { 0, 0, 0, 0 };
+            for (int s = 0; s < 16; ++s)
+            {
+                if (tbl[s] >= 0)
+                {
+                    counts[tbl[s]]++;
+                }
+            }
+
+            for (int k = 0; k < 4; ++k)
+            {
+                QListWidgetItem* item = _object_list->item(k);
+                bool const has_doodad = item && !item->text().isEmpty() && item->text() != STRING_EMPTY_DISPLAY;
+                int const percent = counts[k] * 100 / 16;
+
+                if (!counts[k])
+                {
+                    _weight_share_labels[k]->setText("0%");
+                }
+                else if (has_doodad)
+                {
+                    _weight_share_labels[k]->setText(QString::number(percent) + "%");
+                }
+                else
+                {
+                    // table entries pointing at an empty slot spawn nothing
+                    _weight_share_labels[k]->setText(QString::number(percent) + "% empty");
+                }
+            }
         }
 
         void GroundEffectsTool::saveSelectedSet()
@@ -1313,6 +1528,8 @@ namespace Noggit
                 }
                 updateDoodadPreviewRender(i);
             }
+
+            updateWeightShares();
         }
 
         void ground_effect_set::load_from_id(unsigned int effect_id)

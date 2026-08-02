@@ -16,6 +16,7 @@ class QButtonGroup;
 class QCheckBox;
 class QComboBox;
 class QGroupBox;
+class QLabel;
 class QListWidget;
 class QRadioButton;
 class QSpinBox;
@@ -118,6 +119,10 @@ namespace Noggit
       std::optional<glm::vec3> getSelectedEffectColor();
       void refreshChunkOverlayColor(MapTile* tile, MapChunk* chunk);
       void createNewSet();
+      void duplicateSelectedSet();
+      void deleteSelectedSet();
+      // effective per-slot spawn share from the client's 16-slot weight table
+      void updateWeightShares();
       void saveSelectedSet();
       void applySelectedSet();
       void clearEffectsAtScope();
@@ -160,6 +165,7 @@ namespace Noggit
       QListWidget* _object_list;
       // Per-slot doodad weights, aligned under the doodad icons.
       QSpinBox* _weight_spinboxes[4];
+      QLabel* _weight_share_labels[4] = {};
       QSpinBox* _spinbox_doodads_amount;
       QComboBox* _cbbox_terrain_type;
       QCheckBox* _apply_override_cb;
