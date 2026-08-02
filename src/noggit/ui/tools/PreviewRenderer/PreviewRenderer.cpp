@@ -282,7 +282,7 @@ void PreviewRenderer::draw()
       instance[0] = &model_instance;
       instance_mtx[0] = model_instance.transformMatrix();
 
-      if (collect_fx && model_instance.model->has_emitters())
+      if (collect_fx && model_instance.model->finishedLoading() && model_instance.model->has_emitters())
       {
         model_with_particles[model_instance.model.get()].push_back(&model_instance);
       }
@@ -413,8 +413,6 @@ void PreviewRenderer::draw()
         it.first->renderer()->drawRibbons(ribbon_shader, it.second);
       }
     }
-
-    gl.depthMask(GL_TRUE);
   }
   }
 

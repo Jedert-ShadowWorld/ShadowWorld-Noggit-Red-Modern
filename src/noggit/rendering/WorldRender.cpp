@@ -606,7 +606,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           instances.emplace_back(m2_instance->transformMatrix());
           m2_instance->_rendered_last_frame = true;
 
-          if (collect_fx && m2_instance->model->has_emitters())
+          if (collect_fx && m2_instance->model->finishedLoading() && m2_instance->model->has_emitters())
           {
             model_with_particles[m2_instance->model.get()].push_back(m2_instance);
           }
@@ -1256,8 +1256,6 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           it.first->renderer()->drawRibbons(ribbon_shader, it.second);
         }
       }
-
-      gl.depthMask(GL_TRUE);
     }
   }
 
