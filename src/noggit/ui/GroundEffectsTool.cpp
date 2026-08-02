@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <exception>
 #include <limits>
+#include <map>
 #include <string>
 
 #include <QDialog>
@@ -53,7 +54,10 @@ namespace Noggit
         {
             setWindowTitle("Ground Effects Tool");
             setMinimumSize(750, 600);
-            setWindowFlags(Qt::Tool | Qt::WindowStaysOnTopHint);
+            // Qt::Tool keeps the window above the noggit main window only;
+            // WindowStaysOnTopHint would be OS-global topmost (covers other
+            // apps and the exit confirmation dialog)
+            setWindowFlags(Qt::Tool);
             setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
             QHBoxLayout* main_layout = new QHBoxLayout(this);
             QVBoxLayout* left_side_layout = new QVBoxLayout(this);
@@ -308,12 +312,73 @@ namespace Noggit
                     {
                         _map_view->getWorld()->renderer()->_detail_doodad_distance = static_cast<float>(value);
                     });
+
+                auto preview_log_btn = new QPushButton("Log placement stats", this);
+                preview_log_btn->setToolTip("Writes per-model placement counts and load states of all cached chunks to the log.");
+                preview_layout->addRow(preview_log_btn);
+
+                connect(preview_log_btn, &QPushButton::clicked, [this]()
+                    {
+                        struct ModelStats { int placements = 0; Model* model = nullptr; };
+                        std::map<std::string, ModelStats> per_model;
+                        int chunks_cached = 0;
+                        int placements_total = 0;
+
+                        for (MapTile* tile : _map_view->getWorld()->mapIndex.loaded_tiles())
+                        {
+                            for (int x = 0; x < 16; ++x)
+                            {
+                                for (int z = 0; z < 16; ++z)
+                                {
+                                    MapChunk* chunk = tile->getChunk(x, z);
+                                    Noggit::ChunkDetailDoodads* cache = chunk->getDetailDoodads();
+                                    if (cache->density < 0) // never generated
+                                    {
+                                        continue;
+                                    }
+                                    chunks_cached++;
+                                    for (auto const& placement : cache->placements)
+                                    {
+                                        auto& stats = per_model[cache->models[placement.model_index]->file_key().filepath()];
+                                        stats.placements++;
+                                        stats.model = cache->models[placement.model_index].get();
+                                        placements_total++;
+                                    }
+                                }
+                            }
+                        }
+
+                        Log << "Detail doodads: " << placements_total << " placements over "
+                            << chunks_cached << " cached chunks, " << per_model.size() << " distinct models:" << std::endl;
+                        for (auto const& pair : per_model)
+                        {
+                            char const* state = "loading";
+                            if (pair.second.model->loading_failed())
+                                state = "LOAD FAILED";
+                            else if (pair.second.model->finishedLoading())
+                                state = pair.second.model->skin_load_failed() ? "SKIN FAILED" : "ok";
+                            Log << "  " << pair.first << " : " << pair.second.placements
+                                << " placements, " << state << std::endl;
+                        }
+                    });
             }
 
             auto button_generate = new QPushButton("Apply to Texture", this);
             apply_layout->addWidget(button_generate);
 
             connect(button_generate, &QPushButton::clicked, [this]() { applySelectedSet(); });
+
+            auto button_clear = new QPushButton("Clear Effects", this);
+            button_clear->setToolTip("Removes ground effect assignments (e.g. Blizzard's) at the selected scope.\
+            \nBy default only from the selected texture's layers; check \"All textures\" to strip every layer.");
+            apply_layout->addWidget(button_clear);
+
+            _clear_all_textures_cb = new QCheckBox("All textures", this);
+            _clear_all_textures_cb->setToolTip("Clear the effects of every texture layer, not just the selected texture.");
+            _clear_all_textures_cb->setChecked(false);
+            apply_layout->addWidget(_clear_all_textures_cb);
+
+            connect(button_clear, &QPushButton::clicked, [this]() { clearEffectsAtScope(); });
 
             // Brush modes.
             {
@@ -1136,7 +1201,33 @@ namespace Noggit
                 return;
             }
 
-            bool const override_existing = _apply_override_cb->isChecked();
+            applyEffectIdAtScope(texture, effect->ID, _apply_override_cb->isChecked()
+                , "Apply this effect to the texture on every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone.");
+        }
+
+        void GroundEffectsTool::clearEffectsAtScope()
+        {
+            bool const all_textures = _clear_all_textures_cb->isChecked();
+
+            std::string texture;
+            if (!all_textures)
+            {
+                texture = _texturing_tool->_current_texture->filename();
+                if (texture.empty() || texture == "tileset\\generic\\black.blp")
+                {
+                    QMessageBox::information(this, "Clear Ground Effects", "Select a texture first, or check \"All textures\".");
+                    return;
+                }
+            }
+
+            applyEffectIdAtScope(texture, 0, true
+                , all_textures
+                  ? "Remove ALL ground effects from every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone."
+                  : "Remove the texture's ground effect from every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone.");
+        }
+
+        void GroundEffectsTool::applyEffectIdAtScope(std::string const& texture, unsigned int effect_id, bool override_existing, QString const& global_confirm)
+        {
             World* world = _map_view->getWorld();
             glm::vec3 const camera_pos = _map_view->getCamera()->position;
 
@@ -1165,27 +1256,27 @@ namespace Noggit
                 }
 
                 NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eCHUNKS_LAYERINFO);
-                world->applyGroundEffectToArea(target_area, whole_zone, texture, effect->ID, override_existing);
+                world->applyGroundEffectToArea(target_area, whole_zone, texture, effect_id, override_existing);
                 NOGGIT_ACTION_MGR->endAction();
                 break;
             }
             case 2: // current tile
             {
                 NOGGIT_ACTION_MGR->beginAction(_map_view, Noggit::ActionFlags::eCHUNKS_LAYERINFO);
-                world->applyGroundEffectToTileAt(camera_pos, texture, effect->ID, override_existing);
+                world->applyGroundEffectToTileAt(camera_pos, texture, effect_id, override_existing);
                 NOGGIT_ACTION_MGR->endAction();
                 break;
             }
             case 3: // global
             {
                 if (QMessageBox::question(this
-                    , "Apply ground effect globally"
-                    , "Apply this effect to the texture on every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone."
+                    , effect_id ? "Apply ground effect globally" : "Clear ground effects globally"
+                    , global_confirm
                     , QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
                 {
                     return;
                 }
-                world->applyGroundEffectGlobal(texture, effect->ID, override_existing);
+                world->applyGroundEffectGlobal(texture, effect_id, override_existing);
                 break;
             }
             default:

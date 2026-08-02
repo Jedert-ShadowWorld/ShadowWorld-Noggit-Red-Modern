@@ -120,6 +120,10 @@ namespace Noggit
       void createNewSet();
       void saveSelectedSet();
       void applySelectedSet();
+      void clearEffectsAtScope();
+      // shared scope switch (zone/area/tile/global) behind Apply and Clear;
+      // empty texture matches every layer
+      void applyEffectIdAtScope(std::string const& texture, unsigned int effect_id, bool override_existing, QString const& global_confirm);
       // sets saved from this tool are remembered per project so they stay
       // listed even when no scanned chunk references them yet
       void loadProjectSetRegistry();
@@ -159,6 +163,7 @@ namespace Noggit
       QSpinBox* _spinbox_doodads_amount;
       QComboBox* _cbbox_terrain_type;
       QCheckBox* _apply_override_cb;
+      QCheckBox* _clear_all_textures_cb;
       // 0 = zone, 1 = area, 2 = tile, 3 = global
       QButtonGroup* _generate_type_group;
       QGroupBox* _brush_grup_box;

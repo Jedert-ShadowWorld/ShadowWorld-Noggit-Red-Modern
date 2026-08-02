@@ -1891,14 +1891,15 @@ void World::paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool 
 
 namespace
 {
-    // Assigns effect_id to every layer of the chunk matching the texture; returns whether anything changed.
+    // Assigns effect_id to every layer of the chunk matching the texture
+    // (empty texture matches every layer); returns whether anything changed.
     bool apply_ground_effect_to_chunk(MapChunk* chunk, std::string const& texture, unsigned int effect_id, bool override_existing, bool register_action)
     {
         auto texture_set = chunk->getTextureSet();
         bool changed = false;
         for (int layer = 0; layer < texture_set->num(); ++layer)
         {
-            if (texture_set->filename(layer) != texture)
+            if (!texture.empty() && texture_set->filename(layer) != texture)
             {
                 continue;
             }

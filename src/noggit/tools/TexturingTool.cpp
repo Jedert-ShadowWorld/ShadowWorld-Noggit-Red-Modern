@@ -23,6 +23,7 @@
 #include <QDockWidget>
 #include <QMenu>
 #include <QSettings>
+#include <QStatusBar>
 
 #include <random>
 
@@ -445,13 +446,26 @@ namespace Noggit
                 else if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::effect)
                 {
                     auto effect = ge_tool->getSelectedGroundEffect();
-                    if (effect.has_value() && !params.underMap)
+                    std::string const texture = _texturingTool->_current_texture->filename();
+
+                    // the paint targets the selected texture's layers and silently
+                    // does nothing without one; say so instead
+                    if (texture.empty() || texture == "tileset\\generic\\black.blp")
+                    {
+                        mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a texture first - the effect is painted onto that texture's layers.", 2000);
+                    }
+                    // unsaved sets have id 0; painting that would clear instead
+                    else if (!effect.has_value() || !effect->ID)
+                    {
+                        mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a saved set first (unsaved sets have no id to paint).", 2000);
+                    }
+                    else if (!params.underMap)
                     {
                         NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_LAYERINFO,
                             Noggit::ActionModalityControllers::eSHIFT
                             | Noggit::ActionModalityControllers::eLMB);
                         mv->getWorld()->paintGroundEffect(mv->cursorPosition(), ge_tool->radius(),
-                            _texturingTool->_current_texture->filename(), effect->ID);
+                            texture, effect->ID);
                         ge_tool->refreshOverlayForChunksInRange(mv->cursorPosition(), ge_tool->radius());
                     }
                 }
@@ -468,13 +482,22 @@ namespace Noggit
                 }
                 else if (ge_tool->brush_mode() == Noggit::Ui::ground_effect_brush_mode::effect)
                 {
-                    // ctrl clears the effect id from the layer
-                    NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_LAYERINFO,
-                        Noggit::ActionModalityControllers::eCTRL
-                        | Noggit::ActionModalityControllers::eLMB);
-                    mv->getWorld()->paintGroundEffect(mv->cursorPosition(), ge_tool->radius(),
-                        _texturingTool->_current_texture->filename(), 0);
-                    ge_tool->refreshOverlayForChunksInRange(mv->cursorPosition(), ge_tool->radius());
+                    std::string const texture = _texturingTool->_current_texture->filename();
+
+                    if (texture.empty() || texture == "tileset\\generic\\black.blp")
+                    {
+                        mv->mainWindow()->statusBar()->showMessage("Ground effect brush: select a texture first - the clear removes the effect from that texture's layers.", 2000);
+                    }
+                    else
+                    {
+                        // ctrl clears the effect id from the layer
+                        NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_LAYERINFO,
+                            Noggit::ActionModalityControllers::eCTRL
+                            | Noggit::ActionModalityControllers::eLMB);
+                        mv->getWorld()->paintGroundEffect(mv->cursorPosition(), ge_tool->radius(),
+                            texture, 0);
+                        ge_tool->refreshOverlayForChunksInRange(mv->cursorPosition(), ge_tool->radius());
+                    }
                 }
             }
         }
