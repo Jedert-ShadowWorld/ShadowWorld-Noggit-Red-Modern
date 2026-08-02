@@ -24,16 +24,6 @@ namespace Noggit
     glm::vec3 normal;     // terrain facet normal, written to every vertex
     std::uint32_t color;  // RGBA8: MCCV with the MCSH shadow term baked in
     std::uint16_t facet_idx; // 4 * cell + sub_tri; keys the client's per-batch rotation matrix cache
-    // kept for the client-dump diff: the client's AddDoodad record carries the
-    // DBC id and facetIdx = 4 * (col + 8 * row) + sub_tri
-    std::int32_t doodad_id;
-    std::uint8_t cell_col;
-    std::uint8_t cell_row;
-    std::uint8_t sub_tri;
-    // diff aids: which GroundEffectTexture record drove this spawn and which
-    // slot of its 16-entry weight table was picked ((i + j) & 15)
-    std::uint32_t effect_id;
-    std::uint8_t table_slot;
   };
 
   // Client-matching ground effect doodad placements for one chunk, cached and

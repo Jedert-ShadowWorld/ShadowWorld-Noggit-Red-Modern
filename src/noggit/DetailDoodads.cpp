@@ -423,13 +423,6 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
       placement.normal = { -f.b, f.c, -f.a };
       placement.color = color;
       placement.facet_idx = static_cast<std::uint16_t>(4 * cell + t);
-      placement.doodad_id = doodad_id;
-      placement.cell_col = static_cast<std::uint8_t>(col);
-      placement.cell_row = static_cast<std::uint8_t>(row);
-      placement.sub_tri = static_cast<std::uint8_t>(t);
-      placement.effect_id = effect_id;
-      placement.table_slot = static_cast<std::uint8_t>(
-          (static_cast<std::uint8_t>(i) + static_cast<std::uint8_t>(j)) & 15);
 
       out.placements.push_back(placement);
     }

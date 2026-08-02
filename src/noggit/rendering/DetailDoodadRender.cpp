@@ -2,7 +2,6 @@
 
 #include <noggit/rendering/DetailDoodadRender.hpp>
 
-#include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/Model.h>
 #include <noggit/rendering/ModelRender.hpp>
@@ -76,79 +75,48 @@ namespace Noggit::Rendering
     for (std::size_t i = 0; i < cache->models.size(); ++i)
     {
       Model* model = cache->models[i].get();
-      char const* reject = nullptr;
 
-      if (model->loading_failed())
+      if (model->loading_failed()
+        || model->skin_load_failed()
+        || model->renderer()->renderPasses().empty()
+        || model->vertexData().empty())
       {
-        reject = "model load failed";
-      }
-      else if (model->skin_load_failed())
-      {
-        reject = "skin load failed";
-      }
-      else if (model->renderer()->renderPasses().empty())
-      {
-        reject = "no render passes";
-      }
-      else if (model->vertexData().empty())
-      {
-        reject = "no vertex data";
-      }
-      else
-      {
-        // detail doodads never go through the regular M2 draw path, so the
-        // lazy first-draw upload that fills Model::_textures hasn't happened
-        if (!model->renderer()->uploaded())
-        {
-          model->renderer()->upload();
-        }
-
-        auto const& passes = model->renderer()->renderPasses();
-
-        // the client only draws submesh 0 with the first batch's texture
-        auto const pass = std::min_element(passes.begin(), passes.end()
-          , [](auto const& a, auto const& b) { return a.index_start < b.index_start; });
-
-        if (!pass->index_count)
-        {
-          reject = "empty pass";
-        }
-        else if (pass->textures[0] >= model->textureLookup().size())
-        {
-          reject = "texture lookup out of range";
-        }
-        else
-        {
-          // resolved like ModelRenderPass::bindTexture
-          std::uint16_t const tex = model->textureLookup()[pass->textures[0]];
-          if (tex >= model->textureRefs().size())
-          {
-            reject = "texture out of range";
-          }
-          else
-          {
-            ModelGeo& g = geo[i];
-            g.model = model;
-            g.texture_id = tex;
-            g.vertex_start = pass->vertex_start;
-            g.vertex_count = pass->vertex_end - pass->vertex_start;
-            g.index_start = pass->index_start;
-            g.index_count = pass->index_count;
-            g.ok = g.vertex_count && g.index_count;
-            if (!g.ok)
-            {
-              reject = "empty geometry range";
-            }
-          }
-        }
+        continue;
       }
 
-      static int reject_logs = 0;
-      if (reject && reject_logs < 12)
+      // detail doodads never go through the regular M2 draw path, so the
+      // lazy first-draw upload that fills Model::_textures hasn't happened
+      if (!model->renderer()->uploaded())
       {
-        reject_logs++;
-        Log << "DetailDoodadRender: " << model->file_key().filepath() << " rejected: " << reject << std::endl;
+        model->renderer()->upload();
       }
+
+      auto const& passes = model->renderer()->renderPasses();
+
+      // the client only draws submesh 0 with the first batch's texture
+      auto const pass = std::min_element(passes.begin(), passes.end()
+        , [](auto const& a, auto const& b) { return a.index_start < b.index_start; });
+
+      if (!pass->index_count || pass->textures[0] >= model->textureLookup().size())
+      {
+        continue;
+      }
+
+      // resolved like ModelRenderPass::bindTexture
+      std::uint16_t const tex = model->textureLookup()[pass->textures[0]];
+      if (tex >= model->textureRefs().size())
+      {
+        continue;
+      }
+
+      ModelGeo& g = geo[i];
+      g.model = model;
+      g.texture_id = tex;
+      g.vertex_start = pass->vertex_start;
+      g.vertex_count = pass->vertex_end - pass->vertex_start;
+      g.index_start = pass->index_start;
+      g.index_count = pass->index_count;
+      g.ok = g.vertex_count && g.index_count;
     }
 
     // CDetailDoodadInst::AddDoodad (0x7B31E0): 4 texture-keyed batches per
@@ -166,7 +134,6 @@ namespace Noggit::Rendering
     SimBatch sim[4];
     std::uint32_t const budget = static_cast<std::uint32_t>(
         std::min(std::clamp(cache->density, 16, 256) * 64, 4096));
-    std::size_t dropped = 0;
 
     for (std::size_t pi = 0; pi < cache->placements.size(); ++pi)
     {
@@ -204,7 +171,6 @@ namespace Noggit::Rendering
       }
       if (use < 0)
       {
-        ++dropped;
         continue;
       }
 
@@ -333,16 +299,6 @@ namespace Noggit::Rendering
 
     gl_data.revision = cache->revision;
     gl_data.ready = true;
-
-    static int build_logs = 0;
-    if (build_logs < 4)
-    {
-      build_logs++;
-      Log << "DetailDoodadRender::build: " << cache->placements.size() << " placements -> "
-          << vertices.size() << " verts, " << indices.size() << " indices, "
-          << gl_data.batches.size() << " batches (" << cache->models.size() << " models, "
-          << dropped << " dropped by the 4-batch budget)" << std::endl;
-    }
     return true;
   }
 
