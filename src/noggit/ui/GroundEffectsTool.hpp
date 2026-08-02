@@ -120,6 +120,10 @@ namespace Noggit
       void createNewSet();
       void saveSelectedSet();
       void applySelectedSet();
+      // sets saved from this tool are remembered per project so they stay
+      // listed even when no scanned chunk references them yet
+      void loadProjectSetRegistry();
+      void saveProjectSetRegistry();
       void setActiveGroundEffect(ground_effect_set const& effect);
       void updateDoodadPreviewRender(int slot_index);
       void scanTileForEffects(TileIndex tile_index);
@@ -127,6 +131,8 @@ namespace Noggit
       void genEffectColors();
 
       std::vector<ground_effect_set> _loaded_effects;
+      // ids of sets saved from this tool, persisted per project
+      std::vector<unsigned int> _project_set_ids;
       // Store them for faster iteration on duplicates.
       std::unordered_map<unsigned int, ground_effect_set> _ground_effect_cache;
       std::vector<glm::vec3> _effects_colors;

@@ -2,6 +2,7 @@
 #include <noggit/DBC.h>
 #include <noggit/DetailDoodads.hpp>
 #include <noggit/MapChunk.h>
+#include <noggit/project/CurrentProject.hpp>
 #include <noggit/MapTile.h>
 #include <noggit/MapView.h>
 #include <noggit/texture_set.hpp>
@@ -16,12 +17,17 @@
 #include <noggit/World.inl>
 #include <noggit/Log.h>
 
+#include <algorithm>
 #include <exception>
 #include <limits>
 #include <string>
 
 #include <QDialog>
 #include <QDockWidget>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMenu>
 #include <QMessageBox>
 #include <QFileInfo>
@@ -485,6 +491,9 @@ namespace Noggit
             connect(map_view->getAssetBrowserWidget(), &AssetBrowser::selectionChanged, this, [=](std::string const& path) {
                 if (isVisible()) setDoodadSlotFromBrowser(path.c_str());
                 });
+
+            loadProjectSetRegistry();
+            updateSetsList();
         }
 
         void GroundEffectsTool::updateTerrainUniformParams()
@@ -583,8 +592,77 @@ namespace Noggit
             }
         }
 
+        void GroundEffectsTool::loadProjectSetRegistry()
+        {
+            _project_set_ids.clear();
+
+            QFile file(QString::fromStdString(Noggit::Project::CurrentProject::get()->ProjectPath + "/ground_effect_sets.json"));
+            if (!file.open(QIODevice::ReadOnly))
+            {
+                return;
+            }
+
+            QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+            for (auto const& value : doc.object()["sets"].toArray())
+            {
+                unsigned int const id = static_cast<unsigned int>(value.toInt());
+                if (id)
+                {
+                    _project_set_ids.push_back(id);
+                }
+            }
+        }
+
+        void GroundEffectsTool::saveProjectSetRegistry()
+        {
+            QJsonArray sets;
+            for (unsigned int id : _project_set_ids)
+            {
+                sets.append(static_cast<int>(id));
+            }
+            QJsonObject root;
+            root["sets"] = sets;
+
+            QFile file(QString::fromStdString(Noggit::Project::CurrentProject::get()->ProjectPath + "/ground_effect_sets.json"));
+            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            {
+                file.write(QJsonDocument(root).toJson());
+            }
+            else
+            {
+                LogError << "Couldn't write the ground effect set registry to the project folder." << std::endl;
+            }
+        }
+
         void GroundEffectsTool::updateSetsList()
         {
+            // project-saved sets stay listed whether or not a scanned chunk uses them
+            for (unsigned int id : _project_set_ids)
+            {
+                bool known = false;
+                for (auto const& effect : _loaded_effects)
+                {
+                    if (effect.ID == id)
+                    {
+                        known = true;
+                        break;
+                    }
+                }
+                if (known)
+                {
+                    continue;
+                }
+
+                ground_effect_set set;
+                set.load_from_id(id);
+                if (set.empty()) // record no longer in the dbc
+                {
+                    continue;
+                }
+                set.Name += " [saved]";
+                _loaded_effects.push_back(set);
+            }
+
             _effect_sets_list->clear();
             genEffectColors();
 
@@ -1017,6 +1095,12 @@ namespace Noggit
 
             // cached per-chunk placements rebuild against the new records
             DetailDoodads::bumpDbcStamp();
+
+            if (std::find(_project_set_ids.begin(), _project_set_ids.end(), record_id) == _project_set_ids.end())
+            {
+                _project_set_ids.push_back(record_id);
+                saveProjectSetRegistry();
+            }
 
             set.ID = record_id;
             set.Name = std::to_string(record_id);
