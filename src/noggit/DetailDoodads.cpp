@@ -157,8 +157,13 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
     return;
   }
 
-  // refresh the unit->layer map so painting shows up before the tile is saved
-  texture_set->updateDoodadMapping();
+  // untouched chunks keep the doodadMapping stored in the ADT, which is what
+  // the client renders from; only alpha edits force noggit's recompute
+  if (chunk->doodadMappingNeedsUpdate())
+  {
+    texture_set->updateDoodadMapping();
+    chunk->clearDoodadMappingNeedsUpdate();
+  }
 
   std::uint16_t const* mapping = texture_set->getDoodadMappingBase();
   std::uint8_t const* stencil = texture_set->getDoodadStencilBase();

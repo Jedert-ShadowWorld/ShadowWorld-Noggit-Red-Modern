@@ -272,7 +272,7 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
       chunk->endChunkUpdates();
 
       if (_texture_not_loaded || skip_upload_alphamap)
-        chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+        chunk->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
 
     }
 

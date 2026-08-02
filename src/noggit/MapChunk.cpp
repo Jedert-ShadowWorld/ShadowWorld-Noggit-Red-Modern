@@ -2160,10 +2160,15 @@ void MapChunk::initMCCV()
   }
 }
 
-void MapChunk::registerChunkUpdate(unsigned flags)
+void MapChunk::requeueChunkUpdate(unsigned flags)
 {
   _chunk_update_flags |= flags;
   mt->registerChunkUpdate(flags);
+}
+
+void MapChunk::registerChunkUpdate(unsigned flags)
+{
+  requeueChunkUpdate(flags);
 
   if (flags & (ChunkUpdateFlags::VERTEX | ChunkUpdateFlags::ALPHAMAP | ChunkUpdateFlags::FLAGS
              | ChunkUpdateFlags::HOLES | ChunkUpdateFlags::GROUND_EFFECT
@@ -2171,6 +2176,21 @@ void MapChunk::registerChunkUpdate(unsigned flags)
   {
     _detail_doodad_stamp++;
   }
+
+  if (flags & ChunkUpdateFlags::ALPHAMAP)
+  {
+    _doodad_mapping_needs_update = true;
+  }
+}
+
+bool MapChunk::doodadMappingNeedsUpdate() const
+{
+  return _doodad_mapping_needs_update;
+}
+
+void MapChunk::clearDoodadMappingNeedsUpdate()
+{
+  _doodad_mapping_needs_update = false;
 }
 
 MapChunk::~MapChunk() = default;
