@@ -53,6 +53,9 @@ namespace Noggit
     public:
       void load_from_id(unsigned int effect_id);
 
+      // "<id> - <doodad stems>" so the sets list reads as more than a number
+      void rebuild_name();
+
       bool empty() const;;
 
       // only ignores id and name (use filename to compare doodads)

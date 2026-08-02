@@ -1046,11 +1046,23 @@ namespace Noggit
             }
             else
             {
-                // Load preview render.
+                // Load preview render. A few stock records reference models that
+                // no longer ship (dead Tirisfal/Silverpine/Arathi entries) - a
+                // failed render must not abort filling the other slots
                 QString filepath(("world/nodxt/detail/" + filename.toStdString()).c_str());
-                _preview_renderer->setModelOffscreen(filepath.toStdString());
-                list_item->setIcon(*_preview_renderer->renderToPixmap());
-                list_item->setToolTip(filepath);
+                try
+                {
+                    _preview_renderer->setModelOffscreen(filepath.toStdString());
+                    list_item->setIcon(*_preview_renderer->renderToPixmap());
+                    list_item->setToolTip(filepath);
+                }
+                catch (...)
+                {
+                    list_item->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::exclamationtriangle));
+                    list_item->setToolTip(filepath + " (preview render failed)");
+                    LogError << "Ground effect doodad preview render failed for "
+                        << filepath.toStdString() << std::endl;
+                }
             }
         }
 
@@ -1384,7 +1396,6 @@ namespace Noggit
             }
 
             set.ID = record_id;
-            set.Name = std::to_string(record_id);
             set.Amount = _spinbox_doodads_amount->value();
             set.TerrainType = _cbbox_terrain_type->currentData().toUInt();
             for (int i = 0; i < 4; ++i)
@@ -1393,6 +1404,7 @@ namespace Noggit
                 set.Doodads[i].filename = filenames[i];
                 set.Weights[i] = _weight_spinboxes[i]->value();
             }
+            set.rebuild_name();
 
             _ground_effect_cache[record_id] = set;
 
@@ -1547,7 +1559,6 @@ namespace Noggit
             try
             {
                 DBCFile::Record GErecord = gGroundEffectTextureDB.getByID(effect_id);
-                Name = std::to_string(effect_id);
                 ID = GErecord.getUInt(GroundEffectTextureDB::ID);
                 Amount = GErecord.getUInt(GroundEffectTextureDB::Amount);
                 TerrainType = GErecord.getUInt(GroundEffectTextureDB::TerrainType);
@@ -1578,11 +1589,55 @@ namespace Noggit
 
                     Doodads[i].filename = filename.toStdString();
                 }
+
+                rebuild_name();
             }
             catch (GroundEffectTextureDB::NotFound)
             {
                 ID = 0;
                 LogError << "Couldn't find ground effect Id : " << effect_id << "in GroundEffectTexture.dbc" << std::endl;
+            }
+        }
+
+        void ground_effect_set::rebuild_name()
+        {
+            std::string doodad_names;
+            int doodad_count = 0;
+            for (int i = 0; i < 4; ++i)
+            {
+                if (Doodads[i].filename.empty())
+                {
+                    continue;
+                }
+                doodad_count++;
+                if (doodad_count <= 2)
+                {
+                    std::string stem = Doodads[i].filename;
+                    size_t const dot = stem.find_last_of('.');
+                    if (dot != std::string::npos)
+                    {
+                        stem.resize(dot);
+                    }
+                    if (!doodad_names.empty())
+                    {
+                        doodad_names += ", ";
+                    }
+                    doodad_names += stem;
+                }
+            }
+
+            Name = std::to_string(ID);
+            if (doodad_count)
+            {
+                Name += " - " + doodad_names;
+                if (doodad_count > 2)
+                {
+                    Name += " +" + std::to_string(doodad_count - 2);
+                }
+            }
+            else
+            {
+                Name += " - no doodads";
             }
         }
 
