@@ -22,6 +22,8 @@ class QSpinBox;
 class QTabWidget;
 
 inline constexpr const char* STRING_EMPTY_DISPLAY = "-NONE-";
+// the placeholder blp current_texture holds while no real texture is selected
+inline constexpr const char* STRING_EMPTY_TEXTURE = "tileset\\generic\\black.blp";
 
 namespace Noggit
 {

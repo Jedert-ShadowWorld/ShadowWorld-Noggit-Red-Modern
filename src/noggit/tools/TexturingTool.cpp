@@ -451,7 +451,7 @@ namespace Noggit
                     // the paint targets the selected texture's layers and silently
                     // does nothing without one; say so instead (once per stroke,
                     // onTick fires every frame the button is held)
-                    if (texture.empty() || texture == "tileset\\generic\\black.blp")
+                    if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
                     {
                         if (!_ge_brush_warning_shown)
                         {
@@ -493,7 +493,7 @@ namespace Noggit
                 {
                     std::string const texture = _texturingTool->_current_texture->filename();
 
-                    if (texture.empty() || texture == "tileset\\generic\\black.blp")
+                    if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
                     {
                         if (!_ge_brush_warning_shown)
                         {

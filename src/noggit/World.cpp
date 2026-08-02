@@ -1945,11 +1945,11 @@ void World::applyGroundEffectToTileAt(glm::vec3 const& pos, std::string const& t
     }
 
     bool tile_changed = false;
-    for (int ty = 0; ty < 16; ++ty)
+    for (int cx = 0; cx < 16; ++cx)
     {
-        for (int tx = 0; tx < 16; ++tx)
+        for (int cz = 0; cz < 16; ++cz)
         {
-            if (apply_ground_effect_to_chunk(tile->getChunk(ty, tx), texture, effect_id, override_existing, true))
+            if (apply_ground_effect_to_chunk(tile->getChunk(cx, cz), texture, effect_id, override_existing, true))
             {
                 tile_changed = true;
             }
@@ -1973,20 +1973,16 @@ void World::applyGroundEffectToArea(int area_id, bool whole_zone, std::string co
         }
 
         bool tile_changed = false;
-        for (int ty = 0; ty < 16; ++ty)
+        for (int cx = 0; cx < 16; ++cx)
         {
-            for (int tx = 0; tx < 16; ++tx)
+            for (int cz = 0; cz < 16; ++cz)
             {
-                MapChunk* chunk = tile->getChunk(ty, tx);
+                MapChunk* chunk = tile->getChunk(cx, cz);
 
                 int chunk_area = chunk->getAreaID();
                 if (whole_zone)
                 {
-                    std::uint32_t const parent = AreaDB::get_area_parent(chunk_area);
-                    if (parent)
-                    {
-                        chunk_area = static_cast<int>(parent);
-                    }
+                    chunk_area = AreaDB::resolve_zone_id(chunk_area);
                 }
                 if (chunk_area != area_id)
                 {
@@ -2027,22 +2023,18 @@ void World::applyGroundEffectGlobal(std::string const& texture, unsigned int eff
             tile->wait_until_loaded();
 
             bool tile_changed = false;
-            for (int ty = 0; ty < 16; ++ty)
+            for (int cx = 0; cx < 16; ++cx)
             {
-                for (int tx = 0; tx < 16; ++tx)
+                for (int cz = 0; cz < 16; ++cz)
                 {
-                    MapChunk* chunk = tile->getChunk(ty, tx);
+                    MapChunk* chunk = tile->getChunk(cx, cz);
 
                     if (area_filter >= 0)
                     {
                         int chunk_area = chunk->getAreaID();
                         if (whole_zone)
                         {
-                            std::uint32_t const parent = AreaDB::get_area_parent(chunk_area);
-                            if (parent)
-                            {
-                                chunk_area = static_cast<int>(parent);
-                            }
+                            chunk_area = AreaDB::resolve_zone_id(chunk_area);
                         }
                         if (chunk_area != area_filter)
                         {

@@ -139,6 +139,9 @@ namespace Noggit
       void setActiveGroundEffect(ground_effect_set const& effect);
       void updateDoodadPreviewRender(int slot_index);
       void scanTileForEffects(TileIndex tile_index);
+      // appends project-saved sets missing from the list so they stay listed
+      // whether or not a scanned chunk uses them
+      void mergeProjectSetsIntoLoaded();
       void updateSetsList();
       void genEffectColors();
 
@@ -167,7 +170,7 @@ namespace Noggit
       // For render previews.
       QListWidget* _object_list;
       // Per-slot doodad weights, aligned under the doodad icons.
-      QSpinBox* _weight_spinboxes[4];
+      QSpinBox* _weight_spinboxes[4] = {};
       QLabel* _weight_share_labels[4] = {};
       QSpinBox* _spinbox_doodads_amount;
       QComboBox* _cbbox_terrain_type;

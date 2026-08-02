@@ -21,6 +21,7 @@
 #include <exception>
 #include <limits>
 #include <string>
+#include <unordered_set>
 
 #include <QDialog>
 #include <QDockWidget>
@@ -478,20 +479,17 @@ namespace Noggit
             connect(button_load_all_dbc, &QPushButton::clicked
                 , [=]()
                 {
+                    std::unordered_set<unsigned int> known_ids;
+                    known_ids.reserve(_loaded_effects.size());
+                    for (auto const& effect : _loaded_effects)
+                    {
+                        known_ids.insert(effect.ID);
+                    }
+
                     for (auto it = gGroundEffectTextureDB.begin(); it != gGroundEffectTextureDB.end(); ++it)
                     {
                         unsigned int const id = it->getUInt(GroundEffectTextureDB::ID);
-
-                        bool known = false;
-                        for (auto const& effect : _loaded_effects)
-                        {
-                            if (effect.ID == id)
-                            {
-                                known = true;
-                                break;
-                            }
-                        }
-                        if (known)
+                        if (known_ids.contains(id))
                         {
                             continue;
                         }
@@ -703,21 +701,18 @@ namespace Noggit
             }
         }
 
-        void GroundEffectsTool::updateSetsList()
+        void GroundEffectsTool::mergeProjectSetsIntoLoaded()
         {
-            // project-saved sets stay listed whether or not a scanned chunk uses them
+            std::unordered_set<unsigned int> known_ids;
+            known_ids.reserve(_loaded_effects.size());
+            for (auto const& effect : _loaded_effects)
+            {
+                known_ids.insert(effect.ID);
+            }
+
             for (unsigned int id : _project_set_ids)
             {
-                bool known = false;
-                for (auto const& effect : _loaded_effects)
-                {
-                    if (effect.ID == id)
-                    {
-                        known = true;
-                        break;
-                    }
-                }
-                if (known)
+                if (known_ids.contains(id))
                 {
                     continue;
                 }
@@ -730,7 +725,14 @@ namespace Noggit
                 }
                 set.Name += " [saved]";
                 _loaded_effects.push_back(set);
+                known_ids.insert(id);
             }
+        }
+
+        void GroundEffectsTool::updateSetsList()
+        {
+            // project-saved sets stay listed whether or not a scanned chunk uses them
+            mergeProjectSetsIntoLoaded();
 
             _effect_sets_list->clear();
             genEffectColors();
@@ -1071,6 +1073,9 @@ namespace Noggit
 
         namespace
         {
+            // shared tail of every disk-sweep confirmation prompt
+            constexpr char const* STRING_DISK_SWEEP_WARNING = "Affected ADTs are written to disk immediately and this cannot be undone.";
+
             QString normalizedDoodadFilename(QString name)
             {
                 name = name.toLower();
@@ -1182,10 +1187,10 @@ namespace Noggit
             // replicates the client's stride-13, 16-slot spawn table build (see
             // DetailDoodads.cpp): later writes win, the padding cycles all id
             // slots including empty ones
-            int tbl[16];
-            std::fill(tbl, tbl + 16, -1);
+            int spawn_table[16];
+            std::fill(spawn_table, spawn_table + 16, -1);
 
-            int w = 0;
+            int write_pos = 0;
             int total = 0;
             for (int k = 0; k < 4; ++k)
             {
@@ -1197,23 +1202,23 @@ namespace Noggit
                 total += weight;
                 while (weight--)
                 {
-                    tbl[w & 15] = k;
-                    w += 13;
+                    spawn_table[write_pos & 15] = k;
+                    write_pos += 13;
                 }
             }
             while (total < 16)
             {
-                tbl[w & 15] = total & 3;
+                spawn_table[write_pos & 15] = total & 3;
                 ++total;
-                w += 13;
+                write_pos += 13;
             }
 
             int counts[4] = { 0, 0, 0, 0 };
             for (int s = 0; s < 16; ++s)
             {
-                if (tbl[s] >= 0)
+                if (spawn_table[s] >= 0)
                 {
-                    counts[tbl[s]]++;
+                    counts[spawn_table[s]]++;
                 }
             }
 
@@ -1350,14 +1355,14 @@ namespace Noggit
             }
 
             std::string const texture = _texturing_tool->_current_texture->filename();
-            if (texture.empty() || texture == "tileset\\generic\\black.blp")
+            if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
             {
                 QMessageBox::information(this, "Apply Ground Effect", "Select a texture first.");
                 return;
             }
 
             applyEffectIdAtScope(texture, effect->ID, _apply_override_cb->isChecked()
-                , "Apply this effect to the texture on every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone.");
+                , QString("Apply this effect to the texture on every ADT of the map?\n") + STRING_DISK_SWEEP_WARNING);
         }
 
         void GroundEffectsTool::clearEffectsAtScope()
@@ -1368,7 +1373,7 @@ namespace Noggit
             if (!all_textures)
             {
                 texture = _texturing_tool->_current_texture->filename();
-                if (texture.empty() || texture == "tileset\\generic\\black.blp")
+                if (texture.empty() || texture == STRING_EMPTY_TEXTURE)
                 {
                     QMessageBox::information(this, "Clear Ground Effects", "Select a texture first, or check \"All textures\".");
                     return;
@@ -1377,8 +1382,8 @@ namespace Noggit
 
             applyEffectIdAtScope(texture, 0, true
                 , all_textures
-                  ? "Remove ALL ground effects from every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone."
-                  : "Remove the texture's ground effect from every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone.");
+                  ? QString("Remove ALL ground effects from every ADT of the map?\n") + STRING_DISK_SWEEP_WARNING
+                  : QString("Remove the texture's ground effect from every ADT of the map?\n") + STRING_DISK_SWEEP_WARNING);
         }
 
         void GroundEffectsTool::applyEffectIdAtScope(std::string const& texture, unsigned int effect_id, bool override_existing, QString const& global_confirm)
@@ -1403,11 +1408,7 @@ namespace Noggit
                 int target_area = area_id.value();
                 if (whole_zone)
                 {
-                    std::uint32_t const parent = AreaDB::get_area_parent(target_area);
-                    if (parent)
-                    {
-                        target_area = static_cast<int>(parent);
-                    }
+                    target_area = AreaDB::resolve_zone_id(target_area);
                 }
 
                 if (_scope_disk_sweep_cb->isChecked())
@@ -1415,8 +1416,8 @@ namespace Noggit
                     QString const area_name(gAreaDB.getAreaFullName(target_area).c_str());
                     if (QMessageBox::question(this
                         , effect_id ? "Apply ground effect to area on disk" : "Clear ground effects from area on disk"
-                        , QString("%1 \"%2\" (area %3) across every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone.")
-                            .arg(effect_id ? "Apply the effect to" : "Clear ground effects from").arg(area_name).arg(target_area)
+                        , QString("%1 \"%2\" (area %3) across every ADT of the map?\n%4")
+                            .arg(effect_id ? "Apply the effect to" : "Clear ground effects from").arg(area_name).arg(target_area).arg(STRING_DISK_SWEEP_WARNING)
                         , QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
                     {
                         return;

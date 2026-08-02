@@ -32,6 +32,7 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <chrono>
 
 using namespace Noggit::Rendering;
 

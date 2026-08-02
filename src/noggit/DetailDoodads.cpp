@@ -95,6 +95,8 @@ namespace
     return (static_cast<std::int32_t>(r) >= 0) ? (u - 2.0f) : (2.0f - u);
   }
 
+  // one cell of the chunk's 8x8 doodad grid: the client's UNITSIZE,
+  // TILESIZE / 128 (533.33333 / 128 yards)
   constexpr float CELL = 4.1666665f;
   constexpr float HALF_CELL = 2.0833333f;
 
@@ -377,30 +379,31 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
 
       // MCCV over the facet: the same jitter randoms drive the barycentric
       // weights, so colour and position stay correlated like the client
-      float wgt, tt;
+      float bary_w, edge_t;
       if (std::fabs(r2) >= std::fabs(r1))
       {
-        wgt = std::fabs(r2);
-        tt = 0.5f - r1 * 0.5f;
+        bary_w = std::fabs(r2);
+        edge_t = 0.5f - r1 * 0.5f;
       }
       else
       {
-        wgt = std::fabs(r1);
-        tt = 0.5f - r2 * 0.5f;
+        bary_w = std::fabs(r1);
+        edge_t = 0.5f - r2 * 0.5f;
       }
       if (o_row - o_col < 0.0f)
       {
-        tt = 1.0f - tt;
+        edge_t = 1.0f - edge_t;
       }
 
       int const base = 17 * row + col;
       glm::vec3 const& cC = chunk->mccv[base + 9];
       glm::vec3 const& cA = chunk->mccv[base + VTX_A[t]];
       glm::vec3 const& cB = chunk->mccv[base + VTX_B[t]];
-      glm::vec3 rgb = cC + wgt * (cA - cC) + (wgt * tt) * (cB - cA);
+      glm::vec3 rgb = cC + bary_w * (cA - cC) + (bary_w * edge_t) * (cB - cA);
       rgb = glm::min(rgb, glm::vec3(1.0f));
 
-      // MCSH: a shadowed doodad is darkened to 70% (lit is 65254/65536)
+      // MCSH: a shadowed doodad is darkened to 70% (lit is 65254/65536);
+      // 1.92 maps yards to shadow texels, 64 texels / (8 * CELL) yards
       float shade = 0.99570f;
       int sx = std::clamp(static_cast<int>(std::floor((o_col + col * CELL) * 1.92f)), 0, 63);
       int sy = std::clamp(static_cast<int>(std::floor((o_row + row * CELL) * 1.92f)), 0, 63);
