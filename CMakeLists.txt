@@ -551,9 +551,30 @@ if(${FAST_BUILD_LIB_JUMBO})
 endif()
 
 if(${FAST_BUILD_NOGGIT_PCH})
-  set(NOGGIT_ALL_PCH "${math_headers};${noggit_root_headers};${archive_headers};${database_headers}")
-  list(REMOVE_ITEM NOGGIT_ALL_PCH "${CMAKE_CURRENT_SOURCE_DIR}/src/noggit/ui/TextureList.hpp")
-  target_precompile_headers(noggit PUBLIC "$<$<COMPILE_LANGUAGE:CXX>:${NOGGIT_ALL_PCH}>")
+  # Precompile only stable external headers. Project headers in the PCH would
+  # invalidate it on every local edit, and several of them can no longer
+  # coexist in a single TU (Occluders.h / MapDB.h redefinitions, scripting
+  # headers needing sol include dirs).
+  set(NOGGIT_PCH_HEADERS
+    <QtWidgets/QtWidgets$<ANGLE-R>
+    <glm/glm.hpp$<ANGLE-R>
+    <glm/gtc/matrix_transform.hpp$<ANGLE-R>
+    <glm/gtc/quaternion.hpp$<ANGLE-R>
+    <algorithm$<ANGLE-R>
+    <array$<ANGLE-R>
+    <cmath$<ANGLE-R>
+    <cstdint$<ANGLE-R>
+    <functional$<ANGLE-R>
+    <list$<ANGLE-R>
+    <map$<ANGLE-R>
+    <memory$<ANGLE-R>
+    <optional$<ANGLE-R>
+    <string$<ANGLE-R>
+    <unordered_map$<ANGLE-R>
+    <unordered_set$<ANGLE-R>
+    <vector$<ANGLE-R>
+  )
+  target_precompile_headers(noggit PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${NOGGIT_PCH_HEADERS}>")
 endif()
 
 if(${FAST_BUILD_NOGGIT_JUMBO})
