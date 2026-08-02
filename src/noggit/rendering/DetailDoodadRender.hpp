@@ -51,7 +51,7 @@ namespace Noggit::Rendering
     };
 
     void deleteBuffers(ChunkGL& gl_data);
-    bool build(ChunkGL& gl_data, OpenGL::Scoped::use_program& shader, ChunkDetailDoodads* cache);
+    bool build(ChunkGL& gl_data, ChunkDetailDoodads* cache);
 
     std::unordered_map<MapChunk*, ChunkGL> _chunks;
   };

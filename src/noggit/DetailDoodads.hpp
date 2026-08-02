@@ -34,7 +34,7 @@ namespace Noggit
     std::uint32_t chunk_stamp = 0;
     std::uint32_t dbc_stamp = 0;
     int density = -1;
-    std::uint32_t revision = 0; // bumped per regeneration; keys the GL batch cache
+    std::uint32_t revision = 0; // globally unique per regeneration; keys the GL batch cache
     std::vector<scoped_model_reference> models;
     std::vector<DetailDoodadPlacement> placements;
   };

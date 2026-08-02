@@ -49,7 +49,7 @@ namespace Noggit::Rendering
     gl_data.ready = false;
   }
 
-  bool DetailDoodadRender::build(ChunkGL& gl_data, OpenGL::Scoped::use_program& shader, ChunkDetailDoodads* cache)
+  bool DetailDoodadRender::build(ChunkGL& gl_data, ChunkDetailDoodads* cache)
   {
     // wait until every referenced model settled; failed ones drop out
     for (auto const& model : cache->models)
@@ -284,15 +284,15 @@ namespace Noggit::Rendering
       }
     }
 
-    if (!gl_data.vao)
-    {
-      gl.genVertexArrays(1, &gl_data.vao);
-      gl.genBuffers(1, &gl_data.vbo);
-      gl.genBuffers(1, &gl_data.ibo);
-    }
-
     if (!indices.empty())
     {
+      if (!gl_data.vao)
+      {
+        gl.genVertexArrays(1, &gl_data.vao);
+        gl.genBuffers(1, &gl_data.vbo);
+        gl.genBuffers(1, &gl_data.ibo);
+      }
+
       gl.bufferData<GL_ARRAY_BUFFER, DDVertex>(gl_data.vbo, vertices, GL_STATIC_DRAW);
       gl.bufferData<GL_ELEMENT_ARRAY_BUFFER, std::uint32_t>(gl_data.ibo, indices, GL_STATIC_DRAW);
     }
@@ -309,7 +309,7 @@ namespace Noggit::Rendering
 
     if (gl_data.revision != cache->revision || !gl_data.ready)
     {
-      if (!build(gl_data, shader, cache))
+      if (!build(gl_data, cache))
       {
         return; // models still loading, retry next frame
       }

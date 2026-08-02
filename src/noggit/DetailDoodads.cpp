@@ -131,6 +131,10 @@ namespace
   }
 
   std::atomic<std::uint32_t> dbc_stamp_counter{ 1 };
+
+  // globally monotonic so a rebuilt cache never repeats a revision another
+  // chunk (or a recycled chunk address) already handed to the GL batch cache
+  std::atomic<std::uint32_t> revision_counter{ 0 };
 }
 
 std::uint32_t Noggit::DetailDoodads::dbcStamp()
@@ -148,7 +152,7 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
   out.chunk_stamp = chunk->detailDoodadStamp();
   out.dbc_stamp = dbcStamp();
   out.density = density;
-  out.revision++;
+  out.revision = ++revision_counter;
   out.models.clear();
   out.placements.clear();
 

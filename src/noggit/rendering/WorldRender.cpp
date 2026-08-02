@@ -1805,7 +1805,9 @@ void WorldRender::unload()
   _m2_box_program.reset();
   _wmo_program.reset();
   _liquid_program.reset();
+  _detail_doodads_program.reset();
 
+  _detail_doodads.unload();
   _cursor_render.unload();
   _sphere_render.unload();
   _square_render.unload();
