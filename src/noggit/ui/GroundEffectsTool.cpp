@@ -140,11 +140,6 @@ namespace Noggit
             connect(button_duplicate, &QPushButton::clicked, [this]() { duplicateSelectedSet(); });
             connect(button_delete, &QPushButton::clicked, [this]() { deleteSelectedSet(); });
 
-            auto _cbbox_effect_sets = new QComboBox(this);
-            _cbbox_effect_sets->addItem("Noggit Default");
-            _cbbox_effect_sets->setItemData(0, QVariant(0)); // index = _cbbox_effect_sets->count()
-            selection_layout->addWidget(_cbbox_effect_sets);
-
             _effect_sets_list = new QListWidget(this);
             selection_layout->addWidget(_effect_sets_list);
             _effect_sets_list->setViewMode(QListView::ListMode);
@@ -324,7 +319,7 @@ namespace Noggit
             {
                 auto preview_group = new QGroupBox("Render Detail Doodads", this);
                 preview_group->setCheckable(true);
-                preview_group->setChecked(false);
+                preview_group->setChecked(true);
                 preview_group->setToolTip("Renders the detail doodads exactly where the client will place them.\
                 \nStays active until unchecked, even with this window closed.");
                 right_side_layout->addWidget(preview_group);
@@ -557,39 +552,14 @@ namespace Noggit
                 }
             );
 
-            connect(_cbbox_effect_sets, qOverload<int>(&QComboBox::currentIndexChanged)
-                , [=](int index)
-                {
-                    // unsigned int effect_id = _cbbox_effect_sets->currentData().toUInt();
-
-                    // TODO
-                    // if (effect_id)
-                    if (_loaded_effects.empty() || !_cbbox_effect_sets->count() || index == -1)
-                    {
-                        return;
-                    }
-
-                    auto effect = _loaded_effects[index];
-                    setActiveGroundEffect(effect);
-                    QPalette pal = _cbbox_effect_sets->palette();
-                    pal.setColor(_cbbox_effect_sets->backgroundRole(), QColor::fromRgbF(_effects_colors[index].r, _effects_colors[index].g, _effects_colors[index].b));
-                    _cbbox_effect_sets->setPalette(pal);
-                });
             QObject::connect(_effect_sets_list, &QListWidget::itemSelectionChanged, [this]()
               {
-                    int index = _effect_sets_list->currentIndex().row();
-
                     auto effect = getSelectedGroundEffect();
                     if (!effect.has_value())
                     {
                         return;
-                    } 
+                    }
                     setActiveGroundEffect(effect.value());
-
-                    // _cbbox_effect_sets->setStyleSheet
-                    // QPalette pal = _effect_sets_list->palette();
-                    // pal.setColor(_effect_sets_list->backgroundRole(), QColor::fromRgbF(_effects_colors[index].r, _effects_colors[index].g, _effects_colors[index].b));
-                    // _effect_sets_list->setPalette(pal);
                 });
 
             // TODO fix this shit
