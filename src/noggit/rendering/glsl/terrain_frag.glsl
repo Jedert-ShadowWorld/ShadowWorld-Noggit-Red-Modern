@@ -392,14 +392,15 @@ void main()
       uint unit_x = uint(floor((vary_position.x - (tile_base_pos.x + chunk_base_pos.x)) / UNITSIZE));
       uint unit_z = uint(floor((vary_position.z - (tile_base_pos.y + chunk_base_pos.y)) / UNITSIZE));
 
-      // x and y aren't swapped because getDoodadActiveLayerIdAt() already does it in code
-      if (unit_x < 4)
+      // bit = unit_z * 8 + unit_x, same packing as the exclusion map below
+      // and the on-disk doodadMapping rows (row = z, 2-bit slot = x)
+      if (unit_z < 4)
       {
-        is_active =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.b) & (1 << ((unit_x * 8) + unit_z) );
+        is_active =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.b) & (1 << ((unit_z * 8) + unit_x) );
       }
       else
       {
-        is_active =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.a) & (1 << ((unit_x * 8) + unit_z) - 32 ); // (unit_x-4) * 8 + unit_z)
+        is_active =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.a) & (1 << ((unit_z * 8) + unit_x - 32) );
       }
 
       if (is_active != 0)
@@ -429,14 +430,15 @@ void main()
     uint unit_x = uint(floor((vary_position.x - (tile_base_pos.x + chunk_base_pos.x)) / UNITSIZE));
     uint unit_z = uint(floor((vary_position.z - (tile_base_pos.y + chunk_base_pos.y)) / UNITSIZE));
   
-    // swapped x and y order, the data is wrongly ordered when loaded
+    // bit = unit_z * 8 + unit_x, matching the on-disk doodadStencil layout
+    // (byte row = z, bit = x)
     if (unit_z < 4)
     {
       no_doodad =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.r) & (1 << ((unit_z * 8) + unit_x) );
     }
     else
     {
-      no_doodad =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.g) & (1 << ((unit_z * 8) + unit_x) - 32 ); // (unit_x-4) * 8 + unit_z)
+      no_doodad =  uint(instances[instanceID].ChunkDoodadsEnabled2_ChunksLayerEnabled2.g) & (1 << ((unit_z * 8) + unit_x - 32) );
     }
   
     if (no_doodad != 0)
