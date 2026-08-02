@@ -34,7 +34,19 @@ namespace Noggit
 
     free (strings);
 #else
-    StackWalker sw;
+    // the default StackWalker prints to the debugger/console, which is gone by
+    // the time anyone reads a crash report; mirror every line into the log
+    class LogStackWalker : public StackWalker
+    {
+    protected:
+      void OnOutput(LPCSTR szText) override
+      {
+        LogError << szText << std::flush;
+        StackWalker::OnOutput(szText);
+      }
+    };
+
+    LogStackWalker sw;
     sw.ShowCallstack();
 #endif
   }
