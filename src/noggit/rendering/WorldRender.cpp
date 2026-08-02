@@ -433,6 +433,12 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   // box instead of silently vanishing
   std::vector<glm::vec3> failed_model_markers;
 
+  auto mark_failed_placement = [&] (glm::vec3 const& pos)
+  {
+    if (glm::distance(camera_pos, pos) < _cull_distance)
+      failed_model_markers.push_back(pos);
+  };
+
   // frame counter loop. pretty hacky but works
   // this is used to make sure no object is processed more than once within a frame
   static int frame = 0;
@@ -465,13 +471,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
         if (doodad.model->loading_failed())
         {
-          failed_model_markers.push_back(doodad.world_pos);
+          mark_failed_placement(doodad.world_pos);
           continue;
         }
 
         if (doodad.model->skin_load_failed())
         {
-          failed_model_markers.push_back(doodad.world_pos);
+          mark_failed_placement(doodad.world_pos);
         }
 
         if (!doodad.isInRenderDist(_cull_distance, camera_pos, render_settings.display_mode))
@@ -560,15 +566,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
           if (m2_instance->model->loading_failed())
           {
-            if (glm::distance(camera_pos, m2_instance->pos) < _cull_distance)
-              failed_model_markers.push_back(m2_instance->pos);
+            mark_failed_placement(m2_instance->pos);
             continue;
           }
 
-          if (m2_instance->model->skin_load_failed()
-              && glm::distance(camera_pos, m2_instance->pos) < _cull_distance)
+          if (m2_instance->model->skin_load_failed())
           {
-            failed_model_markers.push_back(m2_instance->pos);
+            mark_failed_placement(m2_instance->pos);
           }
 
           bool render = false;
@@ -646,8 +650,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
           if (wmo_instance->wmo->loading_failed())
           {
-            if (glm::distance(camera_pos, wmo_instance->pos) < _cull_distance)
-              failed_model_markers.push_back(wmo_instance->pos);
+            mark_failed_placement(wmo_instance->pos);
             continue;
           }
 

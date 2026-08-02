@@ -35,7 +35,6 @@ void WMO::finishLoading ()
 {
   BlizzardArchive::ClientFile f(_file_key.filepath(), Noggit::Application::NoggitApplication::instance()->clientData());
   if (f.isEof()) {
-    LogError << "Error loading WMO \"" << _file_key.stringRepr() << "\"." << std::endl;
     // mark as failed instead of leaving the object un-finished forever, which
     // silently skips every instance and hangs wait_until_loaded()
     error_on_loading();

@@ -86,6 +86,7 @@ namespace Noggit
         {
           // reference bookkeeping is broken for this key. Don't throw: erase is
           // called from destructors and an exception here terminates the app.
+          // Deliberately leaks any orphaned _elements entry instead.
           LogError << "AsyncObjectMultimap: releasing a reference to \""
                    << file_key.stringRepr() << "\" (context " << context
                    << ") that is not in the map" << std::endl;

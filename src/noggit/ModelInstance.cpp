@@ -293,9 +293,11 @@ void ModelInstance::recalcExtents()
 
   // bad models can ship a zero or inverted bounding box; assume {-1, 1} for
   // those so they don't get frustum-culled while on screen
+  // a diagonal under this is an effectively zero-sized box
+  float constexpr min_valid_bounding_box_diagonal = 0.01f;
   glm::vec3 const box_size = model->bounding_box_max - model->bounding_box_min;
   bool const degenerate_box = box_size.x < 0.f || box_size.y < 0.f || box_size.z < 0.f
-                           || glm::length(box_size) < 0.01f;
+                           || glm::length(box_size) < min_valid_bounding_box_diagonal;
 
   math::aabb const relative_to_model
     ( degenerate_box ? glm::vec3(-1.f) : model->bounding_box_min
