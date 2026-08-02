@@ -812,7 +812,19 @@ namespace Noggit::Ui::Windows
                   {
                       auto start = std::chrono::high_resolution_clock::now();
 
-                      std::array<int, 2> result = clientData->saveLocalFilesToArchive(archive.value(), mpq_compress_files_chk->isChecked(), mpq_compact_chk->isChecked());
+                      // exporting thousands of files takes minutes and runs on this
+                      // thread; a visibly advancing counter keeps it from looking
+                      // like a freeze that users kill (corrupting the archive)
+                      auto progress = [&](int processed)
+                      {
+                          if (processed % 20 != 0)
+                              return;
+                          progress_box->setText(std::format("Saving file {} of {} to patch {}...\
+                              \nClosing the program now can corrupt the MPQ.", processed, totalItems, archive_name).c_str());
+                          progress_box->repaint();
+                      };
+
+                      std::array<int, 2> result = clientData->saveLocalFilesToArchive(archive.value(), mpq_compress_files_chk->isChecked(), mpq_compact_chk->isChecked(), progress);
                       int processed_files = result[0];
                       int files_failed = processed_files - result[1];
 
