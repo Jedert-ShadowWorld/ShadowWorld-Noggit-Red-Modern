@@ -44,6 +44,22 @@ namespace Noggit
         _instance_count_per_uid[uid]++;
         return uid;
       }
+      // ADTs list an object in the MDDF of every tile its bounds intersect,
+      // always with the same uid. If the object was moved/rotated/scaled this
+      // session, rows loaded afterwards from another tile still hold the old
+      // transform: same uid + same model is the same object, not a uid
+      // collision. Spawning a new uid here would duplicate the object at its
+      // old transform (and bake the copy into the map on save). Only applies
+      // to objects edited this session - a transform mismatch on disk is a
+      // genuine clash and must keep both, or saving would silently delete one.
+      if (existing_instance.value()->_transformed_this_session
+          && existing_instance.value()->model->file_key() == instance.model->file_key())
+      {
+        LogDebug << "UID " << uid << " already loaded with a different transform, ignoring stale tile entry ("
+                 << instance.model->file_key().stringRepr() << ")" << std::endl;
+        _instance_count_per_uid[uid]++;
+        return uid;
+      }
     }
     else if(!unsafe_uid_is_used(uid))
     {
@@ -101,6 +117,16 @@ namespace Noggit
       {
         _instance_count_per_uid[uid]++;
 
+        return uid;
+      }
+      // Same as the m2 case above: a same-uid MODF row pointing to the same
+      // WMO is a stale copy of an object edited this session, not a collision.
+      if (existing_instance.value()->_transformed_this_session
+          && existing_instance.value()->wmo->file_key() == instance.wmo->file_key())
+      {
+        LogDebug << "UID " << uid << " already loaded with a different transform, ignoring stale tile entry ("
+                 << instance.wmo->file_key().stringRepr() << ")" << std::endl;
+        _instance_count_per_uid[uid]++;
         return uid;
       }
     }
