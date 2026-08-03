@@ -14,8 +14,6 @@
 #include <noggit/Misc.h>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
-
-#include <chrono>
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/World.h>
 
@@ -33,6 +31,7 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <chrono>
 
 using namespace Noggit::Rendering;
 
