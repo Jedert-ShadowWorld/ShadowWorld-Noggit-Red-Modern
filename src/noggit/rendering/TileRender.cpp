@@ -12,6 +12,9 @@
 
 #include <external/tracy/Tracy.hpp>
 
+#include <cstdint>
+#include <vector>
+
 using namespace Noggit::Rendering;
 
 TileRender::TileRender(MapTile* map_tile)
@@ -160,10 +163,18 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
         if (static_cast<int>(_map_tile->mChunks[i % 16][i / 16]->texture_set->num()) <= BASE_RENDER_TEXTURE_LAYERS)
           continue;
 
+        constexpr int n_slices = 256 + 256 * EXT_ALPHAMAP_SLICES;
+
+        // the new storage has to be allocated from zeroed data : the target is
+        // GL 4.1, which has no glClearTexImage, and a slice whose chunk does
+        // not make it through the re-upload below would be sampled as
+        // uninitialized memory.
+        std::vector<std::uint8_t> zeroed_slices(64 * 64 * 3 * n_slices, 0);
+
         gl.activeTexture(GL_TEXTURE0 + 3);
         gl.bindTexture(GL_TEXTURE_2D_ARRAY, _alphamap_tex);
         gl.texImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGB, 64, 64,
-                      256 + 256 * EXT_ALPHAMAP_SLICES, 0, GL_RGB, GL_FLOAT, nullptr);
+                      n_slices, 0, GL_RGB, GL_UNSIGNED_BYTE, zeroed_slices.data());
 
         _map_tile->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
         for (int j = 0; j < 256; ++j)

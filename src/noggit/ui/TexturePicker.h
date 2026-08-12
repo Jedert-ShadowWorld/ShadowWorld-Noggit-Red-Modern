@@ -27,6 +27,9 @@ namespace Noggit
       void updateSelection();
       void setMainTexture(current_texture* tex);
       void getTextures(selection_type lSelection);
+      // update() rebuilds the alphamap preview of every layer, it is not cheap
+      // enough to be called on every paint stroke
+      void refreshIfTexturesChanged();
       void setTexture(size_t id, current_texture*);
       void shiftSelectedTextureLeft();
       void shiftSelectedTextureRight();

@@ -199,6 +199,25 @@ namespace Noggit
       }
     }
 
+    void texture_picker::refreshIfTexturesChanged()
+    {
+      if (!_chunk)
+        return;
+
+      size_t visible_texture_count = std::min(_chunk->texture_set->num(), _labels.size());
+      bool changed = visible_texture_count != _textures.size();
+
+      for (size_t index = 0; !changed && index < visible_texture_count; ++index)
+      {
+        changed = _chunk->texture_set->filename(index) != _textures[index]->file_key().filepath();
+      }
+
+      if (changed)
+      {
+        update(false);
+      }
+    }
+
     void texture_picker::setTexture
       (size_t id, current_texture* current_texture_window)
     {

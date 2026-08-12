@@ -504,6 +504,12 @@ namespace Noggit
                         action->setBlockCursor(true);
 
                     _texturingTool->paint(mv->getWorld(), mv->cursorPosition(), deltaTime, *Noggit::Ui::selected_texture::get());
+
+                    // a stroke can add a layer to the chunk the picker displays
+                    if (_texturePickerDock->isVisible())
+                    {
+                        _texturePicker->refreshIfTexturesChanged();
+                    }
                 }
             }
         }
