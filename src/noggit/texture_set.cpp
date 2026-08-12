@@ -77,6 +77,11 @@ int TextureSet::addTexture (scoped_blp_texture_reference texture)
 
   if (nTextures < MAX_TEXTURE_LAYERS)
   {
+    // a texture used for the first time is still loading on the async loader,
+    // and a chunk with a not-yet-uploaded texture makes the whole tile skip
+    // rendering until it is done
+    texture->wait_until_loaded();
+
     texLevel = static_cast<int>(nTextures);
     nTextures++;
 
@@ -118,6 +123,7 @@ bool TextureSet::replace_texture (scoped_blp_texture_reference const& texture_to
 
   if (texture_to_replace_level != -1)
   {
+    replacement_texture->wait_until_loaded();
     textures[texture_to_replace_level] = std::move (replacement_texture);
 
     QSettings settings;
