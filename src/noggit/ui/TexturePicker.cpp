@@ -27,7 +27,6 @@ namespace Noggit
     {
       constexpr int texture_picker_columns = 4;
       constexpr int texture_picker_slots = MAX_TEXTURE_LAYERS;
-      constexpr size_t texture_picker_render_slots = 4;
     }
 
     texture_picker::texture_picker
@@ -206,17 +205,6 @@ namespace Noggit
       assert(id < _textures.size());
 
       scoped_blp_texture_reference texture = _textures[id];
-
-      if (_chunk && id >= texture_picker_render_slots && id < _chunk->texture_set->num())
-      {
-        while (id >= texture_picker_render_slots)
-        {
-          _chunk->texture_set->swap_layers(static_cast<int>(id - 1), static_cast<int>(id));
-          --id;
-        }
-
-        update(false);
-      }
 
       emit set_texture(texture);
       current_texture_window->set_texture(texture->file_key().filepath());

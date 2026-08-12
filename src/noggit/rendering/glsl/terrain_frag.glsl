@@ -240,9 +240,10 @@ vec2 ext_anim_uv_offset(int spd, int dir)
   return vec2(f * fdx, f * fdy);
 }
 
-// blends texture layers 5+ on top of the 4 layers handled in texture_blend().
-// their alphamaps live in the extension slices appended after the 256 base
-// slices, packed 3 layers per RGB slice.
+// blends texture layers 5+ on top of the first 4 layers handled in
+// texture_blend() / mists_texture_blend(). their alphamaps live in the
+// extension slices appended after the 256 base slices, packed 3 layers
+// per RGB slice.
 vec4 ext_texture_blend(int layer_count, out float ext_weight_sum)
 {
   vec4 color = vec4(0.0);
@@ -281,8 +282,6 @@ vec4 ext_texture_blend(int layer_count, out float ext_weight_sum)
 
 vec4 mists_texture_blend()
 {
-  // layers 5+ are only handled by the regular texture_blend() path,
-  // heightmapping still blends the first 4 layers
   vec3 alpha = texture(alphamap, vec3(vary_texcoord / 8.0, instanceID)).rgb;
 
   int layer_count = instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.b;
@@ -331,7 +330,18 @@ vec4 mists_texture_blend()
                          abs(instances[instanceID].ChunkTextureArrayIDs.w)) * layer_pct.w;
   t3.a = mix(t3.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.w < 0));
 
-  return vec4 (t0 + t1 + t2 + t3);//(t0 * (1.0 - (a0 + a1 + a2)) + t1 * a0 + t2 * a1 + t3 * a2);
+  vec4 color = t0 + t1 + t2 + t3;//(t0 * (1.0 - (a0 + a1 + a2)) + t1 * a0 + t2 * a1 + t3 * a2);
+
+  // heightmapping only covers the first 4 layers, layers 5+ are
+  // composited on top with regular alpha blending
+  if (layer_count > 4)
+  {
+    float ext_weight_sum = 0.0;
+    vec4 ext_color = ext_texture_blend(layer_count, ext_weight_sum);
+    color = color * (1.0 - ext_weight_sum) + ext_color;
+  }
+
+  return color;
 }
 
 vec4 texture_blend()
