@@ -2742,7 +2742,10 @@ void MapView::move_camera_with_auto_height (glm::vec3 const& pos)
   _camera.position = pos;
   _camera.position.y = 0.0f;
 
-  _world->GetVertex (pos.x, pos.z, &_camera.position);
+  if (!_world->GetVertex (pos.x, pos.z, &_camera.position))
+  {
+    _camera.position.y = pos.y;
+  }
 
   // min elevation according to https://wowdev.wiki/AreaTable.dbc
   //! \ todo use the current area's MinElevation

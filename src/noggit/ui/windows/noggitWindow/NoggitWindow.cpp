@@ -72,13 +72,12 @@ namespace Noggit::Ui::Windows
 
     Log << "Project version : " << Noggit::Project::ClientVersionFactory::MapToStringVersion(project->projectVersion).c_str() << std::endl;
 
-    if (project->projectVersion == Project::ProjectVersion::WOTLK)
+    if (project->projectVersion == Project::ProjectVersion::WOTLK || project->projectVersion == Project::ProjectVersion::SL)
     {
       OpenDBs(project->ClientData);
     }
     else
     {
-      assert(false); // TODO
       LogError << "NoggitWindow() : Unsupported project version, skipping loading DBCs." << std::endl;
     }
 
@@ -302,7 +301,18 @@ namespace Noggit::Ui::Windows
 
     // World is now created only here in
     // void MapCreationWizard::selectMap(int map_id)
-    emit mapSelected(map_id);
+    try
+    {
+      emit mapSelected(map_id);
+    }
+    catch (std::exception const& e)
+    {
+      LogError << "Failed to select map " << map_id << ": " << e.what() << std::endl;
+    }
+    catch (...)
+    {
+      LogError << "Failed to select map " << map_id << ": unknown exception" << std::endl;
+    }
 
     /*
     _world.reset();
@@ -313,7 +323,15 @@ namespace Noggit::Ui::Windows
     _world = std::make_unique<World>(record.Columns["Directory"].Value, map_id, Noggit::NoggitRenderContext::MAP_VIEW);
     */
 
-    _minimap->world(getWorld());
+    if (World* world = getWorld())
+    {
+      _minimap->world(world);
+    }
+    else
+    {
+      LogError << "Map " << map_id << " did not create a World for the minimap." << std::endl;
+      _minimap->world(nullptr);
+    }
 
     //_project->ClientDatabase->UnloadTable("Map");
   }
@@ -465,7 +483,7 @@ namespace Noggit::Ui::Windows
                        {
                          if (it->getInt(MapDB::MapID) == entry.map_id)
                          {
-                           //     emit mapSelected(map_id); to update UI
+                            emit mapSelected(entry.map_id); // to update UI
                            _map_creation_wizard->_world = std::make_unique<World>(it->getString(MapDB::InternalName),
                                                             entry.map_id, Noggit::NoggitRenderContext::MAP_VIEW);
                            check_uid_then_enter_map(entry.position, math::degrees(entry.camera_pitch), math::degrees(entry.camera_yaw),
@@ -484,6 +502,7 @@ namespace Noggit::Ui::Windows
 
     QObject::connect(_minimap, &minimap_widget::map_clicked, [this](::glm::vec3 const& pos)
                      {
+                        if (!getWorld()) return;
                         if (getWorld()->mapIndex.hasAGlobalWMO()) // skip uid check
                             enterMapAt(pos, math::degrees(30.f), math::degrees(90.f), uid_fix_mode::none, false);
                         else

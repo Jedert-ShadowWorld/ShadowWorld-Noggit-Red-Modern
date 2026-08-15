@@ -13,6 +13,18 @@
 #include <algorithm>
 #include <list>
 
+namespace
+{
+  std::string async_object_name(AsyncObject const* object)
+  {
+    if (!object)
+      return "<null>";
+
+    auto const& file_key = object->file_key();
+    return file_key.hasFilepath() ? file_key.filepath() : std::to_string(file_key.fileDataID());
+  }
+}
+
 AsyncLoader* AsyncLoader::instance;
 
 void AsyncLoader::setup(int threads)
@@ -30,9 +42,10 @@ bool AsyncLoader::is_loading()
 void AsyncLoader::process()
 {
   AsyncObject* object = nullptr;
+  std::string object_name;
 
   QSettings settings;
-  bool additional_log = settings.value("additional_file_loading_log", false).toBool();
+  bool additional_log = settings.value("additional_file_loading_log", true).toBool();
 
   while (!_stop)
   {
@@ -64,6 +77,7 @@ void AsyncLoader::process()
         object = to_load.front();
         _currently_loading.emplace_back (object);
         to_load.pop_front();
+        object_name = async_object_name(object);
 
         break;
       }
@@ -74,8 +88,7 @@ void AsyncLoader::process()
       if (additional_log)
       {
         std::lock_guard<std::mutex> const lock(_guard);
-        LogDebug << "Loading file '" << (object->file_key().hasFilepath() ? object->file_key().filepath()
-          : std::to_string(object->file_key().fileDataID()))<< "'" << std::endl;
+        LogDebug << "Loading file '" << object_name << "'" << std::endl;
       }
 
       object->finishLoading();
@@ -83,8 +96,7 @@ void AsyncLoader::process()
       if (additional_log)
       {
         std::lock_guard<std::mutex> const lock(_guard);
-        LogDebug << "Loaded  file '" << (object->file_key().hasFilepath() ? object->file_key().filepath()
-        : std::to_string(object->file_key().fileDataID())) << "'" << std::endl;
+        LogDebug << "Loaded  file '" << object_name << "'" << std::endl;
       }
 
       {
@@ -96,24 +108,24 @@ void AsyncLoader::process()
     catch (BlizzardArchive::Exceptions::FileReadFailedError const& e)
     {
       std::lock_guard<std::mutex> const lock(_guard);
-    
-      object->error_on_loading();
-      // LogError << e.what() << std::endl;
-    
+
+      LogError << "Caught file read error while loading '" << object_name << "': " << e.what() << std::endl;
+
       if (object->is_required_when_saving())
       {
         _important_object_failed_loading = true;
       }
-    
+
       _currently_loading.remove(object);
+      object->error_on_loading();
+      _state_changed.notify_all();
     }
     catch (...)
     {
       std::lock_guard<std::mutex> const lock(_guard);
 
-      object->error_on_loading();
       std::string const reason{ util::exception_to_string(std::current_exception()) };
-      LogError << "Caught unknown error: " << reason <<  std::endl;
+      LogError << "Caught unknown error while loading '" << object_name << "': " << reason <<  std::endl;
 
       if (object->is_required_when_saving())
       {
@@ -121,6 +133,8 @@ void AsyncLoader::process()
       }
 
       _currently_loading.remove(object);
+      object->error_on_loading();
+      _state_changed.notify_all();
     }
   }
 }

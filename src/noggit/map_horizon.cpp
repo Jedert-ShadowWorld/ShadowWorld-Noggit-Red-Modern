@@ -14,6 +14,7 @@
 #include <noggit/Misc.h>
 
 #include <bitset>
+#include <exception>
 #include <sstream>
 
 struct color
@@ -104,6 +105,7 @@ map_horizon::map_horizon(const std::string& basename, World * const world)
   if (!Application::NoggitApplication::instance()->clientData()->exists(_filename))
   {
     LogError << "file \"World\\Maps\\" << basename << "\\" << basename << ".wdl\" does not exist." << std::endl;
+    set_minimap(&world->mapIndex);
     return;
   }
 
@@ -114,6 +116,8 @@ map_horizon::map_horizon(const std::string& basename, World * const world)
 
   bool done = false;
 
+  try
+  {
   do
   {
     wdl_file.read(&fourcc, 4);
@@ -212,10 +216,27 @@ map_horizon::map_horizon(const std::string& basename, World * const world)
       }
       default:
         LogError << "unknown chunk in wdl: code=" << fourcc << std::endl;
-        wdl_file.seekRelative(size);
+        if (wdl_file.getPos() > wdl_file.getSize() || size > wdl_file.getSize() - wdl_file.getPos())
+        {
+          LogError << "invalid WDL chunk size in \"" << _filename << "\", falling back to tile index minimap" << std::endl;
+          done = true;
+        }
+        else
+        {
+          wdl_file.seekRelative(size);
+        }
         break;
     }
   } while (!done && !wdl_file.isEof());
+  }
+  catch (std::exception const& e)
+  {
+    LogError << "failed reading WDL \"" << _filename << "\": " << e.what() << std::endl;
+  }
+  catch (...)
+  {
+    LogError << "failed reading WDL \"" << _filename << "\": unknown exception" << std::endl;
+  }
 
   constexpr bool _load_models = true;
   if (_load_models)

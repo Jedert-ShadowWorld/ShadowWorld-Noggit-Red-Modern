@@ -1,9 +1,9 @@
 [submodule "src/external/blizzard-database-library"]
 	path = src/external/blizzard-database-library
-	url = https://gitlab.com/T1ti/blizzard-database-library.git
+	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-Blizzard-Database-Library.git
 [submodule "src/external/blizzard-archive-library"]
 	path = src/external/blizzard-archive-library
-	url = https://gitlab.com/T1ti/blizzard-archive-library.git
+	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-Blizzard-Archive-Library.git
 [submodule "cmake"]
 	path = cmake
 	url = https://gitlab.com/T1ti/build-dependencies.git
@@ -14,7 +14,7 @@
 	branch = dist-listfile
 [submodule "dist/definitions"]
 	path = dist/definitions
-	url = https://gitlab.com/prophecy-rp/build-dependencies.git
+	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-DBD-Definitions.git
 	branch = dist-definitions
 [submodule "dist/themes"]
 	path = dist/themes

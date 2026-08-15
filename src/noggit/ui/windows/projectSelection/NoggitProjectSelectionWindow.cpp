@@ -17,6 +17,7 @@
 #include <QFileDialog>
 #include <QSettings>
 #include <QString>
+#include <QMessageBox>
 
 #include "ui_NoggitProjectSelectionWindow.h"
 
@@ -31,6 +32,9 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   , _ui(new ::Ui::NoggitProjectSelectionWindow)
   , _noggit_application(noggit_app)
 {
+  _ui->setupUi(this);
+  _load_project_component = std::make_unique<Component::LoadProjectComponent>();
+
   setWindowFlags(Qt::Window | Qt::MSWindowsFixedSizeDialogHint);
 
   ////////////////////////////
@@ -100,7 +104,6 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   }
   ///////////////////////////
 
-  _ui->setupUi(this);
 
   _ui->label->setObjectName("title");
   _ui->label->setStyleSheet("QLabel#title { font-size: 18px; padding: 0px; }");
@@ -111,7 +114,6 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   _settings = new Noggit::Ui::settings(this);
   //_changelog = new Noggit::Ui::CChangelog(this);
 
-  _load_project_component = std::make_unique<Component::LoadProjectComponent>();
 
   _ui->settings_button->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::Icons::cog));
   _ui->settings_button->setIconSize(QSize(20,20));
@@ -159,6 +161,30 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
 
   QObject::connect(_ui->button_open_existing_project, &QPushButton::clicked, [=]
                    {
+                     QString recent_project_path = _ui->listView->currentIndex().data(Qt::UserRole).toString();
+
+                     if (!recent_project_path.isEmpty())
+                     {
+                       auto selected_project = _load_project_component->loadProject(this, recent_project_path);
+
+                       if (!selected_project)
+                       {
+                         LogError << "Selected Project is null, loading failed." << std::endl;
+                         QMessageBox::critical(this, "Error", "Failed to load selected recent project. Check the client path and project file.");
+                         return;
+                       }
+
+                       Noggit::Project::CurrentProject::initialize(selected_project.get());
+
+                       _project_selection_page = std::make_unique<Noggit::Ui::Windows::NoggitWindow>(
+                           _noggit_application->getConfiguration(),
+                           selected_project);
+                       _project_selection_page->showMaximized();
+
+                       close();
+                       return;
+                     }
+
                      auto project_reader = Noggit::Project::ApplicationProjectReader();
 
                      QString proj_file = QFileDialog::getOpenFileName(this, "Open File",
@@ -167,14 +193,14 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
 
                      if (proj_file.isEmpty())
                      {
-                       QMessageBox::critical(this, "Error", "Failed to read project: project file is empty");
+                       QMessageBox::critical(this, "Error", "No project file selected.");
                        return;
                      }
 
 
                      std::filesystem::path filepath(proj_file.toStdString());
 
-                     auto project = project_reader.readProject(filepath.parent_path());
+                     auto project = project_reader.readProjectFile(filepath);
 
                      if (!project.has_value())
                      {
@@ -192,6 +218,7 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
 
                      if (!project_to_launch)
                      {
+                        QMessageBox::critical(this, "Error", "Failed to load selected project. Check the client path and project file.");
                        return;
                      }
 
@@ -215,6 +242,7 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
                      if (!selected_project)
                      {
                        LogError << "Selected Project is null, loading failed." << std::endl;
+                        QMessageBox::critical(this, "Error", "Failed to load selected recent project. Check the client path and project file.");
                        return;
                      }
 
@@ -338,4 +366,3 @@ NoggitProjectSelectionWindow::~NoggitProjectSelectionWindow()
 {
   delete _ui;
 }
-

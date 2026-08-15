@@ -17,11 +17,51 @@
 #include <QSortFilterProxyModel>
 
 #include <exception>
+#include <initializer_list>
 #include <string>
 
 using namespace Noggit::Ui::Tools::PresetEditor::Ui;
 using namespace Noggit::Ui;
 
+namespace
+{
+  std::string shadowWorldPresetTextValue(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record,
+                                         std::initializer_list<char const*> names)
+  {
+    for (char const* name : names)
+    {
+      auto it = record.Columns.find(name);
+      if (it == record.Columns.end())
+        continue;
+
+      if (!it->second.Value.empty())
+        return it->second.Value;
+
+      for (auto const& value : it->second.Values)
+        if (!value.empty())
+          return value;
+    }
+
+    return {};
+  }
+
+  int shadowWorldPresetIntValueOr(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record,
+                                  char const* name, int fallback)
+  {
+    auto it = record.Columns.find(name);
+    if (it == record.Columns.end() || it->second.Value.empty())
+      return fallback;
+
+    try
+    {
+      return std::stoi(it->second.Value);
+    }
+    catch (...)
+    {
+      return fallback;
+    }
+  }
+}
 PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> project, QWidget *parent)
 : QMainWindow(parent, Qt::Window), _project(project)
 {
@@ -115,8 +155,8 @@ PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> p
       auto record = iterator.Next();
 
       int map_id = record.RecordId;
-      std::string name = record.Columns["MapName_lang"].Value;
-      int area_type = std::stoi(record.Columns["InstanceType"].Value);
+      std::string name = shadowWorldPresetTextValue(record, {"MapName_lang", "MapName_lang_enUS", "MapName_lang_enGB", "MapName", "Directory"});
+      int area_type = shadowWorldPresetIntValueOr(record, "InstanceType", 0);
 
       if (area_type < 0 || area_type > 4 || !World::IsEditableWorld(record))
           continue;
@@ -124,7 +164,7 @@ PresetEditorWidget::PresetEditorWidget(std::shared_ptr<Project::NoggitProject> p
       ui->worldSelector->addItem(QString::number(map_id) + " - " + QString::fromUtf8(name.c_str()));
       ui->worldSelector->setItemData(count, QVariant(map_id), Qt::UserRole);
 
-      auto map_internal_name = record.Columns["Directory"].Value;
+      auto map_internal_name = shadowWorldPresetTextValue(record, {"Directory"});
       ui->worldSelector->setItemData(count, QVariant(QString::fromStdString(map_internal_name)), Qt::UserRole + 1);
 
       count++;

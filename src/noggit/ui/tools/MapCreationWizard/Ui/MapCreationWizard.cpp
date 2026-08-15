@@ -37,9 +37,52 @@
 #include <QtCore/QSettings>
 #include <QElapsedTimer>
 
+#include <algorithm>
 #include <filesystem>
-
+#include <exception>
+#include <initializer_list>
+#include <string>
 using namespace Noggit::Ui::Tools::MapCreationWizard::Ui;
+
+namespace
+{
+  std::string shadowWorldWizardTextValue(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record,
+                                         std::initializer_list<char const*> names)
+  {
+    for (char const* name : names)
+    {
+      auto it = record.Columns.find(name);
+      if (it == record.Columns.end())
+        continue;
+
+      if (!it->second.Value.empty())
+        return it->second.Value;
+
+      for (auto const& value : it->second.Values)
+        if (!value.empty())
+          return value;
+    }
+
+    return {};
+  }
+
+  int shadowWorldWizardIntValueOr(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record,
+                                  char const* name, int fallback)
+  {
+    auto it = record.Columns.find(name);
+    if (it == record.Columns.end() || it->second.Value.empty())
+      return fallback;
+
+    try
+    {
+      return std::stoi(it->second.Value);
+    }
+    catch (...)
+    {
+      return fallback;
+    }
+  }
+}
 
 MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> project, QWidget* parent) : Noggit::Ui::widget(parent), _project(project)
 {
@@ -128,12 +171,26 @@ MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> pro
   int count = 0;
   auto iterator = mapTable.Records();
   while (iterator.HasRecords())
-  {
-      auto record = iterator.Next();
+  {      BlizzardDatabaseLib::Structures::BlizzardDatabaseRow record;
+      try
+      {
+        record = iterator.Next();
+      }
+      catch (std::exception const& e)
+      {
+        LogError << "Skipping unreadable Map.db2 record in map wizard: " << e.what() << std::endl;
+        continue;
+      }
 
-      int map_id =  record.RecordId;
-      std::string name = record.Columns["MapName_lang"].Value;
-      int area_type = std::stoi(record.Columns["InstanceType"].Value);
+      int map_id = record.RecordId;
+      if (map_id < 0)
+        continue;
+
+      std::string name = shadowWorldWizardTextValue(record, {"MapName_lang", "MapName_lang_enUS", "MapName_lang_enGB", "MapName", "Directory"});
+      if (name.empty())
+        name = std::to_string(map_id);
+
+      int area_type = shadowWorldWizardIntValueOr(record, "InstanceType", 0);
 
       if (area_type < 0 || area_type > 4 || !World::IsEditableWorld(record))
           continue;
@@ -685,22 +742,39 @@ void MapCreationWizard::selectMap(int map_id)
   // _world = world;
 
 
-  auto directoryName = record.Columns["Directory"].Value;
-  auto instanceType = record.Columns["InstanceType"].Value;
-
-  auto areaTableId = record.Columns["AreaTableID"].Value;
-  auto loadingScreenId = record.Columns["LoadingScreenID"].Value;
-  auto minimapIconScale = record.Columns["MinimapIconScale"].Value;
-  auto corpseMapId = record.Columns["CorpseMapID"].Value;
-  auto corpseCoords = record.Columns["Corpse"].Values;
-  auto expansionId = record.Columns["ExpansionID"].Value;
-  auto maxPlayers = record.Columns["MaxPlayers"].Value;
-  auto timeOfDayOverride = record.Columns["TimeOfDayOverride"].Value;
-  // auto timeOffset = record.Columns["TimeOffset"].Value;
-  auto raidOffset = record.Columns["RaidOffset"].Value;
-
-  // _world = new World(directoryName, map_id, Noggit::NoggitRenderContext::MAP_VIEW);
-  _world = std::make_unique<World>(directoryName, map_id, Noggit::NoggitRenderContext::MAP_VIEW);
+  auto directoryName = shadowWorldWizardTextValue(record, {"Directory"});
+  if (directoryName.empty())
+  {
+    QMessageBox::warning(this, "Map load failed", QString("Map %1 has no Directory field in Map.db2.").arg(map_id));
+    return;
+  }
+  auto instanceType = std::to_string(shadowWorldWizardIntValueOr(record, "InstanceType", 0));
+  auto areaTableId = std::to_string(shadowWorldWizardIntValueOr(record, "AreaTableID", 0));
+  auto loadingScreenId = std::to_string(shadowWorldWizardIntValueOr(record, "LoadingScreenID", 0));
+  auto minimapIconScale = shadowWorldWizardTextValue(record, {"MinimapIconScale"});
+  if (minimapIconScale.empty())
+    minimapIconScale = "1";
+  auto corpseMapId = std::to_string(shadowWorldWizardIntValueOr(record, "CorpseMapID", -1));
+  auto corpse_it = record.Columns.find("Corpse");
+  std::vector<std::string> corpseCoords = corpse_it != record.Columns.end() ? corpse_it->second.Values : std::vector<std::string>{};
+  auto expansionId = std::to_string(shadowWorldWizardIntValueOr(record, "ExpansionID", 0));
+  auto maxPlayers = std::to_string(shadowWorldWizardIntValueOr(record, "MaxPlayers", 0));
+  auto timeOfDayOverride = std::to_string(shadowWorldWizardIntValueOr(record, "TimeOfDayOverride", 0));
+  auto raidOffset = std::to_string(shadowWorldWizardIntValueOr(record, "RaidOffset", 0));
+  try
+  {
+    _world = std::make_unique<World>(directoryName, map_id, Noggit::NoggitRenderContext::MAP_VIEW);
+  }
+  catch (std::exception const& e)
+  {
+    QMessageBox::warning(this, "Map load failed", QString("Failed to open map %1 (%2):\n%3").arg(map_id).arg(QString::fromStdString(directoryName)).arg(e.what()));
+    return;
+  }
+  catch (...)
+  {
+    QMessageBox::warning(this, "Map load failed", QString("Failed to open map %1 (%2).").arg(map_id).arg(QString::fromStdString(directoryName)));
+    return;
+  }
 
   // check if map has a wdl and prompt to create a new one
   std::stringstream filename;
@@ -715,7 +789,18 @@ void MapCreationWizard::selectMap(int map_id)
      bool answer = prompt.exec() == QMessageBox::StandardButton::Yes;
      if (answer)
      {
-        _world->horizon.save_wdl(_world.get(), true);
+        try
+        {
+          _world->horizon.save_wdl(_world.get(), true);
+        }
+        catch (std::exception const& e)
+        {
+          LogError << "Failed to generate WDL for map " << map_id << ": " << e.what() << std::endl;
+        }
+        catch (...)
+        {
+          LogError << "Failed to generate WDL for map " << map_id << ": unknown exception" << std::endl;
+        }
         _world->horizon.set_minimap(&_world->mapIndex);
         // _world = new World(directoryName, map_id, Noggit::NoggitRenderContext::MAP_VIEW); // refresh minimap
      }
@@ -751,7 +836,7 @@ void MapCreationWizard::selectMap(int map_id)
     }
   }
 
-  if(corpseCoords.size() > 0)
+  if(corpseCoords.size() > 1)
   {
       _corpse_x->setValue(std::atoi(corpseCoords[0].c_str()));
       _corpse_y->setValue(std::atoi(corpseCoords[1].c_str()));
@@ -777,11 +862,14 @@ void MapCreationWizard::selectMap(int map_id)
 
       // auto difficulty_id = std::atoi(record.Columns["ID"].Value.c_str());
       auto record_id = record.RecordId;
-      auto diff_mapId = std::atoi(record.Columns["MapID"].Value.c_str());
-      auto difficulty_type = std::atoi(record.Columns["Difficulty"].Value.c_str());
+      auto diff_mapId = shadowWorldWizardIntValueOr(record, "MapID", -1);
+      auto difficulty_type = shadowWorldWizardIntValueOr(record, "Difficulty", 0);
       if (diff_mapId == map_id)
       {
-          std::string diff_text = "Difficulty " + record.Columns["Difficulty"].Value;
+          std::string difficulty_value = shadowWorldWizardTextValue(record, {"Difficulty"});
+          if (difficulty_value.empty())
+            difficulty_value = std::to_string(difficulty_type);
+          std::string diff_text = "Difficulty " + difficulty_value;
           _difficulty_type->insertItem(difficulty_type, diff_text.c_str(), QVariant(record_id));
       }
   }
@@ -809,11 +897,11 @@ void MapCreationWizard::selectMapDifficulty()
     //_difficulty_type;
     _difficulty_req_message->fill(record, "Message_lang");
     
-    auto raid_duration = std::atoi(record.Columns["RaidDuration"].Value.c_str());
+    auto raid_duration = shadowWorldWizardIntValueOr(record, "RaidDuration", 0);
     _difficulty_raid_duration->setValue(raid_duration / 60 / 60 / 24); // convert from seconds to days
 
-    _difficulty_max_players->setValue(std::atoi(record.Columns["MaxPlayers"].Value.c_str()));
-    _difficulty_string->setText(record.Columns["Difficultystring"].Value.c_str());
+    _difficulty_max_players->setValue(shadowWorldWizardIntValueOr(record, "MaxPlayers", 0));
+    _difficulty_string->setText(QString::fromStdString(shadowWorldWizardTextValue(record, {"Difficultystring", "DifficultyString"})));
 }
 
 void MapCreationWizard::wheelEvent(QWheelEvent* event)
@@ -1235,23 +1323,40 @@ void LocaleDBCEntry::fill(DBCFile::Record& record, size_t field)
 
 void LocaleDBCEntry::fill(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow& record, std::string columnName)
 {
-    auto columnValues = record.Columns[columnName].Values;
-    auto columnFlagsValue = record.Columns[columnName + "_flags"].Value;
-
-    if(columnValues.size() == 0)
+    auto column_it = record.Columns.find(columnName);
+    if (column_it == record.Columns.end())
     {
-        auto singleValue = record.Columns[columnName].Value;
-        setValue(singleValue, 0);
+        auto en_us_it = record.Columns.find(columnName + "_enUS");
+        auto en_gb_it = record.Columns.find(columnName + "_enGB");
+
+        if (en_us_it != record.Columns.end())
+            column_it = en_us_it;
+        else if (en_gb_it != record.Columns.end())
+            column_it = en_gb_it;
+        else
+        {
+            _flags->setValue(0);
+            return;
+        }
+    }
+
+    auto const& columnValues = column_it->second.Values;
+
+    if(columnValues.empty())
+    {
+        setValue(column_it->second.Value, 0);
     }
     else
     {
-        for (int loc = 0; loc < 16; ++loc)
+        int locale_count = std::min<int>(16, static_cast<int>(columnValues.size()));
+        for (int loc = 0; loc < locale_count; ++loc)
         {
             setValue(columnValues[loc], loc);
         }
     }
 
-    _flags->setValue(std::atoi(columnFlagsValue.c_str()));
+    auto flags_it = record.Columns.find(columnName + "_flags");
+    _flags->setValue(flags_it != record.Columns.end() ? std::atoi(flags_it->second.Value.c_str()) : 0);
 }
 
 void LocaleDBCEntry::toRecord(DBCFile::Record &record, size_t field)
@@ -1285,6 +1390,3 @@ void LocaleDBCEntry::clear()
 
   _flags->setValue(0);
 }
-
-
-

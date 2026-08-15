@@ -5,3 +5,5 @@
 /.vs
 /CMakePresets.json
 /CMakeUserPresets.json
+# Local/Codex backup files
+*.bak

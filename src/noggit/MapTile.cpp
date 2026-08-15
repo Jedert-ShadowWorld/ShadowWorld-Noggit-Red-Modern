@@ -553,7 +553,11 @@ bool MapTile::GetVertex(float x, float z, glm::vec3 *V)
   int xcol = (int)((x - xbase) / CHUNKSIZE);
   int ycol = (int)((z - zbase) / CHUNKSIZE);
 
-  return xcol >= 0 && xcol <= 15 && ycol >= 0 && ycol <= 15 && mChunks[ycol][xcol]->GetVertex(x, z, V);
+  if (xcol < 0 || xcol > 15 || ycol < 0 || ycol > 15)
+    return false;
+
+  MapChunk* chunk = mChunks[ycol][xcol].get();
+  return chunk && chunk->GetVertex(x, z, V);
 }
 
 void MapTile::getVertexInternal(float x, float z, glm::vec3* v)

@@ -405,10 +405,16 @@ bool MapChunk::GetVertex(float x, float z, glm::vec3 *V)
 
   const int row = static_cast<int>(zdiff / (UNITSIZE * 0.5f) + 0.5f);
   const int column = static_cast<int>((xdiff - UNITSIZE * 0.5f * (row % 2)) / UNITSIZE + 0.5f);
-  if ((row < 0) || (column < 0) || (row > 16) || (column >((row % 2) ? 8 : 9)))
+  const int max_column = (row % 2) ? 7 : 8;
+
+  if ((row < 0) || (column < 0) || (row >= 17) || (column > max_column))
     return false;
 
-  *V = mVertices[17 * (row / 2) + ((row % 2) ? 9 : 0) + column];
+  auto const vertex_index = 17 * (row / 2) + ((row % 2) ? 9 : 0) + column;
+  if (vertex_index < 0 || vertex_index >= mapbufsize)
+    return false;
+
+  *V = mVertices[vertex_index];
   return true;
 }
 

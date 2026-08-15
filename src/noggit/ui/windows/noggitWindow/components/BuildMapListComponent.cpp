@@ -7,6 +7,7 @@
 #include <noggit/ui/windows/noggitWindow/NoggitWindow.hpp>
 #include <noggit/ui/windows/noggitWindow/widgets/MapListItem.hpp>
 #include <noggit/World.h>
+#include <noggit/Log.h>
 #include <noggit/database/ClientDatabase.h>
 
 #include <blizzard-database-library/include/BlizzardDatabase.h>
@@ -16,8 +17,50 @@
 #include <QMenu>
 #include <QObject>
 
+#include <exception>
+#include <initializer_list>
+#include <string>
 using namespace Noggit::Ui::Component;
 
+namespace
+{
+  std::string shadowWorldFirstTextValue(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record,
+                                        std::initializer_list<char const*> names)
+  {
+    for (char const* name : names)
+    {
+      auto it = record.Columns.find(name);
+      if (it == record.Columns.end())
+        continue;
+
+      if (!it->second.Value.empty())
+        return it->second.Value;
+
+      for (auto const& value : it->second.Values)
+        if (!value.empty())
+          return value;
+    }
+
+    return {};
+  }
+
+  int shadowWorldIntValueOr(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record,
+                            char const* name, int fallback)
+  {
+    auto it = record.Columns.find(name);
+    if (it == record.Columns.end() || it->second.Value.empty())
+      return fallback;
+
+    try
+    {
+      return std::stoi(it->second.Value);
+    }
+    catch (...)
+    {
+      return fallback;
+    }
+  }
+}
 void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* parent)
 {
   {
@@ -33,44 +76,59 @@ void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* pare
   auto maps = std::vector<Widget::MapListData>();
   while (iterator.HasRecords())
   {
-    auto record = iterator.Next();
-
-    Widget::MapListData map_list_data{};
-
-    for (auto const& value: record.Columns["MapName_lang"].Values)
+    BlizzardDatabaseLib::Structures::BlizzardDatabaseRow record;
+    try
     {
-      if (value.empty())
-        continue;
-
-      map_list_data.map_name = QString::fromUtf8(value.c_str());
-      break;
+      record = iterator.Next();
+    }
+    catch (std::exception const& e)
+    {
+      LogError << "Skipping unreadable Map.db2 record while building map list: " << e.what() << std::endl;
+      continue;
     }
 
-    map_list_data.map_id = record.RecordId;
-    map_list_data.map_type_id = std::stoi(record.Columns["InstanceType"].Value);
-    map_list_data.expansion_id = std::stoi(record.Columns["ExpansionID"].Value);
-
-    if (map_list_data.map_type_id < 0 || map_list_data.map_type_id > 5 || !World::IsEditableWorld(record))
+    if (record.RecordId < 0)
       continue;
 
-    map_list_data.wmo_map = (World::IsWMOWorld(record));
+    try
+    {      Widget::MapListData map_list_data{};
 
-    auto project_pinned_maps = parent->_project->PinnedMaps;
+      auto map_name = shadowWorldFirstTextValue(record, {"MapName_lang", "MapName_lang_enUS", "MapName_lang_enGB", "MapName", "Directory"});
+      if (map_name.empty())
+        map_name = std::to_string(record.RecordId);
 
-    auto pinned_map_found = std::find_if(std::begin(project_pinned_maps), std::end(project_pinned_maps),
-                                         [&](Project::NoggitProjectPinnedMap pinned_map)
-                                       {
-                                         return pinned_map.MapId == map_list_data.map_id;
-                                       });
+      map_list_data.map_name = QString::fromUtf8(map_name.c_str());
+      map_list_data.map_id = record.RecordId;
+      map_list_data.map_type_id = shadowWorldIntValueOr(record, "InstanceType", 0);
+      map_list_data.expansion_id = shadowWorldIntValueOr(record, "ExpansionID", 0);
 
-    if (pinned_map_found != std::end(project_pinned_maps))
-    {
-      map_list_data.pinned = true;
-      pinned_maps.push_back(map_list_data);
+      if (map_list_data.map_type_id < 0 || map_list_data.map_type_id > 5 || !World::IsEditableWorld(record))
+        continue;
+
+      map_list_data.wmo_map = (World::IsWMOWorld(record));
+
+      auto project_pinned_maps = parent->_project->PinnedMaps;
+
+      auto pinned_map_found = std::find_if(std::begin(project_pinned_maps), std::end(project_pinned_maps),
+                                           [&](Project::NoggitProjectPinnedMap pinned_map)
+                                         {
+                                           return pinned_map.MapId == map_list_data.map_id;
+                                         });
+
+      if (pinned_map_found != std::end(project_pinned_maps))
+      {
+        map_list_data.pinned = true;
+        pinned_maps.push_back(map_list_data);
+      }
+      else
+      {
+        maps.push_back(map_list_data);
+      }
     }
-    else
+    catch (std::exception const& e)
     {
-      maps.push_back(map_list_data);
+      LogError << "Skipping invalid Map.db2 record " << record.RecordId << " while building map list: " << e.what() << std::endl;
+      continue;
     }
   }
 

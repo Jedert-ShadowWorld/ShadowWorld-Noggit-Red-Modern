@@ -15,6 +15,8 @@ NoggitProjectCreationDialog::NoggitProjectCreationDialog(ProjectInformation& pro
 
   ui->setupUi(this);
 
+  if (ui->project_expansion->findText("Shadowlands") < 0)
+    ui->project_expansion->addItem("Shadowlands");
   QIcon icon = QIcon(":/icon-wrath");
   ui->expansion_icon->setPixmap(icon.pixmap(QSize(32, 32)));
   ui->expansion_icon->setObjectName("icon");

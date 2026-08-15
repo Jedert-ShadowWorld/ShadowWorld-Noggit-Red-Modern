@@ -17,7 +17,171 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMessageBox>
+#include <exception>
+#include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <sstream>
+#include <system_error>
 
+#ifdef _WIN32
+#include <urlmon.h>
+#pragma comment(lib, "urlmon.lib")
+#endif
+namespace
+{
+  constexpr wchar_t WOWDEV_LISTFILE_URL[] = L"https://github.com/wowdev/wow-listfile/releases/latest/download/community-listfile.csv";
+
+  bool fileExistsWithContent(std::filesystem::path const& path)
+  {
+    std::error_code error;
+    return std::filesystem::exists(path, error) && std::filesystem::is_regular_file(path, error)
+      && std::filesystem::file_size(path, error) > 0;
+  }
+
+  bool filesAreEqual(std::filesystem::path const& lhs, std::filesystem::path const& rhs)
+  {
+    std::error_code error;
+    if (!fileExistsWithContent(lhs) || !fileExistsWithContent(rhs))
+      return false;
+
+    if (std::filesystem::file_size(lhs, error) != std::filesystem::file_size(rhs, error))
+      return false;
+
+    std::ifstream lhs_stream(lhs, std::ios::binary);
+    std::ifstream rhs_stream(rhs, std::ios::binary);
+    return std::equal(std::istreambuf_iterator<char>(lhs_stream), std::istreambuf_iterator<char>(),
+                      std::istreambuf_iterator<char>(rhs_stream));
+  }
+
+  bool looksLikeListfile(std::filesystem::path const& path)
+  {
+    std::ifstream stream(path);
+    std::string line;
+    for (int i = 0; i < 25 && std::getline(stream, line); ++i)
+    {
+      if (line.find(';') != std::string::npos)
+        return true;
+    }
+
+    return false;
+  }
+
+  bool refreshWowdevListfile(std::filesystem::path const& project_path, std::string& error_message)
+  {
+    std::error_code error;
+    std::filesystem::create_directories(project_path, error);
+    if (error)
+    {
+      error_message = "Could not create project directory for listfile.csv: " + error.message();
+      return false;
+    }
+
+    auto const listfile_path = project_path / "listfile.csv";
+    auto const download_path = project_path / "listfile.csv.download";
+
+#ifdef _WIN32
+    std::filesystem::remove(download_path, error);
+    HRESULT const result = URLDownloadToFileW(nullptr, WOWDEV_LISTFILE_URL, download_path.wstring().c_str(), 0, nullptr);
+
+    if (SUCCEEDED(result) && fileExistsWithContent(download_path) && looksLikeListfile(download_path))
+    {
+      if (!filesAreEqual(listfile_path, download_path))
+      {
+        std::filesystem::copy_file(download_path, listfile_path, std::filesystem::copy_options::overwrite_existing, error);
+        if (error)
+        {
+          error_message = "Downloaded wowdev listfile, but could not write listfile.csv: " + error.message();
+          std::filesystem::remove(download_path, error);
+          return fileExistsWithContent(listfile_path);
+        }
+      }
+
+      std::filesystem::remove(download_path, error);
+      return true;
+    }
+
+    std::filesystem::remove(download_path, error);
+#endif
+
+    if (fileExistsWithContent(listfile_path))
+      return true;
+
+    error_message = "listfile.csv is missing and automatic download from wowdev/wow-listfile failed.";
+    return false;
+  }
+
+  std::vector<std::string> splitBuildInfoLine(std::string const& line)
+  {
+    std::vector<std::string> values;
+    std::string value;
+    std::stringstream stream(line);
+
+    while (std::getline(stream, value, '|'))
+      values.push_back(value);
+
+    return values;
+  }
+
+  std::string detectClientBuildVersion(std::filesystem::path const& raw_client_path)
+  {
+    std::vector<std::filesystem::path> candidates;
+    auto client_path = raw_client_path;
+
+    candidates.push_back(client_path / ".build.info");
+
+    if (client_path.filename() == "_retail_")
+      candidates.push_back(client_path.parent_path() / ".build.info");
+    else
+      candidates.push_back(client_path / "_retail_" / ".build.info");
+
+    for (auto const& build_info_path : candidates)
+    {
+      if (!fileExistsWithContent(build_info_path))
+        continue;
+
+      std::ifstream stream(build_info_path);
+      std::string header_line;
+      if (!std::getline(stream, header_line))
+        continue;
+
+      auto const headers = splitBuildInfoLine(header_line);
+      int version_index = -1;
+      int active_index = -1;
+
+      for (std::size_t i = 0; i < headers.size(); ++i)
+      {
+        if (headers[i].rfind("Version!", 0) == 0)
+          version_index = static_cast<int>(i);
+        else if (headers[i].rfind("Active!", 0) == 0)
+          active_index = static_cast<int>(i);
+      }
+
+      if (version_index < 0)
+        continue;
+
+      std::string first_version;
+      std::string line;
+      while (std::getline(stream, line))
+      {
+        auto const values = splitBuildInfoLine(line);
+        if (version_index >= static_cast<int>(values.size()) || values[version_index].empty())
+          continue;
+
+        if (first_version.empty())
+          first_version = values[version_index];
+
+        if (active_index < 0 || (active_index < static_cast<int>(values.size()) && values[active_index] == "1"))
+          return values[version_index];
+      }
+
+      if (!first_version.empty())
+        return first_version;
+    }
+
+    return {};
+  }
+}
 namespace Noggit::Project
 {
   ApplicationProject::ApplicationProject(std::shared_ptr<Application::NoggitApplicationConfiguration> configuration)
@@ -68,7 +232,18 @@ namespace Noggit::Project
     if (project->projectVersion == ProjectVersion::SL)
     {
       client_archive_version = BlizzardArchive::ClientVersion::SL;
-      client_build = BlizzardDatabaseLib::Structures::Build("9.1.0.39584");
+      auto detected_build = detectClientBuildVersion(project->ClientPath);
+      if (detected_build.empty())
+      {
+        detected_build = "9.2.7.45745";
+        LogError << "Could not detect client build from .build.info, falling back to " << detected_build << std::endl;
+      }
+      else
+      {
+        Log << "Detected modern client build: " << detected_build << std::endl;
+      }
+
+      client_build = BlizzardDatabaseLib::Structures::Build(detected_build);
       client_archive_locale = BlizzardArchive::Locale::enUS;
     }
 
@@ -88,6 +263,14 @@ namespace Noggit::Project
     project->ClientDatabase = std::make_shared<BlizzardDatabaseLib::BlizzardDatabase>(dbd_file_directory, client_build);
 
     Log << "Loading Client Path : " << project->ClientPath << std::endl;
+
+    std::string listfile_error;
+    if (!refreshWowdevListfile(project_path, listfile_error))
+    {
+      LogError << listfile_error << std::endl;
+      QMessageBox::critical(nullptr, "Error", QString::fromStdString(listfile_error));
+      return {};
+    }
 
     try
     {
@@ -112,9 +295,16 @@ namespace Noggit::Project
       QMessageBox::critical(nullptr, "Error", e.what());
       return {};
     }
+    catch (std::exception const& e)
+    {
+      LogError << "Failed loading Client data: " << e.what() << std::endl;
+      QMessageBox::critical(nullptr, "Error", QString("Failed loading Client data:\n%1").arg(e.what()));
+      return {};
+    }
     catch (...)
     {
       LogError << "Failed loading Client data. Unhandled exception." << std::endl;
+      QMessageBox::critical(nullptr, "Error", "Failed loading Client data. Unhandled exception.");
       return {};
     }
 
@@ -238,10 +428,11 @@ namespace Noggit::Project
     {
       if (projectVersion == "Wrath Of The Lich King")
         return ProjectVersion::WOTLK;
-      if (projectVersion == "Shadowlands")
+      if (projectVersion == "Shadowlands" || projectVersion == "Retail" || projectVersion == "Modern")
         return ProjectVersion::SL;
 
-      assert(false);
+      LogError << "Unknown project version '" << projectVersion << "', falling back to Shadowlands compatibility." << std::endl;
+      return ProjectVersion::SL;
     }
 
     std::string ClientVersionFactory::MapToStringVersion(ProjectVersion const& projectVersion)
@@ -251,7 +442,8 @@ namespace Noggit::Project
       if (projectVersion == ProjectVersion::SL)
         return std::string("Shadowlands");
 
-      assert(false);
+      LogError << "Unknown project version enum, falling back to Shadowlands." << std::endl;
+      return std::string("Shadowlands");
     }
 
     NoggitProject::NoggitProject()

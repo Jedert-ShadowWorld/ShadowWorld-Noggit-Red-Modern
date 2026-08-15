@@ -49,10 +49,26 @@
 #include <utility>
 
 
+namespace
+{
+  std::string shadowWorldMapDirectory(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record)
+  {
+    auto it = record.Columns.find("Directory");
+    if (it == record.Columns.end())
+      return {};
+
+    return it->second.Value;
+  }
+}
 bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow& record)
 {
   ZoneScoped;
-  std::string lMapName = record.Columns["Directory"].Value;
+  std::string lMapName = shadowWorldMapDirectory(record);
+  if (lMapName.empty())
+  {
+    LogDebug << "World " << record.RecordId << " has no Directory field!" << std::endl;
+    return false;
+  }
 
   std::stringstream ssfilename;
   ssfilename << "World\\Maps\\" << lMapName << "\\" << lMapName << ".wdt";
@@ -64,21 +80,15 @@ bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow
   }
 
   BlizzardArchive::ClientFile mf(ssfilename.str(), Noggit::Application::NoggitApplication::instance()->clientData());
-
-  //sometimes, wdts don't open, so ignore them...
   if (mf.isEof())
     return false;
 
   const char * lPointer = reinterpret_cast<const char*>(mf.getPointer());
-
-  // Not using the libWDT here doubles performance. You might want to look at your lib again and improve it.
   const int lFlags = *(reinterpret_cast<const int*>(lPointer + 8 + 4 + 8));
 
-  // check for global wmo flag
   if (lFlags & FLAG_GLOBAL_OBJECT)
-    return true; // filter them later
+    return true;
 
-  // check if map has tiles
   const int * lData = reinterpret_cast<const int*>(lPointer + 8 + 4 + 8 + 0x20 + 8);
   for (int i = 0; i < 8192; i += 2)
   {
@@ -86,22 +96,27 @@ bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow
       return true;
   }
 
-  // change : still load world even if it has no tile to allow user to edit it
   return true;
 }
 
 bool World::IsWMOWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow& record)
 {
     ZoneScoped;
-    std::string lMapName = record.Columns["Directory"].Value;
+    std::string lMapName = shadowWorldMapDirectory(record);
+    if (lMapName.empty())
+      return false;
 
     std::stringstream ssfilename;
     ssfilename << "World\\Maps\\" << lMapName << "\\" << lMapName << ".wdt";
 
+    if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists(ssfilename.str()))
+      return false;
+
     BlizzardArchive::ClientFile mf(ssfilename.str(), Noggit::Application::NoggitApplication::instance()->clientData());
+    if (mf.isEof())
+      return false;
 
     const char* lPointer = reinterpret_cast<const char*>(mf.getPointer());
-
     const int lFlags = *(reinterpret_cast<const int*>(lPointer + 8 + 4 + 8));
     if (lFlags & 1)
         return true;
@@ -4715,4 +4730,3 @@ void World::clear_selection_groups()
     _selection_groups.clear(); // in case it didn't properly clear
     saveSelectionGroups(); // only save once
 }
-
