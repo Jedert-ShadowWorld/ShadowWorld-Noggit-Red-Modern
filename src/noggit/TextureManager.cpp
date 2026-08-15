@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <glm/vec2.hpp>
 
-decltype (TextureManager::_) TextureManager::_;
+// TextureManager::_ is defined in AsyncObjectManagers.cpp to fix static destruction order.
 decltype (TextureManager::_tex_arrays) TextureManager::_tex_arrays;
 
 constexpr unsigned N_ARRAY_TEX = 1;

@@ -13,6 +13,7 @@
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSlider>
 
@@ -40,6 +41,7 @@ namespace Noggit
       QPushButton* swap_adt = new QPushButton("Swap ADT", this);
       QPushButton* swap_global = new QPushButton("Swap Global(All ADTs)", this);
       QPushButton* remove_text_adt = new QPushButton(tr("Remove this texture from ADT"), this);
+      QPushButton* remove_text_global = new QPushButton(tr("Remove Global(All ADTs)"), this);
 
       layout->addRow(new QLabel("Texture to swap"));
       layout->addRow(_texture_to_swap_display);
@@ -47,6 +49,7 @@ namespace Noggit
       layout->addRow(swap_adt);
       layout->addRow(swap_global);
       layout->addRow(remove_text_adt);
+      layout->addRow(remove_text_global);
 
       auto brush_widget (new QWidget(this));
       auto brush_layout (new QFormLayout(brush_widget));
@@ -115,6 +118,22 @@ namespace Noggit
               ActionManager::instance()->beginAction(map_view, ActionFlags::eCHUNKS_TEXTURE);
               _world->removeTexture(*camera_pos, _texture_to_swap.value());
               ActionManager::instance()->endAction();
+          }
+          });
+
+      connect(remove_text_global, &QPushButton::clicked, [this, map_view]() {
+          if (_texture_to_swap)
+          {
+              // writes every affected ADT straight to disk, no undo — confirm first
+              if (QMessageBox::question(this
+                  , "Remove texture globally"
+                  , "Remove this texture from every ADT of the map?\nAffected ADTs are written to disk immediately and this cannot be undone."
+                  , QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes)
+              {
+                  map_view->context()->makeCurrent(map_view->context()->surface());
+                  OpenGL::context::scoped_setter const _ (::gl, map_view->context());
+                  _world->removeTextureGlobal(_texture_to_swap.value());
+              }
           }
           });
 

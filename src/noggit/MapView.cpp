@@ -1626,6 +1626,18 @@ void MapView::setupAssistMenu()
       }
   );
 
+  ADD_ACTION_NS(assist_menu
+      , "Clear textures"
+      , [this]
+      {
+          makeCurrent();
+          OpenGL::context::scoped_setter const _(::gl, context());
+          NOGGIT_ACTION_MGR->beginAction(this, Noggit::ActionFlags::eCHUNKS_TEXTURE);
+          _world->clearTexturesLoaded();
+          NOGGIT_ACTION_MGR->endAction();
+      }
+  );
+
   assist_menu->addSeparator();
   assist_menu->addAction(createTextSeparator("Global"));
   assist_menu->addSeparator();
@@ -1692,6 +1704,19 @@ void MapView::setupAssistMenu()
           _world->ensureAllTilesetsAllADTs();
         )
 
+      }
+  );
+
+  ADD_ACTION_NS ( assist_menu
+  , "Clear textures"
+  , [this]
+      {
+        DESTRUCTIVE_ACTION
+        (
+          makeCurrent();
+          OpenGL::context::scoped_setter const _(::gl, context());
+          _world->clearTexturesGlobal();
+        )
       }
   );
 
@@ -3230,10 +3255,7 @@ void MapView::tick (float dt)
   _world->time += this->mTimespeed * dt;
   _world->animtime += dt * 1000.0f;
 
-  if (_draw_model_animations.get())
-  {
-    _world->update_models_emitters(dt);
-  }
+  // emitters now tick per instance from the render pass
 
   if (_world->has_selection())
   {

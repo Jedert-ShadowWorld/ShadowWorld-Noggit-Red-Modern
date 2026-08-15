@@ -222,13 +222,6 @@ void ModelRender::draw(glm::mat4x4 const& model_view
       model_boxes_to_draw.emplace(_model, instances.size());
     }
 
-    /*
-    if (draw_particles && (!_particles.empty() || !_ribbons.empty()))
-    {
-      models_with_particles.emplace(this, n_visible_instances);
-    }
-     */
-
     OpenGL::Scoped::vao_binder const _ (_vao);
 
     {
@@ -264,22 +257,54 @@ void ModelRender::draw(glm::mat4x4 const& model_view
 
 void ModelRender::drawParticles(glm::mat4x4 const& model_view
     , OpenGL::Scoped::use_program& particles_shader
-    , std::size_t instance_count
+    , std::vector<ModelInstance*> const& instances
 )
 {
-  for (auto& p : _model->_particles)
+  std::vector<ParticleEmitterInstance const*> states;
+  states.reserve(instances.size());
+
+  for (std::size_t i = 0; i < _model->_particles.size(); ++i)
   {
-    p.draw(model_view, particles_shader, _transform_buffer, static_cast<int>(instance_count));
+    states.clear();
+
+    for (ModelInstance* instance : instances)
+    {
+      if (i < instance->emitter_states.particles.size())
+      {
+        states.push_back(&instance->emitter_states.particles[i]);
+      }
+    }
+
+    if (!states.empty())
+    {
+      _model->_particles[i].draw(model_view, particles_shader, states);
+    }
   }
 }
 
 void ModelRender::drawRibbons( OpenGL::Scoped::use_program& ribbons_shader
-    , std::size_t instance_count
+    , std::vector<ModelInstance*> const& instances
 )
 {
-  for (auto& r : _model->_ribbons)
+  std::vector<RibbonEmitterInstance const*> states;
+  states.reserve(instances.size());
+
+  for (std::size_t i = 0; i < _model->_ribbons.size(); ++i)
   {
-    r.draw(ribbons_shader, _transform_buffer, static_cast<int>(instance_count));
+    states.clear();
+
+    for (ModelInstance* instance : instances)
+    {
+      if (i < instance->emitter_states.ribbons.size())
+      {
+        states.push_back(&instance->emitter_states.ribbons[i]);
+      }
+    }
+
+    if (!states.empty())
+    {
+      _model->_ribbons[i].draw(ribbons_shader, states);
+    }
   }
 }
 

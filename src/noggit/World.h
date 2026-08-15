@@ -82,8 +82,6 @@ public:
 
   SceneObject* getObjectInstance(std::uint32_t uid);
 
-  void update_models_emitters(float dt);
-
   unsigned int getAreaID (glm::vec3 const&);
   void setAreaID(glm::vec3 const& pos, int id, bool adt,  float radius = -1.0f);
 
@@ -231,6 +229,14 @@ public:
   void eraseTextures(glm::vec3 const& pos);
   void overwriteTextureAtCurrentChunk(glm::vec3 const& pos, scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
   void paintGroundEffectExclusion(glm::vec3 const& pos, float radius, bool exclusion);
+  void paintGroundEffect(glm::vec3 const& pos, float radius, std::string const& texture, unsigned int effect_id);
+  void applyGroundEffectToTileAt(glm::vec3 const& pos, std::string const& texture, unsigned int effect_id, bool override_existing);
+  // area_id is an exact area match, or a zone id matched against each chunk's parent zone
+  void applyGroundEffectToArea(int area_id, bool whole_zone, std::string const& texture, unsigned int effect_id, bool override_existing);
+  // writes every affected ADT straight to disk, not undoable. area_filter >= 0
+  // restricts to chunks of that area (or zone when whole_zone, like
+  // applyGroundEffectToArea)
+  void applyGroundEffectGlobal(std::string const& texture, unsigned int effect_id, bool override_existing, int area_filter = -1, bool whole_zone = false);
   void setBaseTexture(glm::vec3 const& pos);
   void clear_shadows(glm::vec3 const& pos);
   void bake_shadows(glm::vec3 const& pos, int mode, const glm::mat4x4& view);
@@ -238,6 +244,11 @@ public:
   void swapTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
   void swapTextureGlobal(scoped_blp_texture_reference tex);
   void removeTexture(glm::vec3 const& pos, scoped_blp_texture_reference tex);
+  // writes every affected ADT to disk immediately; not undoable
+  void removeTextureGlobal(scoped_blp_texture_reference tex);
+  void clearTexturesLoaded();
+  // writes every ADT to disk immediately; not undoable
+  void clearTexturesGlobal();
   void removeTexDuplicateOnADT(glm::vec3 const& pos);
   void change_texture_flags(glm::vec3 const& pos, scoped_blp_texture_reference const& tex, std::size_t flags);
 

@@ -7,6 +7,7 @@
 #include <noggit/Alphamap.hpp>
 #include <noggit/Brush.h>
 #include <noggit/ChunkWater.hpp>
+#include <noggit/DetailDoodads.hpp>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapHeaders.h>
@@ -44,8 +45,10 @@ MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAl
   {
 
     //  header.flags = 0;
-    px = chunk_idx / 16;
-    py = chunk_idx % 16;
+    // like the loaded path (px = header.ix = n % 16, py = header.iy = n / 16);
+    // these were transposed, which poisoned anything keyed on them
+    px = chunk_idx % 16;
+    py = chunk_idx / 16;
 
     zbase = ZEROPOINT - (maintile->zbase + py * CHUNKSIZE);
     xbase = ZEROPOINT - (maintile->xbase + px * CHUNKSIZE);
@@ -1329,7 +1332,7 @@ void MapChunk::eraseTextures()
   texture_set->eraseTextures();
 }
 
-void MapChunk::eraseTexture(scoped_blp_texture_reference const& tex)
+bool MapChunk::eraseTexture(scoped_blp_texture_reference const& tex)
 {
 
     int textureindex = texture_set->get_texture_index_or_add(tex, 0);
@@ -1337,7 +1340,10 @@ void MapChunk::eraseTexture(scoped_blp_texture_reference const& tex)
     if (textureindex != -1)
     {
         texture_set->eraseTexture(textureindex);
+        return true;
     }
+
+    return false;
 }
 
 void MapChunk::change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags)
@@ -1511,9 +1517,15 @@ void MapChunk::save(util::sExtendableArray& lADTFile
 
   if(texture_set)
   {
-    // hackfix -- temp hackfix to bruteforce update + save
     texture_set->apply_alpha_changes();
-    texture_set->updateDoodadMapping();
+
+    // untouched chunks keep the doodadMapping loaded from the ADT; the
+    // recompute is an approximation and only runs when alphas were edited
+    if (_doodad_mapping_needs_update)
+    {
+      texture_set->updateDoodadMapping();
+      _doodad_mapping_needs_update = false;
+    }
 
     std::copy(texture_set->getDoodadMappingBase(), texture_set->getDoodadMappingBase() + 8
     , lMCNK_header->doodadMapping);
@@ -2159,10 +2171,53 @@ void MapChunk::initMCCV()
   }
 }
 
-void MapChunk::registerChunkUpdate(unsigned flags)
+void MapChunk::requeueChunkUpdate(unsigned flags)
 {
   _chunk_update_flags |= flags;
   mt->registerChunkUpdate(flags);
+}
+
+void MapChunk::registerChunkUpdate(unsigned flags)
+{
+  requeueChunkUpdate(flags);
+
+  if (flags & (ChunkUpdateFlags::VERTEX | ChunkUpdateFlags::ALPHAMAP | ChunkUpdateFlags::FLAGS
+             | ChunkUpdateFlags::HOLES | ChunkUpdateFlags::GROUND_EFFECT
+             | ChunkUpdateFlags::DETAILDOODADS_EXCLUSION))
+  {
+    _detail_doodad_stamp++;
+  }
+
+  if (flags & ChunkUpdateFlags::ALPHAMAP)
+  {
+    _doodad_mapping_needs_update = true;
+  }
+}
+
+bool MapChunk::doodadMappingNeedsUpdate() const
+{
+  return _doodad_mapping_needs_update;
+}
+
+void MapChunk::clearDoodadMappingNeedsUpdate()
+{
+  _doodad_mapping_needs_update = false;
+}
+
+MapChunk::~MapChunk() = default;
+
+Noggit::ChunkDetailDoodads* MapChunk::getDetailDoodads()
+{
+  if (!_detail_doodads)
+  {
+    _detail_doodads = std::make_unique<Noggit::ChunkDetailDoodads>();
+  }
+  return _detail_doodads.get();
+}
+
+std::uint32_t MapChunk::detailDoodadStamp() const
+{
+  return _detail_doodad_stamp;
 }
 
 void MapChunk::endChunkUpdates()

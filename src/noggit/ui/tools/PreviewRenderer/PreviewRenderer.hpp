@@ -13,6 +13,7 @@
 #include <QOffscreenSurface>
 #include <QPixmap>
 
+#include <chrono>
 #include <vector>
 
 class ModelInstance;
@@ -71,14 +72,15 @@ class PreviewRenderer : public Noggit::Ui::Tools::ViewportManager::Viewport
 
     float _animtime = 0.f;
 
+    // clock for the per-instance particle/ribbon sims (real elapsed time)
+    std::chrono::steady_clock::time_point _last_fx_update = std::chrono::steady_clock::now();
+
     std::vector<glm::vec3> calcSceneExtents();
     virtual void draw();
     virtual void tick(float dt);
     virtual glm::mat4x4 model_view() const;
     virtual glm::mat4x4 projection() const;
     virtual float aspect_ratio() const;
-
-    void update_emitters(float dt);
 
     void upload();
 

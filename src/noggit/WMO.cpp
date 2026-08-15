@@ -35,7 +35,9 @@ void WMO::finishLoading ()
 {
   BlizzardArchive::ClientFile f(_file_key.filepath(), Noggit::Application::NoggitApplication::instance()->clientData());
   if (f.isEof()) {
-    LogError << "Error loading WMO \"" << _file_key.stringRepr() << "\"." << std::endl;
+    // mark as failed instead of leaving the object un-finished forever, which
+    // silently skips every instance and hangs wait_until_loaded()
+    error_on_loading();
     return;
   }
 
@@ -410,11 +412,21 @@ std::map<uint32_t, std::vector<wmo_doodad_instance>> WMO::doodads_per_group(uint
   auto const& dset = doodadsets[doodadset];
   uint32_t start = dset.start, end = start + dset.size;
 
+  // the client always instantiates set 0 (Set_$DefaultGlobal) in addition to
+  // the placement's selected set (CMap::CreateMapObjDefGroupDoodads)
+  uint32_t start0 = 0, end0 = 0;
+  if (doodadset != 0)
+  {
+    auto const& dset0 = doodadsets[0];
+    start0 = dset0.start;
+    end0 = start0 + dset0.size;
+  }
+
   for (int i = 0; i < groups.size(); ++i)
   {
     for (uint16_t ref : groups[i].doodad_ref())
     {
-      if (ref >= start && ref < end)
+      if ((ref >= start && ref < end) || (ref >= start0 && ref < end0))
       {
         doodads[i].push_back(modelis[ref]);
       }
@@ -1255,7 +1267,7 @@ void WMOFog::setup()
 
 }
 
-decltype (WMOManager::_) WMOManager::_;
+// WMOManager::_ is defined in AsyncObjectManagers.cpp to fix static destruction order.
 
 void WMOManager::report()
 {

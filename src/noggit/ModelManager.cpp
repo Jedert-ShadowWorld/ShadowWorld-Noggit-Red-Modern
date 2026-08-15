@@ -4,6 +4,9 @@
 #include <noggit/Model.h> // Model
 #include <noggit/ModelManager.h> // ModelManager
 
+#include <algorithm>
+#include <chrono>
+
 
 namespace
 {
@@ -25,7 +28,7 @@ namespace
   }
 }
 
-decltype (ModelManager::_) ModelManager::_ {};
+// ModelManager::_ is defined in AsyncObjectManagers.cpp to fix static destruction order.
 
 void ModelManager::report()
 {
@@ -43,15 +46,6 @@ void ModelManager::resetAnim()
   _.apply ( [&] (BlizzardArchive::Listfile::FileKey const&, Model& model)
             {
               model.anim_calculated = false;
-            }
-          );
-}
-
-void ModelManager::updateEmitters(float dt)
-{
-  _.apply ( [&] (BlizzardArchive::Listfile::FileKey const&, Model& model)
-            {
-              model.updateEmitters (dt);
             }
           );
 }

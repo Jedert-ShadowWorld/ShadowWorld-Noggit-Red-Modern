@@ -3,6 +3,7 @@
 #pragma once
 
 #include <noggit/ModelManager.h>
+#include <noggit/Particle.h> // ModelEmitterStates
 #include <noggit/Selection.h>
 #include <noggit/SceneObject.hpp>
 #include <noggit/tool_enums.hpp>
@@ -36,6 +37,10 @@ class ModelInstance : public SceneObject
 {
 public:
   scoped_model_reference model;
+
+  // per-placement particle/ribbon sim state, ticked only while this instance
+  // is in view
+  ModelEmitterStates emitter_states;
 
   glm::vec3 light_color = { 1.f, 1.f, 1.f };
 
@@ -77,6 +82,8 @@ public:
   bool isInFrustum(math::frustum const& frustum);
   bool isInRenderDist(const float cull_distance, const glm::vec3& camera, display_mode display);
 
+  void updateEmitters(float dt);
+
   bool extentsDirty() const;;
 
   [[nodiscard]]
@@ -86,7 +93,7 @@ public:
   void ensureExtents() override;
   bool finishedLoading() override;;
   std::array<glm::vec3, 2> const& getExtents() override; // axis aligned
-  std::array<glm::vec3, 2> const& getLocalExtents() const;
+  std::array<glm::vec3, 2> getLocalExtents() const; // by value: built from the model bounds on call
 
   std::array<glm::vec3, 8> getBoundingBox() override; // not axis aligned
 

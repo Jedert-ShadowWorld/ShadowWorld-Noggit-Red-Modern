@@ -5,11 +5,18 @@ in vec2 f_uv;
 
 out vec4 out_color;
 
-uniform sampler2D tex;
+uniform sampler2DArray tex;
+uniform int tex_index;
 uniform vec4 color;
+uniform float alpha_test;
 
 void main()
 {
-  vec4 t = texture(tex, f_uv);
-  out_color = vec4(color.rgb * t.rgb, color.a);
+  vec4 t = texture(tex, vec3(f_uv, tex_index));
+  out_color = color * t;
+
+  if (out_color.a < alpha_test)
+  {
+    discard;
+  }
 }

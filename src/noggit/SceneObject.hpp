@@ -84,12 +84,16 @@ public:
   glm::vec3 dir;
   float scale = 1.f; // Note : max scale is uint16 max / 1024 = 63.999
   unsigned int uid;
-  int frame;
+  int frame = -1; // last render-frame counter this object was processed in
 
   // Note : First, need to check if the tile that contained it was rendered too
   bool _rendered_last_frame = false;
 
   bool _grouped = false;
+
+  // set on the first move/rotate/scale this session; lets the loader tell a
+  // stale multi-tile row of an edited object apart from a genuine uid clash
+  bool _transformed_this_session = false;
 
 protected:
   SceneObjectTypes _type;

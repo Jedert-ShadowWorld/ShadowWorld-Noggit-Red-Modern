@@ -7,6 +7,7 @@
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/DBC.h>
+#include <noggit/DetailDoodads.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/TileIndex.hpp>
@@ -31,6 +32,7 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <chrono>
 
 using namespace Noggit::Rendering;
 
@@ -423,11 +425,24 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     _sphere_render.draw(mvp, _world->vertexCenter(), cursor_color, 2.f);
   }
 
-  std::unordered_map<Model*, std::size_t> model_with_particles;
+  // visible placements with emitters: their per-instance sims are ticked and
+  // drawn (one concatenated batch per emitter) after the m2 pass
+  std::unordered_map<Model*, std::vector<ModelInstance*>> model_with_particles;
+  bool const collect_fx = render_settings.draw_model_animations && !render_settings.minimap_render;
 
   tsl::robin_map<Model*, std::vector<glm::mat4x4>> models_to_draw;
   std::vector<WMOInstance*> wmos_to_draw;
   std::unordered_map<Model*, std::size_t> model_boxes_to_draw;
+
+  // placements whose asset (or its skin) failed to load: marked with a red
+  // box instead of silently vanishing
+  std::vector<glm::vec3> failed_model_markers;
+
+  auto mark_failed_placement = [&] (glm::vec3 const& pos)
+  {
+    if (glm::distance(camera_pos, pos) < _cull_distance)
+      failed_model_markers.push_back(pos);
+  };
 
   // frame counter loop. pretty hacky but works
   // this is used to make sure no object is processed more than once within a frame
@@ -442,6 +457,50 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     frame++;
   }
 
+  // shared by the per-tile WMO branch and the global-WMO path, which
+  // previously collected no doodads at all
+  auto collect_wmo_doodads = [&] (WMOInstance* wmo_instance)
+  {
+    std::map<uint32_t, std::vector<wmo_doodad_instance>>* doodads = wmo_instance->get_doodads(render_settings.draw_hidden_models);
+
+    if (!doodads)
+      return;
+
+    for (auto& pair : *doodads)
+    {
+      for (auto& doodad : pair.second)
+      {
+        if (doodad.frame == frame)
+          continue;
+        doodad.frame = frame;
+
+        if (doodad.model->loading_failed())
+        {
+          mark_failed_placement(doodad.world_pos);
+          continue;
+        }
+
+        if (doodad.model->skin_load_failed())
+        {
+          mark_failed_placement(doodad.world_pos);
+        }
+
+        if (!doodad.isInRenderDist(_cull_distance, camera_pos, render_settings.display_mode))
+          continue;
+        // TODO can check if in indoor group & exterior not hidden for further optimization. possibly check portals relations
+
+        auto& instances = models_to_draw[doodad.model.get()];
+
+        instances.emplace_back(doodad.transformMatrix());
+
+        if (collect_fx && doodad.model->finishedLoading() && doodad.model->has_emitters())
+        {
+          model_with_particles[doodad.model.get()].push_back(&doodad);
+        }
+      }
+    }
+  };
+
   for (auto const& pair : _world->_loaded_tiles_buffer)
   {
     MapTile* tile = pair.second;
@@ -454,12 +513,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     if (render_settings.minimap_render)
       tile->renderer()->setOccluded(false);
 
-    if (tile->renderer()->isOccluded() && !tile->getChunkUpdateFlags() && !tile->renderer()->isOverridingOcclusionCulling())
-      continue;
+    // tile occlusion queries are terrain-granularity and lag a frame; objects
+    // poking above the occluder box would wrongly vanish with the tile, so
+    // occlusion does not gate object collection
 
-    // early dist check
-    // TODO: optional
-    if (tile->camDist() > _cull_distance)
+    // early dist check against the closest possible point of the tile instead
+    // of its center, which is up to half a tile diagonal too strict
+    if (tile->camDist() - static_cast<float>(TILE_RADIUS) / 2.f > _cull_distance)
       continue;
 
 
@@ -514,6 +574,17 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
           instance->frame = frame;
 
+          if (m2_instance->model->loading_failed())
+          {
+            mark_failed_placement(m2_instance->pos);
+            continue;
+          }
+
+          if (m2_instance->model->skin_load_failed())
+          {
+            mark_failed_placement(m2_instance->pos);
+          }
+
           bool render = false;
           // experimental : if camera and object haven't moved/changed since last frame, we don't need to do frustum culling again
           if (!render_settings.camera_moved && !m2_instance->extentsDirty()/* && not_moved*/)
@@ -534,6 +605,11 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
           instances.emplace_back(m2_instance->transformMatrix());
           m2_instance->_rendered_last_frame = true;
+
+          if (collect_fx && m2_instance->model->finishedLoading() && m2_instance->model->has_emitters())
+          {
+            model_with_particles[m2_instance->model.get()].push_back(m2_instance);
+          }
 
 
           // if (render && !draw_models_with_box /* && !m2_instance->model->is_hidden()*/)
@@ -587,6 +663,12 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
           instance->frame = frame;
 
+          if (wmo_instance->wmo->loading_failed())
+          {
+            mark_failed_placement(wmo_instance->pos);
+            continue;
+          }
+
           // experimental : if camera and object haven't moved/changed since last frame, we don't need to do frustum culling again
           bool render = false;
           if (!render_settings.camera_moved && !wmo_instance->extentsDirty()/* && not_moved*/)
@@ -608,56 +690,85 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
             if (render_settings.draw_wmo_doodads)
             {
-              // auto doodads = wmo_instance->get_visible_doodads(frustum, _cull_distance, camera_pos, draw_hidden_models, display);
-              // 
-              // for (auto& doodad : doodads)
-              // {
-              //     if (doodad->frame == frame)
-              //         continue;
-              //     doodad->frame = frame;
-              // 
-              //     auto& instances = models_to_draw[doodad->model.get()];
-              // 
-              //     instances.emplace_back(doodad->transformMatrix());
-              // }
-
-              // doodad->isInFrustum(frustum);
-
-              std::map<uint32_t, std::vector<wmo_doodad_instance>>* doodads = wmo_instance->get_doodads(render_settings.draw_hidden_models);
-              
-              if (!doodads)
-                continue;
-              
-              for (auto& pair : *doodads)
-              {
-                for (auto& doodad : pair.second)
-                {
-                    if (doodad.frame == frame)
-                        continue;
-                    doodad.frame = frame;
-
-                    // skip no geometry boxes for WMO doodads
-                    if (doodad.model->use_fake_geometry())
-                      continue;
-
-                    // apply size culling to wmo doodads?
-                    float dist = glm::distance(camera_pos, doodad.world_pos) - (doodad.model->bounding_box_radius * doodad.scale);
-
-                    if (!doodad.isInRenderDist(_cull_distance, camera_pos, render_settings.display_mode))
-                      continue;
-                    // TODO can check if in indoor group & exterior not hidden for further optimization. possibly check portals relations
-              
-                    auto& instances = models_to_draw[doodad.model.get()];
-              
-                    instances.emplace_back(doodad.transformMatrix());
-                }
-              }
+              collect_wmo_doodads(wmo_instance);
             }
           }
         }
       }
     }
   }
+
+  // ground effect detail doodads: client-matching placements per chunk, drawn
+  // like the client (merged buffers, terrain normal, MCCV/MCSH colour, fade)
+  if (_draw_detail_doodads && render_settings.draw_models && !render_settings.minimap_render)
+  {
+    ZoneScopedN("World::draw() : Detail doodads");
+
+    if (!_detail_doodads_program)
+    {
+      _detail_doodads_program.reset
+          ( new OpenGL::program
+                { { GL_VERTEX_SHADER,   OpenGL::shader::src_from_qrc("detail_doodad_vs") }
+                    , { GL_FRAGMENT_SHADER, OpenGL::shader::src_from_qrc("detail_doodad_fs") }
+                }
+          );
+      OpenGL::Scoped::use_program shader {*_detail_doodads_program.get()};
+      shader.bind_uniform_block("matrices", 0);
+      shader.bind_uniform_block("lighting", 1);
+      shader.uniform("tex", 0);
+    }
+
+    OpenGL::Scoped::use_program shader {*_detail_doodads_program.get()};
+    shader.uniform("fade_dist", _detail_doodad_distance);
+
+    // the client draws these without backface culling, depth-writing, alpha-keyed
+    gl.disable(GL_CULL_FACE);
+    gl.disable(GL_BLEND);
+    gl.depthMask(GL_TRUE);
+
+    for (auto const& pair : _world->_loaded_tiles_buffer)
+    {
+      MapTile* tile = pair.second;
+
+      if (!tile)
+      {
+        break;
+      }
+
+      if (!tile->finishedLoading()
+        || tile->camDist() - static_cast<float>(TILE_RADIUS) / 2.f > _detail_doodad_distance)
+      {
+        continue;
+      }
+
+      for (int cx = 0; cx < 16; ++cx)
+      {
+        for (int cz = 0; cz < 16; ++cz)
+        {
+          MapChunk* chunk = tile->getChunk(cx, cz);
+
+          if (glm::distance(chunk->vcenter, camera_pos) > _detail_doodad_distance)
+          {
+            continue;
+          }
+
+          Noggit::ChunkDetailDoodads* cache = chunk->getDetailDoodads();
+
+          if (cache->chunk_stamp != chunk->detailDoodadStamp()
+            || cache->dbc_stamp != Noggit::DetailDoodads::dbcStamp()
+            || cache->density != _detail_doodad_density)
+          {
+            Noggit::DetailDoodads::generate(chunk, _detail_doodad_density, _world->_context, *cache);
+          }
+
+          _detail_doodads.drawChunk(shader, chunk, cache, frame);
+        }
+      }
+    }
+
+    gl.enable(GL_CULL_FACE);
+  }
+  _detail_doodads.endFrame(frame);
 
   // WMOs / map objects
   if (render_settings.draw_wmo || _world->mapIndex.hasAGlobalWMO())
@@ -680,6 +791,13 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           {
             wmos_to_draw.push_back(global_wmo.value());
             disable_cull = true;
+
+            // global-WMO maps have no tile loop pass, so their doodads have to
+            // be collected here
+            if (render_settings.draw_wmo_doodads)
+            {
+              collect_wmo_doodads(global_wmo.value());
+            }
           }
       }
       // draw wdl models in horizon/fog
@@ -1089,6 +1207,21 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
     model_boxes_to_draw.clear();
 
+    // red markers on placements whose asset failed to load
+    if (!render_settings.minimap_render && !failed_model_markers.empty())
+    {
+      for (glm::vec3 const& marker_pos : failed_model_markers)
+      {
+        Noggit::Rendering::Primitives::WireBox::getInstance(_world->_context).draw(model_view
+            , projection
+            , glm::mat4x4{1}
+            , {1.f, 0.f, 0.f, 1.f}
+            , marker_pos - glm::vec3(2.f)
+            , marker_pos + glm::vec3(2.f)
+        );
+      }
+    }
+
     // render m2 selection boxes.
     // TODO can try to move to m2 box shader but it requires some refactor
     if (!render_settings.minimap_render)
@@ -1150,43 +1283,53 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       water_shader.uniform("use_transform", 1);
     }
   }
-  /*
-  // model particles
-  if (draw_model_animations && !model_with_particles.empty())
+  // per-instance FX clock: real elapsed time, advanced every frame so hidden
+  // stretches don't accumulate into a catch-up burst (capped in updateEmitters)
   {
-    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
-    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
+    auto const fx_now = std::chrono::steady_clock::now();
+    float const fx_dt = std::chrono::duration<float>(fx_now - _last_fx_update).count();
+    _last_fx_update = fx_now;
 
-    OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
-
-    particles_shader.uniform("model_view_projection", mvp);
-    OpenGL::texture::set_active_texture(0);
-
-    for (auto& it : model_with_particles)
+    if (render_settings.draw_model_animations && !model_with_particles.empty())
     {
-      it.first->draw_particles(model_view, particles_shader, it.second);
+      // only instances that survived culling this frame tick their emitters
+      for (auto& it : model_with_particles)
+      {
+        for (ModelInstance* instance : it.second)
+        {
+          instance->updateEmitters(fx_dt);
+        }
+      }
+
+      OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
+      OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
+
+      {
+        OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
+
+        particles_shader.uniform("model_view_projection", mvp);
+
+        for (auto& it : model_with_particles)
+        {
+          it.first->renderer()->drawParticles(model_view, particles_shader, it.second);
+        }
+      }
+
+      {
+        OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
+
+        ribbon_shader.uniform("model_view_projection", mvp);
+
+        gl.enable(GL_BLEND);
+        gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
+
+        for (auto& it : model_with_particles)
+        {
+          it.first->renderer()->drawRibbons(ribbon_shader, it.second);
+        }
+      }
     }
   }
-
-
-  if (draw_model_animations && !model_with_particles.empty())
-  {
-    OpenGL::Scoped::bool_setter<GL_CULL_FACE, GL_FALSE> const cull;
-    OpenGL::Scoped::depth_mask_setter<GL_FALSE> const depth_mask;
-
-    OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
-
-    ribbon_shader.uniform("model_view_projection", mvp);
-
-    gl.blendFunc(GL_SRC_ALPHA, GL_ONE);
-
-    for (auto& it : model_with_particles)
-    {
-      it.first->draw_ribbons(ribbon_shader, it.second);
-    }
-  }
-
-   */
 
   gl.enable(GL_BLEND);
   gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1628,7 +1771,6 @@ void WorldRender::upload()
     m2_shader_instanced.uniform("tex2", 2);
   }
 
-  /*
   {
     OpenGL::Scoped::use_program particles_shader {*_m2_particles_program.get()};
     particles_shader.uniform("tex", 0);
@@ -1638,8 +1780,6 @@ void WorldRender::upload()
     OpenGL::Scoped::use_program ribbon_shader {*_m2_ribbons_program.get()};
     ribbon_shader.uniform("tex", 0);
   }
-
-   */
 
   {
     OpenGL::Scoped::use_program liquid_render {*_liquid_program.get()};
@@ -1687,7 +1827,9 @@ void WorldRender::unload()
   _m2_box_program.reset();
   _wmo_program.reset();
   _liquid_program.reset();
+  _detail_doodads_program.reset();
 
+  _detail_doodads.unload();
   _cursor_render.unload();
   _sphere_render.unload();
   _square_render.unload();

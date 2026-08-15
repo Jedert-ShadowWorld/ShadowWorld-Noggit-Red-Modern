@@ -33,6 +33,11 @@ namespace util
   class sExtendableArray;
 }
 
+namespace Noggit
+{
+  struct ChunkDetailDoodads;
+}
+
 class Brush;
 class ChunkWater;
 class MapTile;
@@ -75,6 +80,7 @@ private:
 public:
   MapChunk(MapTile* mt, BlizzardArchive::ClientFile* f, bool bigAlpha, tile_mode mode, Noggit::NoggitRenderContext context
            , bool init_empty = false, int chunk_idx = 0, bool load_textures = true);
+  ~MapChunk();
 
   auto getHoleMask(void) const -> unsigned;
   MapTile *mt;
@@ -117,9 +123,25 @@ private:
 
   Noggit::NoggitRenderContext _context;
 
+  // client-matching ground effect doodad placements, cached per chunk;
+  // the stamp advances on edits that can change them
+  std::unique_ptr<Noggit::ChunkDetailDoodads> _detail_doodads;
+  std::uint32_t _detail_doodad_stamp = 1;
+  // only alpha edits invalidate the stored doodadMapping; untouched chunks
+  // keep the mapping Blizzard saved, which is what the client renders from
+  bool _doodad_mapping_needs_update = false;
+
 public:
 
     TextureSet* getTextureSet() const;
+
+  Noggit::ChunkDetailDoodads* getDetailDoodads();
+  std::uint32_t detailDoodadStamp() const;
+  bool doodadMappingNeedsUpdate() const;
+  void clearDoodadMappingNeedsUpdate();
+  // upload bookkeeping only: re-queues renderer work without the edit side
+  // effects of registerChunkUpdate
+  void requeueChunkUpdate(unsigned flags);
 
   void draw ( math::frustum const& frustum
             , OpenGL::Scoped::use_program& mcnk_shader
@@ -178,7 +200,7 @@ public:
   int addTexture(scoped_blp_texture_reference texture);
   bool switchTexture(scoped_blp_texture_reference const& oldTexture, scoped_blp_texture_reference newTexture);
   void eraseTextures();
-  void eraseTexture(scoped_blp_texture_reference const& tex);
+  bool eraseTexture(scoped_blp_texture_reference const& tex);
   void change_texture_flags(scoped_blp_texture_reference const& tex, std::size_t flags);
 
   void clear_shadows();

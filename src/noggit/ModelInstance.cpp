@@ -43,6 +43,7 @@ ModelInstance::ModelInstance(BlizzardArchive::Listfile::FileKey const& file_key
 ModelInstance::ModelInstance(ModelInstance&& other) noexcept
   : SceneObject(other._type, other._context)
   , model(std::move(other.model))
+  , emitter_states(std::move(other.emitter_states))
   , light_color(other.light_color)
   , size_cat(other.size_cat)
   , _need_recalc_extents(other._need_recalc_extents)
@@ -60,6 +61,7 @@ ModelInstance::ModelInstance(ModelInstance&& other) noexcept
 ModelInstance& ModelInstance::operator= (ModelInstance&& other) noexcept
 {
   std::swap(model, other.model);
+  std::swap(emitter_states, other.emitter_states);
   std::swap(pos, other.pos);
   std::swap(dir, other.dir);
   std::swap(light_color, other.light_color);
@@ -73,6 +75,14 @@ ModelInstance& ModelInstance::operator= (ModelInstance&& other) noexcept
   return *this;
 }
 
+
+void ModelInstance::updateEmitters(float dt)
+{
+  if (model->finishedLoading() && model->has_emitters())
+  {
+    model->updateEmitters(dt, transformMatrix(), emitter_states);
+  }
+}
 
 void ModelInstance::draw_box (glm::mat4x4 const& model_view
                              , glm::mat4x4 const& projection
@@ -290,11 +300,19 @@ void ModelInstance::recalcExtents()
   //   ( glm::min ( model->collision_box_min, model->bounding_box_min)
   //   , glm::max ( model->collision_box_max, model->bounding_box_max)
   //   );
-  math::aabb const relative_to_model(model->bounding_box_min, model->bounding_box_max);
 
-  //! \todo If both boxes are {inf, -inf}, or well, if any min.c > max.c,
-  //! the model is bad itself. We *could* detect that case and explicitly
-  //! assume {-1, 1} then, to be nice to fuckported models.
+  // bad models can ship a zero or inverted bounding box; assume {-1, 1} for
+  // those so they don't get frustum-culled while on screen
+  // a diagonal under this is an effectively zero-sized box
+  float constexpr min_valid_bounding_box_diagonal = 0.01f;
+  glm::vec3 const box_size = model->bounding_box_max - model->bounding_box_min;
+  bool const degenerate_box = box_size.x < 0.f || box_size.y < 0.f || box_size.z < 0.f
+                           || glm::length(box_size) < min_valid_bounding_box_diagonal;
+
+  math::aabb const relative_to_model
+    ( degenerate_box ? glm::vec3(-1.f) : model->bounding_box_min
+    , degenerate_box ? glm::vec3(1.f) : model->bounding_box_max
+    );
 
   std::array<glm::vec3, 8> const rotated_corners_in_world = relative_to_model.rotated_corners(_transform_mat, true);
 
@@ -308,24 +326,10 @@ void ModelInstance::recalcExtents()
 
   // TODO We only need to recalculate size_cat if size changed
 
-  if (model->mesh_bounds_ratio < 0.80f)
-  {
-    // size cat for animated models with smaller mesh than the BB
-
-    math::aabb const vert_relative_to_model(model->vertices_bounds[0], model->vertices_bounds[1]);
-
-    std::array<glm::vec3, 8> const vert_rotated_corners_in_world = vert_relative_to_model.rotated_corners(_transform_mat, true);
-
-    math::aabb const vert_bounding_of_rotated_points(std::vector<glm::vec3>(vert_rotated_corners_in_world.begin()
-      , vert_rotated_corners_in_world.end()));
-
-    size_cat = glm::distance(vert_bounding_of_rotated_points.max, vert_bounding_of_rotated_points.min);
-  }
-  else
-  {
-    // this is basically AABB sphere diameter
-    size_cat = glm::distance(bounding_of_rotated_points.max, bounding_of_rotated_points.min);
-  }
+  // always derived from the model bounds (AABB sphere diameter): the vertex
+  // box shrinks for any model with emitters or lights (animBones is forced on
+  // for those) and made animated props pop out of render distance early
+  size_cat = glm::distance(bounding_of_rotated_points.max, bounding_of_rotated_points.min);
 
   // Reference :  Using original blizzard model BB radius
   // TODO : No approach seems to generate the same value
@@ -363,7 +367,7 @@ std::array<glm::vec3, 2> const& ModelInstance::getExtents()
   return extents;
 }
 
-std::array<glm::vec3, 2> const& ModelInstance::getLocalExtents() const
+std::array<glm::vec3, 2> ModelInstance::getLocalExtents() const
 {
   return { model->bounding_box_min , model->bounding_box_max };
 }

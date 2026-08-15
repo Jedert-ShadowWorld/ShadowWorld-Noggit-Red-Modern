@@ -102,6 +102,9 @@ namespace Noggit::Rendering
     void upload() override;
     void unload() override;
 
+    [[nodiscard]]
+    bool uploaded() const { return _uploaded; }
+
     void draw(glm::mat4x4 const& model_view
         , ModelInstance& instance
         , OpenGL::Scoped::use_program& m2_shader
@@ -134,11 +137,11 @@ namespace Noggit::Rendering
 
     void drawParticles(glm::mat4x4 const& model_view
         , OpenGL::Scoped::use_program& particles_shader
-        , std::size_t instance_count
+        , std::vector<ModelInstance*> const& instances
     );
 
     void drawRibbons(OpenGL::Scoped::use_program& ribbons_shader
-        , std::size_t instance_count
+        , std::vector<ModelInstance*> const& instances
     );
 
     void drawBox(OpenGL::Scoped::use_program& m2_box_shader, std::size_t box_count);

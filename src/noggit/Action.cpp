@@ -725,6 +725,7 @@ void Noggit::Action::registerChunkVertexColorChange(MapChunk* chunk)
 void Noggit::Action::registerObjectTransformed(SceneObject* obj)
 {
   _flags |= ActionFlags::eOBJECTS_TRANSFORMED;
+  obj->_transformed_this_session = true;
 
   for (auto& pair : _transformed_objects_pre)
   {

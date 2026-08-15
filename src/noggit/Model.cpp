@@ -403,6 +403,7 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
     BlizzardArchive::ClientFile g(lodname, Noggit::Application::NoggitApplication::instance()->clientData());
     if (g.isEof()) {
       LogError << "loading skinfile " << lodname << std::endl;
+      _skin_load_failed = true;
       g.close();
       return;
     }
@@ -635,20 +636,16 @@ void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time)
     }
   }
 
-  /*
   for (auto& particle : _particles)
   {
-    // random time distribution for teh win ..?
     int pt = (t + static_cast<int>(tmax*particle.tofs)) % tmax;
     particle.setup(_current_anim_seq, pt, _global_animtime);
   }
 
-  for (size_t i = 0; i<header.nRibbonEmitters; ++i) 
+  for (auto& ribbon : _ribbons)
   {
-    _ribbons[i].setup(_current_anim_seq, t, _global_animtime);
+    ribbon.setup(_current_anim_seq, t, _global_animtime);
   }
-
-   */
 
   for (auto& tex_anim : _texture_animations)
   {
@@ -1036,15 +1033,45 @@ void Model::lightsOff(OpenGL::light lbase)
 }
 
 
-void Model::updateEmitters(float dt)
+bool Model::has_emitters() const
 {
-  return;
+  return !_particles.empty() || !_ribbons.empty();
+}
 
-  if (finished)
+void Model::updateEmitters(float dt, glm::mat4x4 const& instance_mat, ModelEmitterStates& states)
+{
+  if (!finished)
   {
-    for (auto& particle : _particles)
+    return;
+  }
+
+  if (states.particles.size() != _particles.size())
+  {
+    states.particles.resize(_particles.size());
+  }
+
+  if (states.ribbons.size() != _ribbons.size())
+  {
+    states.ribbons.resize(_ribbons.size());
+  }
+
+  // visibility-gated ticking: instances re-entering view get no catch-up
+  // beyond a second, and big steps are cut into 0.1s substeps for stability
+  dt = std::min(dt, 1.0f);
+
+  while (dt > 0.0f)
+  {
+    float step = std::min(dt, 0.1f);
+    dt -= step;
+
+    for (std::size_t i = 0; i < _particles.size(); ++i)
     {
-      particle.update (dt);
+      _particles[i].update(step, instance_mat, states.particles[i]);
+    }
+
+    for (std::size_t i = 0; i < _ribbons.size(); ++i)
+    {
+      _ribbons[i].update(step, instance_mat, states.ribbons[i]);
     }
   }
 }

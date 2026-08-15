@@ -152,6 +152,7 @@ class Model : public AsyncObject
 {
   friend class Noggit::Rendering::ModelRender;
   friend struct Noggit::Rendering::ModelRenderPass;
+  friend class RibbonEmitter; // resolves its blend mode from _render_flags
 
 public:
   template<typename T>
@@ -171,7 +172,16 @@ public:
     , bool first_occurence
     , bool only_opaque_tris);
 
-  void updateEmitters(float dt);
+  // advances one placement's emitter state in world space; states is lazily
+  // sized against this model's emitter lists
+  void updateEmitters(float dt, glm::mat4x4 const& instance_mat, ModelEmitterStates& states);
+
+  [[nodiscard]]
+  bool has_emitters() const;
+
+  // the model loaded but its .skin didn't: the mesh is invisible
+  [[nodiscard]]
+  bool skin_load_failed() const { return _skin_load_failed; }
 
   void finishLoading() override;
   void waitForChildrenLoaded() override;
@@ -197,6 +207,12 @@ public:
 
   [[nodiscard]]
   Noggit::Rendering::ModelRender* renderer();
+
+  // read access for the detail doodad batch builder
+  std::vector<ModelVertex> const& vertexData() const { return _vertices; }
+  std::vector<uint16_t> const& indexData() const { return _indices; }
+  std::vector<scoped_blp_texture_reference> const& textureRefs() const { return _textures; }
+  std::vector<uint16_t> const& textureLookup() const { return _texture_lookup; }
 
   uint32_t get_anim_lenght(int16_t anim_id);
 
@@ -324,6 +340,7 @@ private:
   Noggit::Rendering::ModelRender _renderer;
 
   bool _hidden = false;
+  bool _skin_load_failed = false;
 
 };
 

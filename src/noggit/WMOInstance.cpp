@@ -261,9 +261,8 @@ std::array<glm::vec3, 2> const& WMOInstance::getExtents()
   return extents;
 }
 
-std::array<glm::vec3, 2> const& WMOInstance::getLocalExtents() const
+std::array<glm::vec3, 2> WMOInstance::getLocalExtents() const
 {
-
   return { wmo->extents[0], wmo->extents[1] };
 }
 
@@ -443,10 +442,11 @@ void WMOInstance::change_doodadset(uint16_t doodad_set)
     return;
   }
 
-  // don't set an invalid doodad set
+  // out-of-range set indices (bad MODF data) fall back to the default set
+  // instead of leaving the instance doodad-less and re-resolving every frame
   if (doodad_set >= wmo->doodadsets.size())
   {
-    return;
+    doodad_set = 0;
   }
 
   _doodadset = doodad_set;

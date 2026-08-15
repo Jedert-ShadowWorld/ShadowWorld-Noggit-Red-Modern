@@ -9,12 +9,14 @@
 
 #include <noggit/tool_enums.hpp>
 #include <noggit/rendering/CursorRender.hpp>
+#include <noggit/rendering/DetailDoodadRender.hpp>
 #include <noggit/rendering/LiquidTextureManager.hpp>
 #include <noggit/map_horizon.h>
 #include <noggit/Sky.h>
 
 #include <noggit/rendering/Primitives.hpp>
 
+#include <chrono>
 #include <memory>
 
 namespace OpenGL
@@ -106,6 +108,11 @@ namespace Noggit::Rendering
 
     unsigned int _frame_max_chunk_updates = 256;
 
+    // in-editor preview of ground effect detail doodads (client algorithm)
+    bool _draw_detail_doodads = true;
+    int _detail_doodad_density = 16;         // client CVar groundEffectDensity, 16..256
+    float _detail_doodad_distance = 300.f;
+
     bool directional_lightning;
     bool local_lightning;
 
@@ -131,6 +138,9 @@ namespace Noggit::Rendering
     World* _world;
     float _cull_distance;
 
+    // clock for the per-instance particle/ribbon sims (real elapsed time)
+    std::chrono::steady_clock::time_point _last_fx_update = std::chrono::steady_clock::now();
+
     // shaders
     std::unique_ptr<OpenGL::program> _mcnk_program;;
     std::unique_ptr<OpenGL::program> _mfbo_program;
@@ -138,6 +148,8 @@ namespace Noggit::Rendering
     std::unique_ptr<OpenGL::program> _m2_instanced_program;
     std::unique_ptr<OpenGL::program> _m2_particles_program;
     std::unique_ptr<OpenGL::program> _m2_ribbons_program;
+    std::unique_ptr<OpenGL::program> _detail_doodads_program;
+    DetailDoodadRender _detail_doodads;
     std::unique_ptr<OpenGL::program> _m2_box_program;
     std::unique_ptr<OpenGL::program> _wmo_program;
     std::unique_ptr<OpenGL::program> _liquid_program;

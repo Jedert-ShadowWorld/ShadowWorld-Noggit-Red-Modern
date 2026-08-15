@@ -4,6 +4,7 @@
 #include <noggit/AsyncLoader.h>
 #include <noggit/AsyncObject.h>
 #include <noggit/ContextObject.hpp>
+#include <noggit/Log.h>
 #include <noggit/Model.h>
 
 #include <Listfile.hpp>
@@ -80,7 +81,19 @@ namespace Noggit
       {
         std::scoped_lock lock(_mutex);
 
-        if (--_counts.at(pair) == 0)
+        auto count_it = _counts.find(pair);
+        if (count_it == _counts.end())
+        {
+          // reference bookkeeping is broken for this key. Don't throw: erase is
+          // called from destructors and an exception here terminates the app.
+          // Deliberately leaks any orphaned _elements entry instead.
+          LogError << "AsyncObjectMultimap: releasing a reference to \""
+                   << file_key.stringRepr() << "\" (context " << context
+                   << ") that is not in the map" << std::endl;
+          return;
+        }
+
+        if (--count_it->second == 0)
         {
           obj = static_cast<AsyncObject*>(&(_elements.at(pair)));
         }

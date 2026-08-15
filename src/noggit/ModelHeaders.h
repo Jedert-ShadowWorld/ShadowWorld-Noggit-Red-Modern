@@ -266,24 +266,35 @@ struct ModelCameraDef {
   AnimationBlock rot;
 };
 
+// field names per the wrath (v264) M2Particle layout, byte-compatible with the
+// legacy declarations they replace
 struct ModelParticleParams {
   FakeAnimationBlock colors;   // (short, vec3f)  This one points to 3 floats defining red, green and blue.
   FakeAnimationBlock opacity;      // (short, short)    Looks like opacity (short), Most likely they all have 3 timestamps for {start, middle, end}.
   FakeAnimationBlock sizes;     // (short, vec2f)  It carries two floats per key. (x and y scale)
-  int32_t d[2];
-  FakeAnimationBlock Intensity;   // Some kind of intensity values seen: 0,16,17,32(if set to different it will have high intensity) (short, short)
-  FakeAnimationBlock unk2;     // (short, short)
-  float unk[3];
-  float scales[3];
-  float slowdown;
-  float unknown1[2];
-  float rotation;        //Sprite Rotation
-  float unknown2[2];
-  float Rot1[3];          //Model Rotation 1
-  float Rot2[3];          //Model Rotation 2
-  float Trans[3];        //Model Translation
-  float f2[4];
-  int32_t nUnknownReference;
+  float scaleVary[2];          // per-particle +/- percentage on x/y scale; y rolled independently only with flag 0x80000
+  FakeAnimationBlock Intensity;   // head cell track (short, short)
+  FakeAnimationBlock unk2;     // tail cell track (short, short)
+  float tailLength;            // tail length in seconds-of-travel (times velocity at draw)
+  float twinkleSpeed;          // twinkle table advance rate (Hz against particle age)
+  float twinklePercent;        // visibility cutoff: <1 culls particles whose table sample exceeds it
+  float twinkleScaleMin;       // size factor = table[idx] * (max - min) + min
+  float twinkleScaleMax;
+  float burstMultiplier;
+  float slowdown;              // drag: speed *= exp(-drag * dt)
+  float baseSpin;              // initial sprite rotation (radians)
+  float baseSpinVary;
+  float rotation;        // spin speed (radians/s) — "Sprite Rotation"
+  float spinVary;
+  float unknown2;              // tumble box min.x — rest of the box spans Rot1/Rot2
+  float Rot1[3];          // tumble min.y, min.z, max.x
+  float Rot2[3];          // tumble max.y, max.z, wind.x
+  float Trans[3];        // wind.y, wind.z, windTime
+  float followSpeed1;    // FollowPosition (flag 0x4000): 2-point fit mapping emitter
+  float followScale1;    // speed to the fraction of its frame movement particles
+  float followSpeed2;    // inherit — factor = clamp(lerp by (speed-s1)/(s2-s1), 0, 1)
+  float followScale2;
+  int32_t nUnknownReference;   // splinePoints M2Array
   int32_t ofsUnknownReferenc;
 };
 
@@ -313,17 +324,19 @@ struct ModelParticleEmitterDef {
   AnimationBlock HorizontalRange; // They can do it horizontally too! (range: 0 to 2*pi)
   AnimationBlock Gravity; // Fall down, apple!
   AnimationBlock Lifespan; // Everyone has to die.
-  int32_t unknown;
+  float lifespanVary; // per-particle lifespan += lifespanVary * U[-1,1]
   AnimationBlock EmissionRate; // Stread your particles, emitter.
-  int32_t unknown2;
+  float emissionRateVary; // per-tick rate += emissionRateVary * U[-1,1]
   AnimationBlock EmissionAreaLength; // Well, you can do that in this area.
   AnimationBlock EmissionAreaWidth;
-  AnimationBlock Gravity2; // A second gravity? Its strong.
+  AnimationBlock zSource; // when > 0, particles launch along (spawn_pos - (0,0,zSource)) instead of the emitter normal
   ModelParticleParams p;
   AnimationBlock en;
 };
 
 
+// field names per the wrath (v264) M2Ribbon layout (176 bytes), byte-compatible
+// with the legacy declarations they replace
 struct ModelRibbonEmitterDef {
   int32_t id;
   int32_t bone;
@@ -334,13 +347,18 @@ struct ModelRibbonEmitterDef {
   int32_t ofsMaterials;
   AnimationBlock color;
   AnimationBlock opacity;
-  AnimationBlock above;
-  AnimationBlock below;
-  float res, length, Emissionangle;
-  int16_t s1, s2;
-  AnimationBlock unk1;
-  AnimationBlock unk2;
-  int32_t unknown;
+  AnimationBlock above;        // strip height above the edge axis (float track)
+  AnimationBlock below;        // strip height below the edge axis (float track)
+  float edgesPerSecond;        // edge spawn rate; the client ceil()s this at load
+  float edgeLifetime;          // seconds an edge persists; client floors at 0.25s
+  float gravity;               // per-frame sag, (age*2+dt)*gravity*dt on the up axis
+  int16_t textureRows;         // flipbook grid
+  int16_t textureCols;
+  AnimationBlock texSlot;      // uint16 flipbook cell track
+  AnimationBlock visibility;   // uint8 emission on/off track
+  int16_t priorityPlane;
+  int8_t ribbonColorIndex;     // ParticleColor.dbc index
+  int8_t textureTransformLookup;
 };
 
 
