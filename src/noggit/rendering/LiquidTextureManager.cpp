@@ -7,6 +7,8 @@
 #include <noggit/TextureManager.h>
 #include <noggit/Log.h>
 
+#include <vector>
+
 using namespace Noggit::Rendering;
 
 LiquidTextureManager::LiquidTextureManager(Noggit::NoggitRenderContext context)
@@ -121,46 +123,74 @@ void LiquidTextureManager::upload()
     _texture_frames_map[liquid_type_id] = std::make_tuple(array, anim, type, n_frames);
   }
 
-  // Shadowlands MH2O is now parsed independently from the legacy LiquidType
-  // database.  The old lake_a texture sequence does exist in 9.2.7, but the
-  // modern fallback renderer does not have the legacy material/shader metadata
-  // that makes those frames meaningful.  Sampling them with the bootstrap
-  // profile produces an almost-black, oil-like surface.  Keep a deterministic
-  // blue bootstrap material until the DB2 liquid material bridge is available.
+  // Modern clients do not expose the legacy LiquidType.dbc profiles Noggit's
+  // water shader expects.  Keep MH2O geometry authoritative and bootstrap the
+  // shader with small, low-energy ripple textures.  The liquid shader already
+  // supplies RiverColor*/OceanColor* from the lighting block, so feeding it a
+  // bright blue texture double-tints the result and creates the flat cyan look.
+  // These profiles deliberately contribute only a subtle animated ripple and
+  // let the existing river/ocean lighting colors provide the actual water tint.
   if (_texture_frames_map.empty())
   {
-    constexpr unsigned fallback_liquid_id = 5;
     constexpr unsigned fallback_frames = 4;
+    constexpr unsigned fallback_width = 4;
+    constexpr unsigned fallback_height = 4;
 
-    GLuint array = 0;
-    gl.genTextures(1, &array);
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, array);
-
-    // Four subtly different blue frames.  This stays visibly water-like and
-    // exercises the animated-array path without depending on legacy shader
-    // semantics.  Geometry, MH2O masks and heights remain untouched.
-    const unsigned char pixels[fallback_frames][4] =
+    auto install_modern_profile = [&](unsigned liquid_id, int liquid_type, glm::vec2 anim)
     {
-      { 72, 138, 186, 190 },
-      { 78, 146, 194, 190 },
-      { 66, 132, 182, 190 },
-      { 75, 142, 191, 190 }
+      std::vector<unsigned char> pixels(
+        fallback_width * fallback_height * fallback_frames * 4u, 0u);
+
+      for (unsigned frame = 0; frame < fallback_frames; ++frame)
+      {
+        for (unsigned y = 0; y < fallback_height; ++y)
+        {
+          for (unsigned x = 0; x < fallback_width; ++x)
+          {
+            const unsigned pixel_index =
+              (((frame * fallback_height + y) * fallback_width + x) * 4u);
+
+            // Moving diagonal ripple with a very small additive contribution.
+            // liquid_frag.glsl adds this RGB value to River/Ocean lighting.
+            const unsigned wave = (x * 3u + y * 5u + frame * 4u) % 13u;
+            pixels[pixel_index + 0] = static_cast<unsigned char>(3u + wave / 3u);
+            pixels[pixel_index + 1] = static_cast<unsigned char>(5u + wave / 2u);
+            pixels[pixel_index + 2] = static_cast<unsigned char>(8u + wave);
+            pixels[pixel_index + 3] = 255u;
+          }
+        }
+      }
+
+      GLuint array = 0;
+      gl.genTextures(1, &array);
+      gl.bindTexture(GL_TEXTURE_2D_ARRAY, array);
+      gl.texImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8,
+                    fallback_width, fallback_height, fallback_frames,
+                    0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+      gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
+      gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+      gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+      _texture_frames_map[liquid_id] =
+        std::make_tuple(array, anim, liquid_type, fallback_frames);
     };
 
-    gl.texImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 1, 1, fallback_frames,
-                  0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    _texture_frames_map[fallback_liquid_id] =
-      std::make_tuple(array, glm::vec2(1.f, 0.f), 0, fallback_frames);
+    // Observed in the Shadowlands MH2O samples:
+    //   id 5 - river/lake style layers
+    //   id 2 - ocean/depth-only layers
+    // id 1 also occurs in modern MH2O and behaves as ordinary water in the
+    // compatibility path, so give it the river profile instead of an arbitrary
+    // robin_map "first profile" fallback.
+    install_modern_profile(5u, 0, glm::vec2(1.0f, 0.0f));
+    install_modern_profile(1u, 0, glm::vec2(0.9f, 6.0f));
+    install_modern_profile(2u, 1, glm::vec2(0.7f, 12.0f));
 
     LogDebug << "[ModernADT][WaterRender] Legacy LiquidType profiles are unavailable; "
-             << "installed safe animated procedural water profile id=" << fallback_liquid_id
-             << " with " << fallback_frames
-             << " blue frame(s). Legacy lake_a is intentionally disabled for modern MH2O."
-             << std::endl;
+             << "installed separate modern MH2O fallback profiles: river/lake ids={1,5} type=0, "
+             << "ocean id=2 type=1, each with " << fallback_frames
+             << " low-energy ripple frame(s)." << std::endl;
   }
 
   _uploaded = true;
