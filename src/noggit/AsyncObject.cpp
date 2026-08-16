@@ -65,12 +65,10 @@ namespace
     return out.str();
   }
 
-  // Diagnostic-only Shadowlands MH2O pass. The 12-byte chunk headers and
-  // 24-byte information records have now been shown to be structurally stable,
-  // but the second uint16 no longer behaves like Noggit's legacy 0..3 liquid
-  // vertex-format enum. Inspect the payload referenced by ofsHeightMap/ofsVertex
-  // for representative field02 values before constructing any liquid objects.
-  void inspect_modern_mh2o_layers_if_needed(AsyncObject const* object)
+  // Validate the modern ROOT MH2O, keep a small amount of diagnostics, then
+  // feed it through TileWater. liquid_layer now adapts the modern second uint16
+  // metadata/reference field into Noggit's legacy vertex-format enum.
+  void inspect_and_load_modern_mh2o_if_needed(AsyncObject const* object)
   {
     auto* tile = dynamic_cast<MapTile*>(const_cast<AsyncObject*>(object));
     if (!tile || !object->file_key().hasFilepath())
@@ -136,7 +134,7 @@ namespace
 
       if (mh2o_size < header_table_size)
       {
-        LogError << "[ModernADT][WaterVertexDiag] MH2O too small on tile "
+        LogError << "[ModernADT][WaterAdapter] MH2O too small on tile "
                  << tile->index.x << ',' << tile->index.z << ": " << mh2o_size
                  << " bytes." << std::endl;
         return;
@@ -146,7 +144,6 @@ namespace
       std::size_t wet_chunks = 0;
       std::size_t layer_records = 0;
       std::size_t plausible_headers = 0;
-      std::size_t emitted_records = 0;
       std::size_t emitted_payloads = 0;
       std::set<std::uint16_t> field02_values;
       std::set<std::uint16_t> payload_fields_emitted;
@@ -171,7 +168,7 @@ namespace
 
         if (!(information_in_range && attributes_in_range && count_sane && information_table_fits))
         {
-          LogError << "[ModernADT][WaterVertexDiag] implausible header tile="
+          LogError << "[ModernADT][WaterAdapter] implausible header tile="
                    << tile->index.x << ',' << tile->index.z
                    << " chunk=" << i
                    << " ofsInfo=" << ofs_information
@@ -192,74 +189,44 @@ namespace
           auto const field_02 = read_u16(info, 2);
           auto const min_height = read_f32(info, 4);
           auto const max_height = read_f32(info, 8);
-          auto const x_offset = static_cast<unsigned>(static_cast<unsigned char>(info[12]));
-          auto const y_offset = static_cast<unsigned>(static_cast<unsigned char>(info[13]));
           auto const width = static_cast<unsigned>(static_cast<unsigned char>(info[14]));
           auto const height = static_cast<unsigned>(static_cast<unsigned char>(info[15]));
-          auto const ofs_mask = read_u32(info, 16);
           auto const ofs_vertex = read_u32(info, 20);
 
           field02_values.insert(field_02);
 
-          if (emitted_records < 24)
-          {
-            LogDebug << "[ModernADT][WaterVertexDiag] layer tile="
-                     << tile->index.x << ',' << tile->index.z
-                     << " chunk=" << i << " grid=" << (i / 16) << ',' << (i % 16)
-                     << " layer=" << layer
-                     << " info@=" << info_offset
-                     << " liquidId=" << liquid_id
-                     << " field02=0x" << std::hex << field_02 << std::dec
-                     << " min=" << min_height
-                     << " max=" << max_height
-                     << " rect=" << x_offset << ',' << y_offset << ',' << width << ',' << height
-                     << " ofsMask=" << ofs_mask
-                     << " ofsVertex=" << ofs_vertex
-                     << std::endl;
-            ++emitted_records;
-          }
-
-          // Dump one representative vertex payload per distinct field02 value
-          // on each tile.  (width+1)*(height+1) is the classic vertex count; the
-          // raw byte window is deliberately larger than any single expected
-          // component stream so float/byte/UV patterns are visible side-by-side.
           if (ofs_vertex && ofs_vertex < mh2o_size &&
-              payload_fields_emitted.insert(field_02).second && emitted_payloads < 12)
+              payload_fields_emitted.insert(field_02).second && emitted_payloads < 8)
           {
             auto const vertex_count = static_cast<std::size_t>(width + 1) *
                                       static_cast<std::size_t>(height + 1);
             auto const available = static_cast<std::size_t>(mh2o_size - ofs_vertex);
-            auto const dump_bytes = std::min<std::size_t>(available, 160);
+            auto const dump_bytes = std::min<std::size_t>(available, 64);
 
-            LogDebug << "[ModernADT][WaterVertexDiag] payload tile="
+            LogDebug << "[ModernADT][WaterAdapter] sample tile="
                      << tile->index.x << ',' << tile->index.z
-                     << " chunk=" << i << " layer=" << layer
                      << " liquidId=" << liquid_id
-                     << " field02=0x" << std::hex << field_02 << std::dec
-                     << " rect=" << width << 'x' << height
+                     << " metadata=0x" << std::hex << field_02 << std::dec
+                     << " min=" << min_height << " max=" << max_height
                      << " vertexCount=" << vertex_count
-                     << " ofsVertex=" << ofs_vertex
-                     << " available=" << available
                      << " first" << dump_bytes << "={"
                      << hex_dump(mh2o + ofs_vertex, available, dump_bytes) << '}'
                      << std::endl;
-
-            // Also interpret the first few dwords as floats. This is diagnostic
-            // only; it makes a height stream obvious without assuming a format.
-            auto const float_count = std::min<std::size_t>(available / sizeof(float), 12);
-            std::ostringstream floats;
-            for (std::size_t f = 0; f < float_count; ++f)
-            {
-              if (f)
-                floats << ',';
-              floats << read_f32(mh2o + ofs_vertex, f * sizeof(float));
-            }
-            LogDebug << "[ModernADT][WaterVertexDiag] payloadFloats field02=0x"
-                     << std::hex << field_02 << std::dec
-                     << " first=" << floats.str() << std::endl;
             ++emitted_payloads;
           }
         }
+      }
+
+      if (!wet_chunks)
+        return;
+
+      if (plausible_headers != wet_chunks)
+      {
+        LogError << "[ModernADT][WaterAdapter] Refusing MH2O on tile "
+                 << tile->index.x << ',' << tile->index.z
+                 << ": only " << plausible_headers << '/' << wet_chunks
+                 << " wet headers validated." << std::endl;
+        return;
       }
 
       std::ostringstream fields;
@@ -272,27 +239,28 @@ namespace
         first = false;
       }
 
-      LogDebug << "[ModernADT][WaterVertexDiag] summary tile="
+      LogDebug << "[ModernADT][WaterAdapter] Validated tile="
                << tile->index.x << ',' << tile->index.z
                << " wetChunks=" << wet_chunks
-               << " plausibleHeaders=" << plausible_headers << '/' << wet_chunks
                << " layerRecords=" << layer_records
-               << " field02Values={" << fields.str() << "}"
-               << " MH2O=" << mh2o_size << " bytes."
+               << " metadataValues={" << fields.str() << "}"
+               << " MH2O=" << mh2o_size << " bytes; loading adapted water."
                << std::endl;
 
-      LogDebug << "[ModernADT][WaterVertexDiag] TileWater construction remains disabled; "
-               << "this build only inspects payload encoding behind ofsVertex."
-               << std::endl;
+      file.seek(mh2o_payload);
+      tile->Water.readFromFile(file, mh2o_payload);
+
+      LogDebug << "[ModernADT][WaterAdapter] Loaded adapted MH2O water for tile "
+               << tile->index.x << ',' << tile->index.z << '.' << std::endl;
     }
     catch (std::exception const& e)
     {
-      LogError << "[ModernADT][WaterVertexDiag] Failed to inspect MH2O for '"
+      LogError << "[ModernADT][WaterAdapter] Failed to load MH2O for '"
                << path << "': " << e.what() << ". Terrain remains usable." << std::endl;
     }
     catch (...)
     {
-      LogError << "[ModernADT][WaterVertexDiag] Failed to inspect MH2O for '"
+      LogError << "[ModernADT][WaterAdapter] Failed to load MH2O for '"
                << path << "' with an unknown exception. Terrain remains usable."
                << std::endl;
     }
@@ -312,7 +280,7 @@ bool AsyncObject::finishedLoading() const
 {
   bool const done = finished.load();
   if (done)
-    inspect_modern_mh2o_layers_if_needed(this);
+    inspect_and_load_modern_mh2o_if_needed(this);
   return done;
 }
 
