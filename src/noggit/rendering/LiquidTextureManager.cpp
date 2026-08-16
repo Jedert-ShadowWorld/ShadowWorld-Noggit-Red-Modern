@@ -132,34 +132,128 @@ void LiquidTextureManager::upload()
 
   // Modern clients may not provide the legacy LiquidType.dbc that Noggit's
   // liquid renderer normally uses to build its material/texture profile map.
-  // Keep the already parsed MH2O geometry renderable by installing a tiny
-  // procedural profile when that map is empty.  Modern liquid ids that are
-  // absent from the map are already redirected to the first available profile
-  // by LiquidRender, so one profile is sufficient as a bootstrap renderer.
+  // Prefer a real animated client water sequence when available; this gives
+  // modern MH2O useful visual feedback before the DB2 liquid-material bridge
+  // is implemented.  Keep the old 1x1 procedural pixel only as a last resort.
   if (_texture_frames_map.empty())
   {
-    GLuint array = 0;
-    gl.genTextures(1, &array);
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, array);
-
-    // Neutral semi-transparent blue.  The existing water shader still handles
-    // the geometry, depth and view-dependent effects; this pixel only replaces
-    // the missing legacy animated BLP array until DB2 liquid materials are
-    // mapped properly.
-    const unsigned char pixel[4] = { 72, 138, 186, 190 };
-    gl.texImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 1, 1, 1,
-                  0, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
     constexpr unsigned fallback_liquid_id = 5;
-    _texture_frames_map[fallback_liquid_id] =
-      std::make_tuple(array, glm::vec2(0.f, 0.f), 0, 1u);
+    constexpr unsigned max_fallback_frames = 30;
+    const std::string filename = "XTextures\\river\\lake_a.";
+    auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
 
-    LogDebug << "[ModernADT][WaterRender] Legacy LiquidType profiles are unavailable; "
-             << "installed procedural fallback profile id=" << fallback_liquid_id
-             << " texture=1x1x1." << std::endl;
+    bool installed_animated_fallback = false;
+
+    if (client_data && client_data->exists(filename + "1.blp"))
+    {
+      try
+      {
+        unsigned n_frames = 0;
+        while (n_frames < max_fallback_frames &&
+               client_data->exists(filename + std::to_string(n_frames + 1) + ".blp"))
+        {
+          ++n_frames;
+        }
+
+        if (n_frames > 0)
+        {
+          blp_texture first_frame(filename + "1.blp", _context);
+          first_frame.finishLoading();
+
+          GLuint array = 0;
+          gl.genTextures(1, &array);
+          gl.bindTexture(GL_TEXTURE_2D_ARRAY, array);
+
+          int width = first_frame.width();
+          int height = first_frame.height();
+          const unsigned mip_level = first_frame.mip_level();
+          const bool is_uncompressed = !first_frame.compression_format();
+
+          if (is_uncompressed)
+          {
+            for (unsigned mip = 0; mip < mip_level; ++mip)
+            {
+              gl.texImage3D(GL_TEXTURE_2D_ARRAY, mip, GL_RGBA8, width, height, n_frames,
+                            0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+              width = std::max(width >> 1, 1);
+              height = std::max(height >> 1, 1);
+            }
+          }
+          else
+          {
+            for (unsigned mip = 0; mip < mip_level; ++mip)
+            {
+              gl.compressedTexImage3D(GL_TEXTURE_2D_ARRAY, mip,
+                                      first_frame.compression_format().value(),
+                                      width, height, n_frames, 0,
+                                      static_cast<GLsizei>(first_frame.compressed_data()[mip].size() * n_frames),
+                                      nullptr);
+              width = std::max(width >> 1, 1);
+              height = std::max(height >> 1, 1);
+            }
+          }
+
+          for (unsigned frame = 0; frame < n_frames; ++frame)
+          {
+            blp_texture tex_frame(filename + std::to_string(frame + 1) + ".blp", _context);
+            tex_frame.finishLoading();
+
+            if (tex_frame.height() == first_frame.height() &&
+                tex_frame.width() == first_frame.width() &&
+                tex_frame.compression_format() == first_frame.compression_format() &&
+                tex_frame.mip_level() == first_frame.mip_level())
+            {
+              tex_frame.uploadToArray(frame);
+            }
+            else
+            {
+              first_frame.uploadToArray(frame);
+            }
+          }
+
+          gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL,
+                           mip_level > 3 ? static_cast<GLint>(mip_level - 3) : 0);
+          gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER,
+                           mip_level > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+          gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+          _texture_frames_map[fallback_liquid_id] =
+            std::make_tuple(array, glm::vec2(1.f, 0.f), 0, n_frames);
+          installed_animated_fallback = true;
+
+          LogDebug << "[ModernADT][WaterRender] Legacy LiquidType profiles are unavailable; "
+                   << "using animated client fallback '" << filename
+                   << "' with " << n_frames << " frame(s) for modern MH2O."
+                   << std::endl;
+        }
+      }
+      catch (...)
+      {
+        LogError << "[ModernADT][WaterRender] Failed to build animated client water fallback; "
+                 << "falling back to procedural 1x1 water." << std::endl;
+      }
+    }
+
+    if (!installed_animated_fallback)
+    {
+      GLuint array = 0;
+      gl.genTextures(1, &array);
+      gl.bindTexture(GL_TEXTURE_2D_ARRAY, array);
+
+      const unsigned char pixel[4] = { 72, 138, 186, 190 };
+      gl.texImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 1, 1, 1,
+                    0, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+      gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
+      gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+      _texture_frames_map[fallback_liquid_id] =
+        std::make_tuple(array, glm::vec2(0.f, 0.f), 0, 1u);
+
+      LogDebug << "[ModernADT][WaterRender] Legacy LiquidType profiles are unavailable and "
+               << "no animated client fallback was found; installed procedural fallback profile id="
+               << fallback_liquid_id << " texture=1x1x1." << std::endl;
+    }
   }
 
   _uploaded = true;
