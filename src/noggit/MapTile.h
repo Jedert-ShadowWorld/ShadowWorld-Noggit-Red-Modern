@@ -55,6 +55,7 @@ public:
   ~MapTile();
 
   void finishLoading() override;
+  void finishLoadingShadowlandsTerrainOnly();
   void waitForChildrenLoaded() override;
 
   //! \todo on destruction, unload ModelInstances and WMOInstances on this tile:
