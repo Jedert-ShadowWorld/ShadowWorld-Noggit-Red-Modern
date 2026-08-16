@@ -20,6 +20,55 @@ namespace Noggit
 {
   namespace Ui
   {
+    namespace
+    {
+      bool modern_liquid_fallback_mode()
+      {
+        return gLiquidTypeDB.getRecordCount() == 0;
+      }
+
+      char const* modern_liquid_name(int liquid_id)
+      {
+        switch (liquid_id)
+        {
+        case 1: return "Water";
+        case 2: return "Ocean";
+        case 3: return "Magma";
+        case 4: return "Slime";
+        case 5: return "Slow Water";
+        case 6: return "Slow Ocean";
+        default: return "Modern Liquid";
+        }
+      }
+
+      int liquid_basic_type_for_ui(int liquid_id)
+      {
+        if (!modern_liquid_fallback_mode())
+          return LiquidTypeDB::getLiquidType(liquid_id);
+
+        switch (liquid_id)
+        {
+        case 2:
+        case 6:
+          return liquid_basic_types_ocean;
+        case 3:
+          return liquid_basic_types_magma;
+        case 4:
+          return liquid_basic_types_slime;
+        default:
+          return liquid_basic_types_water;
+        }
+      }
+
+      std::string liquid_name_for_ui(int liquid_id)
+      {
+        if (modern_liquid_fallback_mode())
+          return modern_liquid_name(liquid_id);
+
+        return LiquidTypeDB::getLiquidName(liquid_id);
+      }
+    }
+
     water::water ( unsigned_int_property* current_layer
                  , BoolToggleProperty* display_all_layers
                  , QWidget* parent
@@ -57,24 +106,42 @@ namespace Noggit
 
       waterType = new QComboBox(this);
 
-      for (DBCFile::Iterator i = gLiquidTypeDB.begin(); i != gLiquidTypeDB.end(); ++i)
+      if (modern_liquid_fallback_mode())
       {
-        int liquid_id = i->getInt(LiquidTypeDB::ID);
+        // Shadowlands/modern clients do not expose the legacy LiquidType.dbc,
+        // which previously left this combo box empty.  Keep the editor usable
+        // with the well-known basic MH2O liquid IDs until the DB2 bridge is in
+        // place.  The selected ID is passed unchanged into World::paintLiquid.
+        for (int liquid_id = 1; liquid_id <= 6; ++liquid_id)
+        {
+          std::stringstream ss;
+          ss << liquid_id << "-" << modern_liquid_name(liquid_id);
+          waterType->addItem(QString::fromUtf8(ss.str().c_str()), QVariant(liquid_id));
+        }
+      }
+      else
+      {
+        for (DBCFile::Iterator i = gLiquidTypeDB.begin(); i != gLiquidTypeDB.end(); ++i)
+        {
+          int liquid_id = i->getInt(LiquidTypeDB::ID);
 
-        // filter WMO liquids
-        if (liquid_id == LIQUID_WMO_Water || liquid_id == LIQUID_WMO_Ocean || liquid_id == LIQUID_WMO_Water_Interior
-            || liquid_id == LIQUID_WMO_Magma || liquid_id == LIQUID_WMO_Slime)
-            continue;
+          // filter WMO liquids
+          if (liquid_id == LIQUID_WMO_Water || liquid_id == LIQUID_WMO_Ocean || liquid_id == LIQUID_WMO_Water_Interior
+              || liquid_id == LIQUID_WMO_Magma || liquid_id == LIQUID_WMO_Slime)
+              continue;
 
-        std::stringstream ss;
-        ss << liquid_id << "-" << LiquidTypeDB::getLiquidName(liquid_id);
-        waterType->addItem (QString::fromUtf8(ss.str().c_str()), QVariant (liquid_id));
-
+          std::stringstream ss;
+          ss << liquid_id << "-" << LiquidTypeDB::getLiquidName(liquid_id);
+          waterType->addItem (QString::fromUtf8(ss.str().c_str()), QVariant (liquid_id));
+        }
       }
 
       connect (waterType, qOverload<int> (&QComboBox::currentIndexChanged)
               , [&]
                 {
+                  if (waterType->currentIndex() < 0)
+                    return;
+
                   changeWaterType(waterType->currentData().toInt());
 
                   // change auto opacity based on liquid type
@@ -82,7 +149,7 @@ namespace Noggit
                       return;
 
                   // other liquid types shouldn't use opacity(depth)
-                  int liquid_type = LiquidTypeDB::getLiquidType(_liquid_id);
+                  int liquid_type = liquid_basic_type_for_ui(_liquid_id);
                   if (liquid_type == liquid_basic_types_ocean) // ocean
                   {
                       ocean_button->setChecked(true);
@@ -272,10 +339,14 @@ namespace Noggit
 
     void water::updateData()
     {
-      std::stringstream mt;
-      mt << _liquid_id << " - " << LiquidTypeDB::getLiquidName(_liquid_id);
-      waterType->setCurrentText (QString::fromStdString (mt.str()));
-      _liquid_type = static_cast<liquid_basic_types>(LiquidTypeDB::getLiquidType(_liquid_id));
+      int const index = waterType->findData(QVariant(_liquid_id));
+      if (index >= 0 && waterType->currentIndex() != index)
+      {
+        QSignalBlocker const blocker(waterType);
+        waterType->setCurrentIndex(index);
+      }
+
+      _liquid_type = static_cast<liquid_basic_types>(liquid_basic_type_for_ui(_liquid_id));
     }
 
     void water::changeWaterType(int waterint)
