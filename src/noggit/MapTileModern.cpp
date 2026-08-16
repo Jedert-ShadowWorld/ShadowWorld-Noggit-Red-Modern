@@ -7,6 +7,7 @@
 #include <noggit/MapHeaders.h>
 
 #include <ClientFile.hpp>
+#include <Listfile.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -19,15 +20,20 @@
 
 namespace
 {
-  // ClientFile exposes the four bytes as a little-endian uint32_t. WoW stores
-  // chunk names reversed on disk, so canonical MCVT appears as bytes TVCM and
-  // therefore as integer 0x4D435654 when read this way.
   constexpr std::uint32_t on_disk_fourcc(char a, char b, char c, char d)
   {
     return (static_cast<std::uint32_t>(a) << 24)
          | (static_cast<std::uint32_t>(b) << 16)
          | (static_cast<std::uint32_t>(c) << 8)
          | static_cast<std::uint32_t>(d);
+  }
+
+  std::string split_adt_path(std::string const& root_path, std::string const& suffix)
+  {
+    auto const extension = root_path.rfind(".adt");
+    if (extension == std::string::npos)
+      return root_path + suffix;
+    return root_path.substr(0, extension) + suffix + ".adt";
   }
 
   struct ModernHeightDiagnostic
@@ -66,9 +72,6 @@ namespace
     if (payload_end > file_size || declared_size < 128)
       return result;
 
-    // Shadowlands ROOT MCNK has a 128-byte header followed by standard
-    // fourcc+size terrain subchunks. Locate MCVT by walking those subchunks
-    // instead of trusting the legacy header's ofsHeight field.
     std::size_t sub = payload_begin + 128;
     while (sub + 8 <= payload_end)
     {
@@ -155,9 +158,6 @@ namespace
     if (!raw.found_mcvt || raw.heights.size() != 145)
       throw std::runtime_error("Shadowlands ROOT MCNK is missing a valid 145-float MCVT subchunk.");
 
-    // X/Z are deterministic from the tile/chunk grid. Y is the modern MCNK
-    // base height plus the directly decoded MCVT delta. This bypasses the
-    // legacy ofsHeight path that was reading unrelated bytes as float heights.
     chunk->xbase = tile->xbase + static_cast<float>(chunk->px) * CHUNKSIZE;
     chunk->zbase = tile->zbase + static_cast<float>(chunk->py) * CHUNKSIZE;
     chunk->ybase = 0.0f;
@@ -192,6 +192,111 @@ namespace
                             chunk->zbase + 8.0f * UNITSIZE);
     chunk->vcenter = (chunk->vmin + chunk->vmax) * 0.5f;
   }
+
+  // First texture milestone: decode enough of TEX0 to prove the modern texture
+  // references and per-chunk MCLY layer records before wiring them into TextureSet.
+  void inspect_modern_tex0(std::string const& root_path, int tile_x, int tile_z)
+  {
+    auto const tex_path = split_adt_path(root_path, "_tex0");
+    BlizzardArchive::Listfile::FileKey key(tex_path);
+    BlizzardArchive::ClientFile tex_file(
+      key, Noggit::Application::NoggitApplication::instance()->clientData());
+
+    auto const* data = tex_file.getBuffer();
+    auto const file_size = tex_file.getSize();
+    std::vector<std::uint32_t> diffuse_ids;
+    std::vector<std::uint32_t> height_ids;
+    std::size_t mcnk_count = 0;
+    std::size_t pos = 0;
+
+    while (pos + 8 <= file_size)
+    {
+      std::uint32_t magic = 0;
+      std::uint32_t size = 0;
+      std::memcpy(&magic, data + pos, 4);
+      std::memcpy(&size, data + pos + 4, 4);
+      auto const payload = pos + 8;
+      if (size > file_size - payload)
+        throw std::runtime_error("Shadowlands TEX0 contains a truncated top-level chunk.");
+
+      if (magic == on_disk_fourcc('M','D','I','D') || magic == on_disk_fourcc('M','H','I','D'))
+      {
+        auto& out = magic == on_disk_fourcc('M','D','I','D') ? diffuse_ids : height_ids;
+        if (size % 4 != 0)
+          throw std::runtime_error("Shadowlands TEX0 texture-ID chunk is not uint32 aligned.");
+        out.resize(size / 4);
+        if (size)
+          std::memcpy(out.data(), data + payload, size);
+      }
+      else if (magic == on_disk_fourcc('M','C','N','K'))
+      {
+        if (tile_x == 34 && tile_z == 49 && mcnk_count < 4)
+        {
+          std::size_t sub = payload; // TEX0 MCNK is headerless.
+          while (sub + 8 <= payload + size)
+          {
+            std::uint32_t sub_magic = 0, sub_size = 0;
+            std::memcpy(&sub_magic, data + sub, 4);
+            std::memcpy(&sub_size, data + sub + 4, 4);
+            auto const sub_data = sub + 8;
+            if (sub_size > payload + size - sub_data)
+              break;
+
+            if (sub_magic == on_disk_fourcc('M','C','L','Y'))
+            {
+              std::ostringstream layers;
+              auto const entry_count = sub_size / 16;
+              auto const show_count = std::min<std::size_t>(entry_count, 8);
+              for (std::size_t i = 0; i < show_count; ++i)
+              {
+                std::uint32_t texture_id = 0, flags = 0, alpha_offset = 0, effect_id = 0;
+                auto const entry = sub_data + i * 16;
+                std::memcpy(&texture_id, data + entry, 4);
+                std::memcpy(&flags, data + entry + 4, 4);
+                std::memcpy(&alpha_offset, data + entry + 8, 4);
+                std::memcpy(&effect_id, data + entry + 12, 4);
+                if (i) layers << ' ';
+                layers << '[' << i << ":tex=" << texture_id
+                       << ",fdid=" << (texture_id < diffuse_ids.size() ? diffuse_ids[texture_id] : 0)
+                       << ",flags=0x" << std::hex << flags << std::dec
+                       << ",alpha=" << alpha_offset << ",effect=" << effect_id << ']';
+              }
+              LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
+                       << " chunk=" << mcnk_count << " MCLY entries=" << entry_count
+                       << " :: " << layers.str() << std::endl;
+            }
+            else if (sub_magic == on_disk_fourcc('M','C','A','L'))
+            {
+              LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
+                       << " chunk=" << mcnk_count << " MCAL bytes=" << sub_size << std::endl;
+            }
+            else if (sub_magic == on_disk_fourcc('M','C','S','H'))
+            {
+              LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
+                       << " chunk=" << mcnk_count << " MCSH bytes=" << sub_size << std::endl;
+            }
+            sub = sub_data + sub_size;
+          }
+        }
+        ++mcnk_count;
+      }
+
+      pos = payload + size;
+    }
+
+    LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
+             << " TEX0 diffuseIDs=" << diffuse_ids.size()
+             << " heightIDs=" << height_ids.size()
+             << " MCNK=" << mcnk_count;
+    if (!diffuse_ids.empty())
+    {
+      LogDebug << " firstDiffuseFDIDs={";
+      for (std::size_t i = 0; i < std::min<std::size_t>(diffuse_ids.size(), 8); ++i)
+        LogDebug << (i ? "," : "") << diffuse_ids[i];
+      LogDebug << '}';
+    }
+    LogDebug << std::endl;
+  }
 }
 
 void MapTile::finishLoadingShadowlandsTerrainOnly()
@@ -220,12 +325,8 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
     auto const payload_pos = pos + 8;
     auto const remaining = file_size - payload_pos;
     if (declared_size > remaining)
-    {
-      throw std::runtime_error(
-        "Shadowlands terrain loader encountered a truncated top-level ADT chunk.");
-    }
+      throw std::runtime_error("Shadowlands terrain loader encountered a truncated top-level ADT chunk.");
 
-    // WoW ADT FourCC bytes are reversed on disk: canonical MCNK is stored as KNCM.
     if (magic == 0x4D434E4Bu)
       mcnk_offsets.push_back(pos);
 
@@ -233,43 +334,29 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
   }
 
   if (pos != file_size)
-    throw std::runtime_error(
-      "Shadowlands terrain loader did not end on the root ADT file boundary.");
+    throw std::runtime_error("Shadowlands terrain loader did not end on the root ADT file boundary.");
 
   if (mcnk_offsets.size() != 256)
   {
     LogError << "[ModernADT] Terrain-only loader expected 256 ROOT MCNK chunks but found "
-             << mcnk_offsets.size() << " in '" << _file_key.stringRepr() << "'."
-             << std::endl;
-    throw std::runtime_error(
-      "Shadowlands terrain loader requires exactly 256 ROOT MCNK chunks.");
+             << mcnk_offsets.size() << " in '" << _file_key.stringRepr() << "'." << std::endl;
+    throw std::runtime_error("Shadowlands terrain loader requires exactly 256 ROOT MCNK chunks.");
   }
 
   LogDebug << "[ModernADT] Building terrain-only MapTile " << index.x << ',' << index.z
-           << " from 256 ROOT MCNK chunks. Textures, objects and liquids are intentionally disabled."
+           << " from 256 ROOT MCNK chunks. Texture decoding diagnostics enabled."
            << std::endl;
 
   for (std::size_t next_chunk = 0; next_chunk < mcnk_offsets.size(); ++next_chunk)
   {
-    // Decode the modern height data before the legacy MapChunk constructor
-    // touches the stream. We still use MapChunk to initialize the surrounding
-    // Noggit structures, then replace its bad legacy-derived geometry below.
     auto const raw_height = inspect_modern_height_data(data, file_size, mcnk_offsets[next_chunk]);
-
     root_file.seek(mcnk_offsets[next_chunk]);
 
     unsigned const x = static_cast<unsigned>(next_chunk / 16);
     unsigned const z = static_cast<unsigned>(next_chunk % 16);
 
     mChunks[x][z] = std::make_unique<MapChunk>(
-      this,
-      &root_file,
-      mBigAlpha,
-      _mode,
-      _context,
-      false,
-      0,
-      false);
+      this, &root_file, mBigAlpha, _mode, _context, false, 0, false);
 
     auto* chunk = mChunks[x][z].get();
     rebuild_modern_chunk_geometry(chunk, this, raw_height);
@@ -281,15 +368,18 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
     _renderer.initChunkData(chunk);
   }
 
-  // There are deliberately no modern textures/objects wired into this first
-  // milestone, so downstream readiness checks should not wait for them.
+  // Inspect TEX0 now that terrain is proven. This deliberately does not yet
+  // construct TextureSet: modern MDID uses FileDataIDs and TEX0 MCNK is split
+  // from ROOT, so we first validate those exact records on a known-good tile.
+  if (_file_key.hasFilepath())
+    inspect_modern_tex0(_file_key.filepath(), index.x, index.z);
+
   mTextureFilenames.clear();
   _mtxf_entries.clear();
   _textures_finished_loading = true;
   _objects_finished_loading = true;
 
   root_file.close();
-
   recalcExtents();
 
   finished = true;
