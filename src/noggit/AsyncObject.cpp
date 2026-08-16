@@ -7,9 +7,12 @@
 
 #include <ClientFile.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <unordered_set>
 
@@ -23,13 +26,34 @@ namespace
          | static_cast<std::uint32_t>(d);
   }
 
-  // The modern split-ADT loader currently owns ROOT parsing in MapTileModern.cpp,
-  // while the legacy TileWater implementation already understands MH2O itself.
-  // Until the modern loader is split into dedicated terrain/water/object phases,
-  // lazily attach ROOT MH2O once the reconstructed MapTile is fully available.
-  // This keeps water parsing out of the AsyncLoader worker pool (important for
-  // parallel tile streaming) and lets us reuse the proven MH2O reader unchanged.
-  void load_modern_mh2o_if_needed(AsyncObject const* object)
+  std::uint32_t read_u32(char const* data, std::size_t offset)
+  {
+    std::uint32_t value = 0;
+    std::memcpy(&value, data + offset, sizeof(value));
+    return value;
+  }
+
+  std::string hex_dump(char const* data, std::size_t size, std::size_t max_bytes)
+  {
+    std::ostringstream out;
+    auto const count = std::min(size, max_bytes);
+    out << std::hex << std::setfill('0');
+    for (std::size_t i = 0; i < count; ++i)
+    {
+      if (i && (i % 16) == 0)
+        out << " | ";
+      out << std::setw(2)
+          << static_cast<unsigned>(static_cast<unsigned char>(data[i]));
+      if ((i % 16) != 15 && i + 1 < count)
+        out << ' ';
+    }
+    return out.str();
+  }
+
+  // Diagnostic-only modern MH2O pass. Do not feed the chunk to the legacy
+  // TileWater parser yet: current Shadowlands data produces invalid LiquidType
+  // values, so first identify the exact header/layer layout from raw offsets.
+  void inspect_modern_mh2o_if_needed(AsyncObject const* object)
   {
     auto* tile = dynamic_cast<MapTile*>(const_cast<AsyncObject*>(object));
     if (!tile || !object->file_key().hasFilepath())
@@ -39,8 +63,6 @@ namespace
     if (path.size() < 4 || path.compare(path.size() - 4, 4, ".adt") != 0)
       return;
 
-    // finishedLoading() can be queried many times per frame. Ensure each tile is
-    // inspected at most once, including dry tiles which contain no MH2O data.
     static std::mutex processed_guard;
     static std::unordered_set<std::string> processed_tiles;
     {
@@ -88,111 +110,143 @@ namespace
         pos = payload + size;
       }
 
-      // Legacy monolithic ADTs are already handled by MapTile::finishLoading().
-      // Our Shadowlands ROOTs have the 256 MCNKs directly and no MCIN table.
       if (has_legacy_mcin || mcnk_count != 256 || !mh2o_payload || !mh2o_size)
         return;
 
-      constexpr std::size_t mh2o_header_table_size = 256 * sizeof(MH2O_Header);
-      if (mh2o_size < mh2o_header_table_size)
+      auto const* mh2o = data + mh2o_payload;
+      LogDebug << "[ModernADT][WaterDiag] tile=" << tile->index.x << ',' << tile->index.z
+               << " MH2O payload=" << mh2o_payload << " size=" << mh2o_size
+               << " first256={" << hex_dump(mh2o, mh2o_size, 256) << '}'
+               << std::endl;
+
+      // Classic MH2O uses 256 x 12-byte headers:
+      //   uint32 ofsLiquid; uint32 layerCount; uint32 ofsAttributes.
+      // Log every non-empty candidate header, but do not trust it yet. Offsets
+      // are checked against this MH2O payload so bad interpretations stand out.
+      constexpr std::size_t candidate_header_size = 12;
+      constexpr std::size_t candidate_table_size = 256 * candidate_header_size;
+      if (mh2o_size >= candidate_table_size)
       {
-        LogError << "[ModernADT][Water] MH2O chunk is too small on tile "
-                 << tile->index.x << ',' << tile->index.z << ": " << mh2o_size
-                 << " bytes (need at least " << mh2o_header_table_size << ")."
+        std::size_t nonzero_headers = 0;
+        std::size_t plausible_headers = 0;
+        for (std::size_t i = 0; i < 256; ++i)
+        {
+          auto const base = i * candidate_header_size;
+          auto const ofs_liquid = read_u32(mh2o, base);
+          auto const layer_count = read_u32(mh2o, base + 4);
+          auto const ofs_attributes = read_u32(mh2o, base + 8);
+
+          if (!ofs_liquid && !layer_count && !ofs_attributes)
+            continue;
+
+          ++nonzero_headers;
+          bool const liquid_in_range = !ofs_liquid || ofs_liquid < mh2o_size;
+          bool const attrs_in_range = !ofs_attributes || ofs_attributes < mh2o_size;
+          bool const count_sane = layer_count <= 64;
+          bool const plausible = liquid_in_range && attrs_in_range && count_sane;
+          if (plausible)
+            ++plausible_headers;
+
+          if (nonzero_headers <= 32)
+          {
+            LogDebug << "[ModernADT][WaterDiag] headerCandidate chunk=" << i
+                     << " grid=" << (i / 16) << ',' << (i % 16)
+                     << " ofsLiquid=" << ofs_liquid
+                     << " layers=" << layer_count
+                     << " ofsAttrs=" << ofs_attributes
+                     << " liquidInRange=" << liquid_in_range
+                     << " attrsInRange=" << attrs_in_range
+                     << " countSane=" << count_sane
+                     << std::endl;
+
+            if (ofs_liquid && ofs_liquid < mh2o_size)
+            {
+              auto const available = static_cast<std::size_t>(mh2o_size - ofs_liquid);
+              LogDebug << "[ModernADT][WaterDiag] layerBytes chunk=" << i
+                       << " @" << ofs_liquid << " first64={"
+                       << hex_dump(mh2o + ofs_liquid, available, 64) << '}'
+                       << std::endl;
+            }
+          }
+        }
+
+        LogDebug << "[ModernADT][WaterDiag] candidateSummary tile="
+                 << tile->index.x << ',' << tile->index.z
+                 << " nonzero=" << nonzero_headers
+                 << " plausible=" << plausible_headers
+                 << "/256 using 12-byte classic header hypothesis."
                  << std::endl;
-        return;
       }
 
-      file.seek(mh2o_payload);
-      tile->Water.readFromFile(file, mh2o_payload);
-
-      LogDebug << "[ModernADT][Water] Loaded ROOT MH2O for tile "
+      LogDebug << "[ModernADT][WaterDiag] Legacy TileWater parsing intentionally skipped for tile "
                << tile->index.x << ',' << tile->index.z
-               << " (" << mh2o_size << " bytes)." << std::endl;
+               << " until the Shadowlands MH2O layout is confirmed."
+               << std::endl;
     }
     catch (...)
     {
-      // Water is an incremental modern-client feature. Never invalidate terrain
-      // that has already loaded successfully just because one MH2O needs more RE.
-      LogError << "[ModernADT][Water] Failed to attach MH2O for '"
+      LogError << "[ModernADT][WaterDiag] Failed to inspect MH2O for '"
                << path << "'. Terrain remains usable." << std::endl;
     }
   }
 }
 
- AsyncObject::AsyncObject(BlizzardArchive::Listfile::FileKey file_key) : _file_key(std::move(file_key)) {}
+AsyncObject::AsyncObject(BlizzardArchive::Listfile::FileKey file_key) : _file_key(std::move(file_key)) {}
 
 [[nodiscard]]
- BlizzardArchive::Listfile::FileKey const& AsyncObject::file_key() const
+BlizzardArchive::Listfile::FileKey const& AsyncObject::file_key() const
 {
   return _file_key;
 }
 
 [[nodiscard]]
- bool AsyncObject::finishedLoading() const
+bool AsyncObject::finishedLoading() const
 {
   bool const done = finished.load();
   if (done)
-    load_modern_mh2o_if_needed(this);
+    inspect_modern_mh2o_if_needed(this);
   return done;
 }
 
 [[nodiscard]]
- bool AsyncObject::loading_failed() const
+bool AsyncObject::loading_failed() const
 {
   return _loading_failed;
 }
 
- void AsyncObject::wait_until_loaded()
+void AsyncObject::wait_until_loaded()
 {
   if (finished.load())
-  {
     return;
-  }
 
-  // Terrain texture references can be created from inside an AsyncLoader worker
-  // while modern split ADTs are being streamed in parallel. Blocking that worker
-  // until the BLP finishes can starve the same loader pool that must perform the
-  // queued BLP load. Let BLP references remain asynchronous; render code already
-  // skips not-yet-ready textures/tiles until their AsyncObject finishes.
   if (_file_key.hasFilepath())
   {
     auto const& path = _file_key.filepath();
     if (path.size() >= 4 && path.compare(path.size() - 4, 4, ".blp") == 0)
-    {
       return;
-    }
   }
 
   std::unique_lock<std::mutex> lock(_mutex);
-
-  _state_changed.wait
-  (lock
-    , [&]
-    {
-      return finished.load();
-    }
-  );
+  _state_changed.wait(lock, [&] { return finished.load(); });
 }
 
- void AsyncObject::error_on_loading()
+void AsyncObject::error_on_loading()
 {
   LogError << "File " << (_file_key.hasFilepath() ? _file_key.filepath() : std::to_string(_file_key.fileDataID()))
-    << " could not be loaded" << std::endl;
-
+           << " could not be loaded" << std::endl;
   _loading_failed = true;
   finished = true;
   _state_changed.notify_all();
 }
 
 [[nodiscard]]
- bool AsyncObject::is_required_when_saving() const
+bool AsyncObject::is_required_when_saving() const
 {
   return false;
 }
 
 [[nodiscard]]
- async_priority AsyncObject::loading_priority() const
+async_priority AsyncObject::loading_priority() const
 {
   return async_priority::medium;
 }
