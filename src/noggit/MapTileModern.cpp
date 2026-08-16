@@ -6,6 +6,7 @@
 #include <noggit/MapTile.h>
 #include <noggit/MapHeaders.h>
 #include <noggit/TextureManager.h>
+#include <noggit/texture_set.hpp>
 
 #include <ClientFile.hpp>
 #include <Listfile.hpp>
@@ -194,15 +195,81 @@ namespace
     chunk->vcenter = (chunk->vmin + chunk->vmax) * 0.5f;
   }
 
+  struct ModernTextureLayer
+  {
+    std::uint32_t texture_id = 0;
+    std::uint32_t file_data_id = 0;
+    std::uint32_t flags = 0;
+    std::uint32_t alpha_offset = 0;
+    std::uint32_t effect_id = 0xFFFFFFFF;
+  };
+
+  struct ModernTexChunk
+  {
+    std::vector<ModernTextureLayer> layers;
+    std::vector<std::uint8_t> mcal;
+  };
+
   struct ModernTex0Data
   {
     std::vector<std::uint32_t> diffuse_ids;
     std::vector<std::uint32_t> height_ids;
-    std::vector<std::uint32_t> base_diffuse_fdids;
+    std::vector<ModernTexChunk> chunks;
   };
 
-  // Decode TEX0 far enough to bind the first/base terrain texture of each MCNK.
-  // Extra layers and MCAL are still only diagnosed; they will be wired next.
+  bool decode_modern_alpha(ModernTexChunk const& tex_chunk,
+                           ModernTextureLayer const& layer,
+                           std::vector<std::uint8_t>& output)
+  {
+    output.clear();
+    output.reserve(64 * 64);
+
+    if (!(layer.flags & FLAG_USE_ALPHA))
+      return false;
+    if (layer.alpha_offset >= tex_chunk.mcal.size())
+      return false;
+
+    auto const* input = tex_chunk.mcal.data() + layer.alpha_offset;
+    auto const* end = tex_chunk.mcal.data() + tex_chunk.mcal.size();
+
+    if (layer.flags & FLAG_ALPHA_COMPRESSED)
+    {
+      while (output.size() < 4096 && input < end)
+      {
+        std::uint8_t const control = *input++;
+        std::size_t const count = control & 0x7F;
+        bool const fill = (control & 0x80) != 0;
+        if (!count)
+          continue;
+
+        auto const remaining = 4096 - output.size();
+        auto const copy_count = std::min<std::size_t>(count, remaining);
+
+        if (fill)
+        {
+          if (input >= end)
+            return false;
+          std::uint8_t const value = *input++;
+          output.insert(output.end(), copy_count, value);
+        }
+        else
+        {
+          if (static_cast<std::size_t>(end - input) < count)
+            return false;
+          output.insert(output.end(), input, input + copy_count);
+          input += count;
+        }
+      }
+      return output.size() == 4096;
+    }
+
+    if (static_cast<std::size_t>(end - input) < 4096)
+      return false;
+
+    output.assign(input, input + 4096);
+    return true;
+  }
+
   ModernTex0Data inspect_modern_tex0(std::string const& root_path, int tile_x, int tile_z)
   {
     ModernTex0Data result;
@@ -213,9 +280,8 @@ namespace
 
     auto const* data = tex_file.getBuffer();
     auto const file_size = tex_file.getSize();
-    std::size_t mcnk_count = 0;
     std::size_t pos = 0;
-    result.base_diffuse_fdids.reserve(256);
+    result.chunks.reserve(256);
 
     while (pos + 8 <= file_size)
     {
@@ -238,7 +304,7 @@ namespace
       }
       else if (magic == on_disk_fourcc('M','C','N','K'))
       {
-        std::uint32_t base_fdid = 0;
+        ModernTexChunk tex_chunk;
         std::size_t sub = payload; // TEX0 MCNK is headerless.
         while (sub + 8 <= payload + size)
         {
@@ -247,110 +313,156 @@ namespace
           std::memcpy(&sub_size, data + sub + 4, 4);
           auto const sub_data = sub + 8;
           if (sub_size > payload + size - sub_data)
-            break;
+            throw std::runtime_error("Shadowlands TEX0 MCNK contains a truncated subchunk.");
 
           if (sub_magic == on_disk_fourcc('M','C','L','Y'))
           {
             if (sub_size < 16 || sub_size % 16 != 0)
               throw std::runtime_error("Shadowlands TEX0 MCLY has an invalid size.");
 
-            std::uint32_t base_texture_id = 0;
-            std::memcpy(&base_texture_id, data + sub_data, 4);
-            if (base_texture_id >= result.diffuse_ids.size())
-              throw std::runtime_error("Shadowlands TEX0 MCLY references a diffuse texture outside MDID.");
-            base_fdid = result.diffuse_ids[base_texture_id];
+            auto const entry_count = sub_size / 16;
+            auto const load_count = std::min<std::size_t>(entry_count, MAX_TEXTURE_LAYERS);
+            tex_chunk.layers.reserve(load_count);
 
-            if (tile_x == 34 && tile_z == 49 && mcnk_count < 4)
+            for (std::size_t i = 0; i < load_count; ++i)
             {
-              std::ostringstream layers;
-              auto const entry_count = sub_size / 16;
-              auto const show_count = std::min<std::size_t>(entry_count, 8);
-              for (std::size_t i = 0; i < show_count; ++i)
-              {
-                std::uint32_t texture_id = 0, flags = 0, alpha_offset = 0, effect_id = 0;
-                auto const entry = sub_data + i * 16;
-                std::memcpy(&texture_id, data + entry, 4);
-                std::memcpy(&flags, data + entry + 4, 4);
-                std::memcpy(&alpha_offset, data + entry + 8, 4);
-                std::memcpy(&effect_id, data + entry + 12, 4);
-                if (i) layers << ' ';
-                layers << '[' << i << ":tex=" << texture_id
-                       << ",fdid=" << (texture_id < result.diffuse_ids.size() ? result.diffuse_ids[texture_id] : 0)
-                       << ",flags=0x" << std::hex << flags << std::dec
-                       << ",alpha=" << alpha_offset << ",effect=" << effect_id << ']';
-              }
-              LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
-                       << " chunk=" << mcnk_count << " MCLY entries=" << entry_count
-                       << " :: " << layers.str() << std::endl;
+              ModernTextureLayer layer;
+              auto const entry = sub_data + i * 16;
+              std::memcpy(&layer.texture_id, data + entry, 4);
+              std::memcpy(&layer.flags, data + entry + 4, 4);
+              std::memcpy(&layer.alpha_offset, data + entry + 8, 4);
+              std::memcpy(&layer.effect_id, data + entry + 12, 4);
+              tex_chunk.layers.push_back(layer);
             }
           }
-          else if (tile_x == 34 && tile_z == 49 && mcnk_count < 4
-                   && sub_magic == on_disk_fourcc('M','C','A','L'))
+          else if (sub_magic == on_disk_fourcc('M','C','A','L'))
           {
-            LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
-                     << " chunk=" << mcnk_count << " MCAL bytes=" << sub_size << std::endl;
-          }
-          else if (tile_x == 34 && tile_z == 49 && mcnk_count < 4
-                   && sub_magic == on_disk_fourcc('M','C','S','H'))
-          {
-            LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
-                     << " chunk=" << mcnk_count << " MCSH bytes=" << sub_size << std::endl;
+            tex_chunk.mcal.assign(
+              reinterpret_cast<std::uint8_t const*>(data + sub_data),
+              reinterpret_cast<std::uint8_t const*>(data + sub_data + sub_size));
           }
 
           sub = sub_data + sub_size;
         }
 
-        result.base_diffuse_fdids.push_back(base_fdid);
-        ++mcnk_count;
+        result.chunks.push_back(std::move(tex_chunk));
       }
 
       pos = payload + size;
     }
 
-    if (result.base_diffuse_fdids.size() != 256)
-      throw std::runtime_error("Shadowlands TEX0 base-texture decoder expected exactly 256 MCNK chunks.");
+    if (result.chunks.size() != 256)
+      throw std::runtime_error("Shadowlands TEX0 texture decoder expected exactly 256 MCNK chunks.");
+
+    for (auto& tex_chunk : result.chunks)
+    {
+      for (auto& layer : tex_chunk.layers)
+      {
+        if (layer.texture_id >= result.diffuse_ids.size())
+          throw std::runtime_error("Shadowlands TEX0 MCLY references a diffuse texture outside MDID.");
+        layer.file_data_id = result.diffuse_ids[layer.texture_id];
+      }
+    }
 
     LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
              << " TEX0 diffuseIDs=" << result.diffuse_ids.size()
              << " heightIDs=" << result.height_ids.size()
-             << " MCNK=" << mcnk_count;
-    if (!result.diffuse_ids.empty())
+             << " MCNK=" << result.chunks.size() << std::endl;
+
+    if (tile_x == 34 && tile_z == 49)
     {
-      LogDebug << " firstDiffuseFDIDs={";
-      for (std::size_t i = 0; i < std::min<std::size_t>(result.diffuse_ids.size(), 8); ++i)
-        LogDebug << (i ? "," : "") << result.diffuse_ids[i];
-      LogDebug << '}';
+      for (std::size_t chunk_index = 0; chunk_index < std::min<std::size_t>(4, result.chunks.size()); ++chunk_index)
+      {
+        auto const& tex_chunk = result.chunks[chunk_index];
+        std::ostringstream layers;
+        for (std::size_t i = 0; i < tex_chunk.layers.size(); ++i)
+        {
+          auto const& layer = tex_chunk.layers[i];
+          if (i) layers << ' ';
+          layers << '[' << i << ":tex=" << layer.texture_id
+                 << ",fdid=" << layer.file_data_id
+                 << ",flags=0x" << std::hex << layer.flags << std::dec
+                 << ",alpha=" << layer.alpha_offset
+                 << ",effect=" << layer.effect_id << ']';
+        }
+        LogDebug << "[ModernADT][TexDiag] tile=" << tile_x << ',' << tile_z
+                 << " chunk=" << chunk_index
+                 << " MCLY entries=" << tex_chunk.layers.size()
+                 << " MCAL bytes=" << tex_chunk.mcal.size()
+                 << " :: " << layers.str() << std::endl;
+      }
     }
-    LogDebug << std::endl;
 
     return result;
   }
 
-  bool bind_modern_base_texture(MapChunk* chunk,
-                                std::uint32_t file_data_id,
-                                Noggit::NoggitRenderContext context)
+  std::size_t bind_modern_texture_layers(MapChunk* chunk,
+                                         ModernTexChunk const& tex_chunk,
+                                         Noggit::NoggitRenderContext context,
+                                         bool emit_diag,
+                                         std::size_t chunk_index)
   {
-    if (!file_data_id)
-      return false;
-
     auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
-    auto const texture_path = client_data->listfile()->getPath(file_data_id);
-    if (texture_path.empty())
+    std::size_t bound = 0;
+
+    for (std::size_t layer_index = 0; layer_index < tex_chunk.layers.size(); ++layer_index)
     {
-      LogError << "[ModernADT] Unable to resolve terrain texture FileDataID "
-               << file_data_id << " through the project listfile." << std::endl;
-      return false;
+      auto const& source_layer = tex_chunk.layers[layer_index];
+      auto const texture_path = client_data->listfile()->getPath(source_layer.file_data_id);
+      if (texture_path.empty())
+      {
+        LogError << "[ModernADT] Unable to resolve terrain texture FileDataID "
+                 << source_layer.file_data_id << " through the project listfile." << std::endl;
+        break;
+      }
+
+      int const added_layer = chunk->addTexture(scoped_blp_texture_reference(texture_path, context));
+      if (added_layer != static_cast<int>(layer_index))
+      {
+        LogError << "[ModernADT] Modern terrain texture layer order mismatch: expected "
+                 << layer_index << ", got " << added_layer << "." << std::endl;
+        break;
+      }
+
+      auto* info = chunk->texture_set->getMCLYEntries();
+      info[layer_index].flags = source_layer.flags;
+      info[layer_index].effectID = source_layer.effect_id;
+      ++bound;
+
+      if (layer_index > 0 && (source_layer.flags & FLAG_USE_ALPHA))
+      {
+        std::vector<std::uint8_t> alpha;
+        if (!decode_modern_alpha(tex_chunk, source_layer, alpha))
+        {
+          LogError << "[ModernADT] Failed to decode MCAL for chunk " << chunk_index
+                   << " layer " << layer_index
+                   << " offset " << source_layer.alpha_offset
+                   << " flags=0x" << std::hex << source_layer.flags << std::dec << std::endl;
+          continue;
+        }
+
+        auto& alphamaps = *chunk->texture_set->getAlphamaps();
+        if (!alphamaps[layer_index - 1])
+          alphamaps[layer_index - 1] = std::make_unique<Alphamap>();
+        alphamaps[layer_index - 1]->setAlpha(alpha.data());
+
+        if (emit_diag)
+        {
+          auto const minmax = std::minmax_element(alpha.begin(), alpha.end());
+          auto const nonzero = std::count_if(alpha.begin(), alpha.end(), [](std::uint8_t v) { return v != 0; });
+          LogDebug << "[ModernADT][AlphaDiag] chunk=" << chunk_index
+                   << " layer=" << layer_index
+                   << " min=" << static_cast<int>(*minmax.first)
+                   << " max=" << static_cast<int>(*minmax.second)
+                   << " nonzero=" << nonzero << "/4096"
+                   << (source_layer.flags & FLAG_ALPHA_COMPRESSED ? " compressed" : " raw")
+                   << std::endl;
+        }
+      }
     }
 
-    int const layer = chunk->addTexture(scoped_blp_texture_reference(texture_path, context));
-    if (layer != 0)
-    {
-      LogError << "[ModernADT] Expected modern base texture to become layer 0, got "
-               << layer << " for FileDataID " << file_data_id << "." << std::endl;
-      return false;
-    }
-
-    return true;
+    chunk->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+    return bound;
   }
 }
 
@@ -402,11 +514,12 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
   if (_file_key.hasFilepath())
     tex0_data = inspect_modern_tex0(_file_key.filepath(), index.x, index.z);
 
-  LogDebug << "[ModernADT] Building base-textured MapTile " << index.x << ',' << index.z
-           << " from 256 ROOT MCNK chunks. Only TEX0 base layer is enabled; MCAL blending remains disabled."
+  LogDebug << "[ModernADT] Building fully textured MapTile " << index.x << ',' << index.z
+           << " from 256 ROOT MCNK chunks. TEX0 MCLY layers and MCAL blending enabled."
            << std::endl;
 
-  std::size_t base_textures_bound = 0;
+  std::size_t textured_chunks = 0;
+  std::size_t texture_layers_bound = 0;
   for (std::size_t next_chunk = 0; next_chunk < mcnk_offsets.size(); ++next_chunk)
   {
     auto const raw_height = inspect_modern_height_data(data, file_size, mcnk_offsets[next_chunk]);
@@ -421,14 +534,17 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
     auto* chunk = mChunks[x][z].get();
     rebuild_modern_chunk_geometry(chunk, this, raw_height);
 
-    bool const emit_height_diag = (index.x == 34 && index.z == 49 && next_chunk < 4);
-    if (emit_height_diag)
+    bool const emit_diag = (index.x == 34 && index.z == 49 && next_chunk < 4);
+    if (emit_diag)
       log_modern_height_diagnostic(this, chunk, next_chunk, raw_height);
 
-    if (next_chunk < tex0_data.base_diffuse_fdids.size()
-        && bind_modern_base_texture(chunk, tex0_data.base_diffuse_fdids[next_chunk], _context))
+    if (next_chunk < tex0_data.chunks.size())
     {
-      ++base_textures_bound;
+      auto const bound = bind_modern_texture_layers(
+        chunk, tex0_data.chunks[next_chunk], _context, emit_diag, next_chunk);
+      texture_layers_bound += bound;
+      if (bound)
+        ++textured_chunks;
     }
 
     _renderer.initChunkData(chunk);
@@ -447,7 +563,8 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
   _state_changed.notify_all();
 
   LogDebug << "[ModernADT] Shadowlands tile loaded: " << index.x << ',' << index.z
-           << ". Direct MCVT terrain + TEX0 base textures bound on "
-           << base_textures_bound << "/256 chunks."
+           << ". Direct MCVT terrain + TEX0 MCLY/MCAL textures on "
+           << textured_chunks << "/256 chunks, " << texture_layers_bound
+           << " layers bound."
            << std::endl;
 }
