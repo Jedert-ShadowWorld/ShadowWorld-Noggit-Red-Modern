@@ -104,15 +104,47 @@ void main()
   else
   {
     vec2 uv = rot2(tex_coord_ * anim_uv.x, anim_uv.y);
-
     vec4 texel = get_tex_color(uv, tex_array, tex_frame);
-    vec4 lerp = (type == 1)
-              ? mix (OceanColorLight, OceanColorDark, depth_)
-              : mix (RiverColorLight, RiverColorDark, depth_)
-              ;
 
-    //clamp shouldn't be needed
-    out_color = vec4 (clamp(texel + lerp, 0.0, 1.0).rgb, lerp.a);
+    // Compatibility path for modern MH2O when legacy River/Ocean color rows
+    // are missing or resolve to nearly black.  Use the scene's ambient/diffuse
+    // lighting to obtain the same muddy/tinted WoW-style water appearance as
+    // ordinary legacy maps, while retaining depth darkening and ripple detail.
+    if (type == 4 || type == 5)
+    {
+      float depth = clamp(depth_, 0.0, 1.0);
+      vec3 scene_light = clamp(
+          AmbientColor_FogEnd.rgb * 0.72 + DiffuseColor_FogStart.rgb * 0.28,
+          0.0, 1.0);
+
+      // A restrained neutral base prevents black water in zones whose modern
+      // liquid color metadata is unavailable. River/lake is slightly warmer;
+      // ocean is slightly cooler and darker.
+      vec3 neutral = (type == 5)
+                   ? vec3(0.070, 0.085, 0.095)
+                   : vec3(0.105, 0.090, 0.075);
+
+      vec3 shallow = mix(neutral, scene_light, (type == 5) ? 0.42 : 0.56);
+      vec3 deep = mix(neutral * 0.72, scene_light * 0.42, (type == 5) ? 0.32 : 0.40);
+      vec3 water_rgb = mix(shallow, deep, depth);
+
+      // The procedural texture is deliberately low-energy; use it as a ripple
+      // highlight rather than as the main color source.
+      water_rgb += texel.rgb * 0.70;
+
+      float alpha = (type == 5) ? 0.88 : 0.82;
+      out_color = vec4(clamp(water_rgb, 0.0, 1.0), alpha);
+    }
+    else
+    {
+      vec4 lerp = (type == 1)
+                ? mix (OceanColorLight, OceanColorDark, depth_)
+                : mix (RiverColorLight, RiverColorDark, depth_)
+                ;
+
+      //clamp shouldn't be needed
+      out_color = vec4 (clamp(texel + lerp, 0.0, 1.0).rgb, lerp.a);
+    }
   }
 
   if (FogColor_FogOn.w != 0)
