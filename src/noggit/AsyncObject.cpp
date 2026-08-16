@@ -30,6 +30,20 @@
     return;
   }
 
+  // Terrain texture references can be created from inside an AsyncLoader worker
+  // while modern split ADTs are being streamed in parallel. Blocking that worker
+  // until the BLP finishes can starve the same loader pool that must perform the
+  // queued BLP load. Let BLP references remain asynchronous; render code already
+  // skips not-yet-ready textures/tiles until their AsyncObject finishes.
+  if (_file_key.hasFilepath())
+  {
+    auto const& path = _file_key.filepath();
+    if (path.size() >= 4 && path.compare(path.size() - 4, 4, ".blp") == 0)
+    {
+      return;
+    }
+  }
+
   std::unique_lock<std::mutex> lock(_mutex);
 
   _state_changed.wait
