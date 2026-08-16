@@ -5,6 +5,7 @@
 #include "noggit/DBC.h"
 #include "noggit/application/NoggitApplication.hpp"
 #include <noggit/TextureManager.h>
+#include <noggit/Log.h>
 
 using namespace Noggit::Rendering;
 
@@ -127,6 +128,38 @@ void LiquidTextureManager::upload()
     gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     _texture_frames_map[liquid_type_id] = std::make_tuple(array, anim, type, n_frames);
+  }
+
+  // Modern clients may not provide the legacy LiquidType.dbc that Noggit's
+  // liquid renderer normally uses to build its material/texture profile map.
+  // Keep the already parsed MH2O geometry renderable by installing a tiny
+  // procedural profile when that map is empty.  Modern liquid ids that are
+  // absent from the map are already redirected to the first available profile
+  // by LiquidRender, so one profile is sufficient as a bootstrap renderer.
+  if (_texture_frames_map.empty())
+  {
+    GLuint array = 0;
+    gl.genTextures(1, &array);
+    gl.bindTexture(GL_TEXTURE_2D_ARRAY, array);
+
+    // Neutral semi-transparent blue.  The existing water shader still handles
+    // the geometry, depth and view-dependent effects; this pixel only replaces
+    // the missing legacy animated BLP array until DB2 liquid materials are
+    // mapped properly.
+    const unsigned char pixel[4] = { 72, 138, 186, 190 };
+    gl.texImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 1, 1, 1,
+                  0, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
+    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    constexpr unsigned fallback_liquid_id = 5;
+    _texture_frames_map[fallback_liquid_id] =
+      std::make_tuple(array, glm::vec2(0.f, 0.f), 0, 1u);
+
+    LogDebug << "[ModernADT][WaterRender] Legacy LiquidType profiles are unavailable; "
+             << "installed procedural fallback profile id=" << fallback_liquid_id
+             << " texture=1x1x1." << std::endl;
   }
 
   _uploaded = true;
