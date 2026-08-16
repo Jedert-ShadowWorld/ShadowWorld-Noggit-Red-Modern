@@ -39,7 +39,7 @@ namespace
   };
 
   ModernHeightDiagnostic inspect_modern_height_data(
-    std::uint8_t const* file_data,
+    char const* file_data,
     std::size_t file_size,
     std::size_t mcnk_offset)
   {
