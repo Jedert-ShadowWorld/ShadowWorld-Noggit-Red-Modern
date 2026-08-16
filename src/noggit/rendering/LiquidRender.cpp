@@ -2,6 +2,7 @@
 
 #include "LiquidRender.hpp"
 #include <noggit/ChunkWater.hpp>
+#include <noggit/DBC.h>
 #include <noggit/MapTile.h>
 #include <noggit/rendering/LiquidTextureManager.hpp>
 
@@ -101,6 +102,21 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
       warned_empty_profiles = true;
     }
     return;
+  }
+
+  // If there are no legacy LiquidType rows, LiquidTextureManager is running its
+  // procedural modern fallback.  Modern MH2O depth encoding is not fully mapped
+  // yet; treating the provisional depth bytes as opacity can make valid water
+  // cells disappear.  Keep the MH2O subchunk mask and heights authoritative, but
+  // force visible depth until the DB2/material bridge is implemented.
+  bool const procedural_modern_fallback = gLiquidTypeDB.getRecordCount() == 0;
+  static bool logged_procedural_depth = false;
+  if (procedural_modern_fallback && !logged_procedural_depth)
+  {
+    LogDebug << "[ModernADT][WaterRender] Procedural modern-water mode: forcing vertex depth to 1.0 "
+             << "so provisional Shadowlands depth payloads cannot hide valid MH2O cells."
+             << std::endl;
+    logged_procedural_depth = true;
   }
 
   // create opengl resources if needed
@@ -205,7 +221,8 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
             {
               const unsigned v_index = z_v * 9 + x_v;
               glm::vec2& tex_coord = vertices[v_index].uv;
-              layer_params.vertex_data[n_chunks][v_index] = glm::vec4(vertices[v_index].position.y, vertices[v_index].depth, tex_coord.x, tex_coord.y);
+              float const render_depth = procedural_modern_fallback ? 1.0f : vertices[v_index].depth;
+              layer_params.vertex_data[n_chunks][v_index] = glm::vec4(vertices[v_index].position.y, render_depth, tex_coord.x, tex_coord.y);
             }
           }
 
