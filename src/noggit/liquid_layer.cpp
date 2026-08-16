@@ -19,6 +19,24 @@ namespace
   {
     return {static_cast<float>(px) / 4.f, static_cast<float>(pz) / 4.f};
   }
+
+  int infer_modern_mh2o_vertex_format(MH2O_Information const& info)
+  {
+    if (info.liquid_vertex_format >= LVF_HEIGHT_DEPTH &&
+        info.liquid_vertex_format <= LVF_HEIGHT_DEPTH_UV)
+      return info.liquid_vertex_format;
+
+    // Shadowlands uses the second uint16 as modern liquid metadata/reference,
+    // not Noggit's legacy 0..3 vertex-format enum.  The payload diagnostics show
+    // liquid 2 with flat 0-height data as depth-only, while the other modern
+    // liquids carry a float height stream followed by depth bytes.
+    if (info.liquid_id == LIQUID_OCEAN &&
+        misc::float_equals(info.minHeight, 0.f) &&
+        misc::float_equals(info.maxHeight, 0.f))
+      return LVF_DEPTH;
+
+    return LVF_HEIGHT_DEPTH;
+  }
 }
 
 liquid_layer::liquid_layer(ChunkWater* chunk, glm::vec3 const& base, float height, int liquid_id)
@@ -70,7 +88,6 @@ liquid_layer::liquid_layer(ChunkWater* chunk, glm::vec3 const& base, mclq& liqui
 
       liquid_vertex lv;
 
-      // _liquid_vertex_format is set by changeLiquidID()
       if (_liquid_vertex_format == LVF_HEIGHT_UV)
       {
         lv.depth = 1.f;
@@ -82,10 +99,7 @@ liquid_layer::liquid_layer(ChunkWater* chunk, glm::vec3 const& base, mclq& liqui
         lv.uv = default_uv(x, z);
       }
 
-      // sometimes there's garbage data on unused tiles that mess things up
       lv.position = { pos.x + UNITSIZE * x, std::clamp(v.height, _minimum, _maximum), pos.z + UNITSIZE * z };
-
-
       _vertices[v_index] = lv;
     }
   }
@@ -99,16 +113,28 @@ liquid_layer::liquid_layer(ChunkWater* chunk
                            , MH2O_Information const& info
                            , std::uint64_t infomask)
   : _liquid_id(info.liquid_id)
-  , _liquid_vertex_format(info.liquid_vertex_format)
+  , _liquid_vertex_format(infer_modern_mh2o_vertex_format(info))
   , _minimum(info.minHeight)
   , _maximum(info.maxHeight)
   , _subchunks(0)
   , pos(base)
   , _chunk(chunk)
 {
-  // check if liquid id is valid or some downported maps will crash
-  if (!gLiquidTypeDB.CheckIfIdExists(_liquid_id))
+  bool const modern_vertex_metadata = info.liquid_vertex_format > LVF_HEIGHT_DEPTH_UV;
+
+  // Legacy/downported maps can still use the old DBC validation. Modern client
+  // projects may not have LiquidType.dbc populated, so keep the MH2O liquid id
+  // and let changeLiquidID() apply a safe basic-type fallback instead.
+  if (!modern_vertex_metadata && !gLiquidTypeDB.CheckIfIdExists(_liquid_id))
     _liquid_id = LIQUID_WATER;
+
+  if (modern_vertex_metadata)
+  {
+    LogDebug << "[ModernADT][WaterAdapter] liquidId=" << _liquid_id
+             << " metadata=0x" << std::hex << info.liquid_vertex_format << std::dec
+             << " inferredVertexFormat=" << _liquid_vertex_format
+             << " min=" << _minimum << " max=" << _maximum << std::endl;
+  }
 
   int offset = 0;
   for (int z = 0; z < info.height; ++z)
@@ -120,7 +146,6 @@ liquid_layer::liquid_layer(ChunkWater* chunk
     }
   }
 
-  // default values
   create_vertices(_minimum);
 
   if (info.ofsHeightMap)
@@ -129,15 +154,13 @@ liquid_layer::liquid_layer(ChunkWater* chunk
 
     if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || _liquid_vertex_format == LVF_HEIGHT_UV)
     {
-
       for (int z = info.yOffset; z <= info.yOffset + info.height; ++z)
       {
         for (int x = info.xOffset; x <= info.xOffset + info.width; ++x)
         {
-            float h;
-            f.read(&h, sizeof(float));
-
-            _vertices[z * 9 + x].position.y = std::clamp(h, _minimum, _maximum);
+          float h;
+          f.read(&h, sizeof(float));
+          _vertices[z * 9 + x].position.y = std::clamp(h, _minimum, _maximum);
         }
       }
     }
@@ -172,8 +195,7 @@ liquid_layer::liquid_layer(ChunkWater* chunk
     }
   }
 
-  changeLiquidID(_liquid_id); // to update the liquid type
-
+  changeLiquidID(_liquid_id);
   update_min_max();
 }
 
@@ -182,15 +204,12 @@ liquid_layer::liquid_layer(liquid_layer&& other) noexcept
   , _liquid_vertex_format(other._liquid_vertex_format)
   , _minimum(other._minimum)
   , _maximum(other._maximum)
-  // , _center(other._center)
   , _subchunks(other._subchunks)
   , _vertices(other._vertices)
-  // , _indices_by_lod(other._indices_by_lod)
   , _fatigue_enabled(other._fatigue_enabled)
   , pos(other.pos)
   , _chunk(other._chunk)
 {
-  // update liquid type and vertex format
   changeLiquidID(_liquid_id);
 }
 
@@ -201,12 +220,10 @@ liquid_layer::liquid_layer(liquid_layer const& other)
   , _maximum(other._maximum)
   , _subchunks(other._subchunks)
   , _vertices(other._vertices)
-  // , _indices_by_lod(other._indices_by_lod)
   , _fatigue_enabled(other._fatigue_enabled)
   , pos(other.pos)
   , _chunk(other._chunk)
 {
-  // update liquid type and vertex format
   changeLiquidID(_liquid_id);
 }
 
@@ -220,10 +237,8 @@ liquid_layer& liquid_layer::operator= (liquid_layer&& other) noexcept
   std::swap(_vertices, other._vertices);
   std::swap(_fatigue_enabled, other._fatigue_enabled);
   std::swap(pos, other.pos);
-  // std::swap(_indices_by_lod, other._indices_by_lod);
   std::swap(_chunk, other._chunk);
 
-  // update liquid type and vertex format
   changeLiquidID(_liquid_id);
   other.changeLiquidID(other._liquid_id);
 
@@ -232,18 +247,15 @@ liquid_layer& liquid_layer::operator= (liquid_layer&& other) noexcept
 
 liquid_layer& liquid_layer::operator=(liquid_layer const& other)
 {
-
   _liquid_vertex_format = other._liquid_vertex_format;
   _minimum = other._minimum;
   _maximum = other._maximum;
   _subchunks = other._subchunks;
   _vertices = other._vertices;
   pos = other.pos;
-  // _indices_by_lod = other._indices_by_lod;
   _fatigue_enabled = other._fatigue_enabled;
   _chunk = other._chunk;
 
-  // update liquid type and vertex format
   changeLiquidID(other._liquid_id);
   return *this;
 }
@@ -311,9 +323,7 @@ void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos
       for (int x = info.xOffset; x < info.xOffset + info.width; ++x)
       {
         if (hasSubchunk(x, z))
-        {
           mask |= value;
-        }
         value <<= 1;
       }
     }
@@ -342,10 +352,9 @@ void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos
       }
     }
   }
-  // no heightmap/depth data for fatigue chunks
   else if (_fatigue_enabled)
   {
-      info.ofsHeightMap = 0;
+    info.ofsHeightMap = 0;
   }
 
   if (_liquid_vertex_format == LVF_HEIGHT_UV)
@@ -374,7 +383,7 @@ void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos
     {
       for (int x = info.xOffset; x <= info.xOffset + info.width; ++x)
       {
-          std::uint8_t depth = static_cast<std::uint8_t>(std::min(_vertices[z * 9 + x].depth * 255.0f, 255.f));
+        std::uint8_t depth = static_cast<std::uint8_t>(std::min(_vertices[z * 9 + x].depth * 255.0f, 255.f));
         memcpy(adt.GetPointer<char>(current_pos).get(), &depth, sizeof(std::uint8_t));
         current_pos += sizeof(std::uint8_t);
       }
@@ -392,7 +401,6 @@ void liquid_layer::changeLiquidID(int id)
   try
   {
     DBCFile::Record lLiquidTypeRow = gLiquidTypeDB.getByID(_liquid_id);
-
     _liquid_type = lLiquidTypeRow.getInt(LiquidTypeDB::Type);
 
     switch (_liquid_type)
@@ -405,12 +413,11 @@ void liquid_layer::changeLiquidID(int id)
       _mclq_liquid_type = mclq_liquid_slime;
       _liquid_vertex_format = LVF_HEIGHT_UV;
       break;
-    case liquid_basic_types_ocean: // ocean
-      // lvf 2 is only used for flat water at height 0
+    case liquid_basic_types_ocean:
       _liquid_vertex_format = misc::float_equals(_minimum, 0.f) && misc::float_equals(_maximum, 0.f) ? LVF_DEPTH : LVF_HEIGHT_DEPTH;
       _mclq_liquid_type = mclq_liquid_ocean;
       break;
-    default: // river
+    default:
       _liquid_vertex_format = LVF_HEIGHT_DEPTH;
       _mclq_liquid_type = mclq_liquid_river;
       break;
@@ -418,8 +425,38 @@ void liquid_layer::changeLiquidID(int id)
   }
   catch (LiquidTypeDB::NotFound)
   {
-      assert(false);
-      LogError << "Liquid type id " << _liquid_type << " not found in LiquidType dbc" << std::endl;
+    // Modern projects can have MH2O available before a legacy LiquidType.dbc
+    // bridge exists. Keep rendering alive with the well-known basic IDs instead
+    // of asserting. Unknown modern IDs default to ordinary water/river.
+    if (_liquid_id == LIQUID_OCEAN)
+    {
+      _liquid_type = liquid_basic_types_ocean;
+      _mclq_liquid_type = mclq_liquid_ocean;
+      _liquid_vertex_format = misc::float_equals(_minimum, 0.f) && misc::float_equals(_maximum, 0.f) ? LVF_DEPTH : LVF_HEIGHT_DEPTH;
+    }
+    else if (_liquid_id == LIQUID_MAGMA)
+    {
+      _liquid_type = liquid_basic_types_magma;
+      _mclq_liquid_type = mclq_liquid_magma;
+      _liquid_vertex_format = LVF_HEIGHT_UV;
+    }
+    else if (_liquid_id == LIQUID_SLIME)
+    {
+      _liquid_type = liquid_basic_types_slime;
+      _mclq_liquid_type = mclq_liquid_slime;
+      _liquid_vertex_format = LVF_HEIGHT_UV;
+    }
+    else
+    {
+      _liquid_type = liquid_basic_types_water;
+      _mclq_liquid_type = mclq_liquid_river;
+      if (_liquid_vertex_format < LVF_HEIGHT_DEPTH || _liquid_vertex_format > LVF_HEIGHT_DEPTH_UV)
+        _liquid_vertex_format = LVF_HEIGHT_DEPTH;
+    }
+
+    LogDebug << "[ModernADT][WaterAdapter] LiquidType.dbc missing id " << _liquid_id
+             << "; using basic fallback type=" << _liquid_type
+             << " vertexFormat=" << _liquid_vertex_format << std::endl;
   }
 }
 
@@ -442,8 +479,7 @@ void liquid_layer::crop(MapChunk* chunk)
           if ( _vertices[water_index +  0].position.y < chunk->mVertices[terrain_index +  0].y
             && _vertices[water_index +  1].position.y < chunk->mVertices[terrain_index +  1].y
             && _vertices[water_index +  9].position.y < chunk->mVertices[terrain_index + 17].y
-            && _vertices[water_index + 10].position.y < chunk->mVertices[terrain_index + 18].y
-            )
+            && _vertices[water_index + 10].position.y < chunk->mVertices[terrain_index + 18].y )
           {
             setSubchunk(x, z, false);
           }
@@ -458,38 +494,28 @@ void liquid_layer::crop(MapChunk* chunk)
 void liquid_layer::update_opacity(MapChunk* chunk, float factor)
 {
   for (int z = 0; z < 9; ++z)
-  {
     for (int x = 0; x < 9; ++x)
-    {
       update_vertex_opacity(x, z, chunk, factor);
-    }
-  }
 }
 
 void liquid_layer::update_underground_vertices_depth(MapChunk* chunk)
 {
-  // set depth = 0 to liquid verts under ground. This is for LODs.
+  for (int z = 0; z < 9; ++z)
   {
-    for (int z = 0; z < 9; ++z)
+    for (int x = 0; x < 9; ++x)
     {
-      for (int x = 0; x < 9; ++x)
-      {
-        float diff = _vertices[z * 9 + x].position.y - chunk->mVertices[z * 17 + x].y;
+      float diff = _vertices[z * 9 + x].position.y - chunk->mVertices[z * 17 + x].y;
 
-        if (diff < 0.f)
-        {
-          _vertices[z * 9 + x].depth = 0.f;
-        }
-        else
-        {
-          if (x < 8 && z < 8 && !hasSubchunk(x, z))
-          {
-            _vertices[z * 9 + x].depth = 0.f;
-            _vertices[z * 9 + x + 1].depth = 0.f;
-            _vertices[(z + 1) * 9 + x].depth = 0.f;
-            _vertices[(z + 1) * 9 + (x + 1)].depth = 0.f;
-          }
-        }
+      if (diff < 0.f)
+      {
+        _vertices[z * 9 + x].depth = 0.f;
+      }
+      else if (x < 8 && z < 8 && !hasSubchunk(x, z))
+      {
+        _vertices[z * 9 + x].depth = 0.f;
+        _vertices[z * 9 + x + 1].depth = 0.f;
+        _vertices[(z + 1) * 9 + x].depth = 0.f;
+        _vertices[(z + 1) * 9 + (x + 1)].depth = 0.f;
       }
     }
   }
@@ -500,38 +526,17 @@ std::array<liquid_layer::liquid_vertex, 9 * 9>& liquid_layer::getVertices()
   return _vertices;
 }
 
-float liquid_layer::min() const
-{
-  return _minimum;
-}
-
-float liquid_layer::max() const
-{
-  return _maximum;
-}
-
-int liquid_layer::liquidID() const
-{
-  return _liquid_id;
-}
-
-int liquid_layer::mclq_liquid_type() const
-{
-  return _mclq_liquid_type;
-}
+float liquid_layer::min() const { return _minimum; }
+float liquid_layer::max() const { return _maximum; }
+int liquid_layer::liquidID() const { return _liquid_id; }
+int liquid_layer::mclq_liquid_type() const { return _mclq_liquid_type; }
 
 bool liquid_layer::hasSubchunk(int x, int z, int size) const
 {
   for (int pz = z; pz < z + size; ++pz)
-  {
     for (int px = x; px < x + size; ++px)
-    {
       if ((_subchunks >> (pz * 8 + px)) & 1)
-      {
         return true;
-      }
-    }
-  }
   return false;
 }
 
@@ -540,25 +545,10 @@ void liquid_layer::setSubchunk(int x, int z, bool water)
   misc::set_bit(_subchunks, x, z, water);
 }
 
-std::uint64_t liquid_layer::getSubchunks()
-{
-  return _subchunks;
-}
-
-bool liquid_layer::empty() const
-{
-  return !_subchunks;
-}
-
-bool liquid_layer::full() const
-{
-  return _subchunks == std::uint64_t(-1);
-}
-
-void liquid_layer::clear()
-{
-  _subchunks = std::uint64_t(0);
-}
+std::uint64_t liquid_layer::getSubchunks() { return _subchunks; }
+bool liquid_layer::empty() const { return !_subchunks; }
+bool liquid_layer::full() const { return _subchunks == std::uint64_t(-1); }
+void liquid_layer::clear() { _subchunks = std::uint64_t(0); }
 
 void liquid_layer::paintLiquid( glm::vec3 const& cursor_pos
                               , float radius
@@ -569,14 +559,9 @@ void liquid_layer::paintLiquid( glm::vec3 const& cursor_pos
                               , glm::vec3 const& origin
                               , bool override_height
                               , MapChunk* chunk
-                              , float opacity_factor
-                              )
+                              , float opacity_factor )
 {
-  glm::vec3 ref ( lock
-                      ? origin
-                      : glm::vec3 (cursor_pos.x, cursor_pos.y + 1.0f, cursor_pos.z)
-                      );
-
+  glm::vec3 ref(lock ? origin : glm::vec3(cursor_pos.x, cursor_pos.y + 1.0f, cursor_pos.z));
   int id = 0;
 
   for (int z = 0; z < 8; ++z)
@@ -593,13 +578,9 @@ void liquid_layer::paintLiquid( glm::vec3 const& cursor_pos
             bool in_range = misc::dist(cursor_pos, _vertices[index].position) <= radius;
 
             if (no_subchunk || (in_range && override_height))
-            {
               _vertices[index].position.y = misc::angledHeight(ref, _vertices[index].position, angle, orientation);
-            }
             if (no_subchunk || in_range)
-            {
               update_vertex_opacity(index % 9, index / 9, chunk, opacity_factor);
-            }
           }
         }
         setSubchunk(x, z, add);
@@ -607,7 +588,6 @@ void liquid_layer::paintLiquid( glm::vec3 const& cursor_pos
 
       id++;
     }
-    // to go to the next row of subchunks
     id++;
   }
 
@@ -635,90 +615,55 @@ void liquid_layer::update_min_max()
     }
   }
 
-  // lvf = 2 means the liquid height is 0, switch to lvf 0 when that's not the case
   if (_liquid_vertex_format == LVF_DEPTH && (!misc::float_equals(0.f, _minimum) || !misc::float_equals(0.f, _maximum)))
-  {
     _liquid_vertex_format = LVF_HEIGHT_DEPTH;
-  }
-  // use lvf 2 when possible to save space
   else if (_liquid_vertex_format == LVF_HEIGHT_DEPTH && misc::float_equals(0.f, _minimum) && misc::float_equals(0.f, _maximum))
-  {
     _liquid_vertex_format = LVF_DEPTH;
-  }
 
   _fatigue_enabled = check_fatigue();
-  // recalc all atributes instead?
-  // _chunk->update_layers();
 }
 
 void liquid_layer::copy_subchunk_height(int x, int z, liquid_layer const& from)
 {
   int id = 9 * z + x;
-
   for (int index : {id, id + 1, id + 9, id + 10})
-  {
     _vertices[index].position.y = from._vertices[index].position.y;
-  }
-
   setSubchunk(x, z, true);
 }
 
-ChunkWater* liquid_layer::getChunk()
-{
-  return _chunk;
-}
-
-bool liquid_layer::has_fatigue() const
-{
-  return _fatigue_enabled;
-}
+ChunkWater* liquid_layer::getChunk() { return _chunk; }
+bool liquid_layer::has_fatigue() const { return _fatigue_enabled; }
 
 void liquid_layer::update_vertex_opacity(int x, int z, MapChunk* chunk, float factor)
 {
-  const int  index = z * 9 + x;
+  const int index = z * 9 + x;
   float diff = _vertices[index].position.y - chunk->mVertices[z * 17 + x].y;
-  _vertices[z * 9 + x].depth = diff < 0.0f ? 0.0f : (std::min(1.0f, std::max(0.0f, (diff + 1.0f) * factor)));
+  _vertices[z * 9 + x].depth = diff < 0.0f ? 0.0f : std::min(1.0f, std::max(0.0f, (diff + 1.0f) * factor));
 }
 
 int liquid_layer::get_lod_level(glm::vec3 const& camera_pos) const
 {
-  glm::vec3 const& center_vertex (_vertices[5 * 9 + 4].position);
-  // this doesn't look like it's using the right length function...
-  // auto const dist ((center_vertex - camera_pos).length());
+  glm::vec3 const& center_vertex(_vertices[5 * 9 + 4].position);
   float const dist = misc::dist(center_vertex, camera_pos);
-
-  return dist < 1000.f ? 0
-       : dist < 2000.f ? 1
-       : dist < 4000.f ? 2
-       : 3;
+  return dist < 1000.f ? 0 : dist < 2000.f ? 1 : dist < 4000.f ? 2 : 3;
 }
-// if ocean and all subchunks are at max depth
+
 bool liquid_layer::check_fatigue() const
 {
-    // only oceans have fatigue
-    if (_liquid_type != liquid_basic_types_ocean)
-    {
+  if (_liquid_type != liquid_basic_types_ocean)
+    return false;
+
+  for (int z = 0; z < 8; ++z)
+    for (int x = 0; x < 8; ++x)
+      if (!(hasSubchunk(x, z) && subchunk_at_max_depth(x, z)))
         return false;
-    }
 
-    for (int z = 0; z < 8; ++z)
-    {
-        for (int x = 0; x < 8; ++x)
-        {
-            if (!(hasSubchunk(x, z) && subchunk_at_max_depth(x, z)))
-            {
-                return false;
-            }
-        }
-    }
-
-    return true;
+  return true;
 }
 
 mclq liquid_layer::to_mclq(MH2O_Attributes& attributes) const
 {
   mclq mclq_data;
-
   mclq_data.min_height = _minimum;
   mclq_data.max_height = _maximum;
 
@@ -744,7 +689,6 @@ mclq liquid_layer::to_mclq(MH2O_Attributes& attributes) const
   {
     mclq_data.vertices[i].height = _vertices[i].position.y;
 
-    // magma and slime
     if (_liquid_type == 2 || _liquid_type == 3)
     {
       mclq_data.vertices[i].magma.x = static_cast<std::uint16_t>(std::min(_vertices[i].uv.x * 255.f, 65535.f));
@@ -763,62 +707,47 @@ int liquid_layer::mclq_flag_ordering() const
 {
   switch (_mclq_liquid_type)
   {
-  case 6: return 2;  // lava
-  case 3: return 3;  // slime
-  case 1: return 1;  // ocean
-  default: return 0; // river
-
+  case 6: return 2;
+  case 3: return 3;
+  case 1: return 1;
+  default: return 0;
   }
 }
 
 void liquid_layer::update_attributes(MH2O_Attributes& attributes)
 {
-    if (check_fatigue())
+  if (check_fatigue())
+  {
+    attributes.fishable = 0xFFFFFFFFFFFFFFFF;
+    attributes.fatigue = 0xFFFFFFFFFFFFFFFF;
+    _fatigue_enabled = true;
+  }
+  else
+  {
+    _fatigue_enabled = false;
+    for (int z = 0; z < 8; ++z)
     {
-        attributes.fishable = 0xFFFFFFFFFFFFFFFF;
-        attributes.fatigue = 0xFFFFFFFFFFFFFFFF;
-
-        _fatigue_enabled = true;
-    }
-    else
-    {
-        _fatigue_enabled = false;
-        for (int z = 0; z < 8; ++z)
+      for (int x = 0; x < 8; ++x)
+      {
+        if (hasSubchunk(x, z))
         {
-            for (int x = 0; x < 8; ++x)
-            {
-                if (hasSubchunk(x, z))
-                {
-                    // todo : find out when fishable isn't set. maybe lava/slime or very shallow water ?
-                    // Most likely when subchunk is entirely above terrain.
-                    misc::set_bit(attributes.fishable, x, z, true);
-
-                    // only oceans have fatigue
-                    // warning: not used by TrinityCore
-                    if (_liquid_type == liquid_basic_types_ocean && subchunk_at_max_depth(x, z))
-                    {
-                        misc::set_bit(attributes.fatigue, x, z, true);
-                    }
-                }
-            }
+          misc::set_bit(attributes.fishable, x, z, true);
+          if (_liquid_type == liquid_basic_types_ocean && subchunk_at_max_depth(x, z))
+            misc::set_bit(attributes.fatigue, x, z, true);
         }
+      }
     }
+  }
 }
 
 bool liquid_layer::subchunk_at_max_depth(int x, int z) const
 {
-    for (int id_z = z; id_z <= z + 1; ++id_z)
-    {
-        for (int id_x = x; id_x <= x + 1; ++id_x)
-        {
-            if (_vertices[id_x + 9 * id_z].depth < 1.f)
-            {
-                return false;
-            }
-        }
-    }
-
-    return true;
+  for (int id_z = z; id_z <= z + 1; ++id_z)
+    for (int id_x = x; id_x <= x + 1; ++id_x)
+      if (_vertices[id_x + 9 * id_z].depth < 1.f)
+        return false;
+  return true;
 }
 
-liquid_layer::liquid_vertex::liquid_vertex(glm::vec3 const& pos, glm::vec2 const& uv, float depth) : position(pos), uv(uv), depth(depth) {}
+liquid_layer::liquid_vertex::liquid_vertex(glm::vec3 const& pos, glm::vec2 const& uv, float depth)
+  : position(pos), uv(uv), depth(depth) {}
