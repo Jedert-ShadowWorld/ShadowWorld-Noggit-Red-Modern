@@ -13,6 +13,20 @@ native editing support for newer World of Warcraft map formats.
 > should currently be considered a development/testing branch, not a
 > production-ready modern WoW map editor.
 
+## Preview
+
+### Terrain Editing
+
+![ShadowWorld Noggit Red Modern terrain editor](docs/images/shadowworld-noggit-red-modern-editor-16layer.png)
+
+*ShadowWorld Noggit Red Modern running the existing Noggit terrain and texture editing workflow. The editor shown here also includes the terrain texture layer authoring work this project builds upon.*
+
+### Modern Client Project Creation
+
+![Shadowlands project creation](docs/images/shadowlands-project-creation.png)
+
+*Experimental Shadowlands 9.2.7 project target available during project creation.*
+
 ## Current Goal
 
 The long-term goal is to allow Noggit to work with multiple WoW
