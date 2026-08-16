@@ -12,6 +12,7 @@
 #include <Listfile.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
@@ -195,6 +196,61 @@ namespace
     chunk->vcenter = (chunk->vmin + chunk->vmax) * 0.5f;
   }
 
+  glm::vec3 get_modern_tile_local_neighbor(MapTile* tile, MapChunk* chunk, int vertex_index, unsigned dir)
+  {
+    constexpr float half_unit = UNITSIZE / 2.f;
+    static constexpr std::array<float, 4> xdiff{-half_unit, half_unit, half_unit, -half_unit};
+    static constexpr std::array<float, 4> zdiff{-half_unit, -half_unit, half_unit, half_unit};
+
+    float const vertex_x = chunk->mVertices[vertex_index].x + xdiff[dir];
+    float const vertex_z = chunk->mVertices[vertex_index].z + zdiff[dir];
+    TileIndex const neighbor_tile({vertex_x, 0.0f, vertex_z});
+
+    if (neighbor_tile.x == tile->index.x && neighbor_tile.z == tile->index.z)
+    {
+      glm::vec3 result{};
+      tile->getVertexInternal(vertex_x, vertex_z, &result);
+      return result;
+    }
+
+    // Loading modern tiles happens in parallel (normally a ~5x5 neighborhood).
+    // Never query another tile from an AsyncLoader worker here: another tile may
+    // still be waiting on this one. Mirror Noggit's unloaded-neighbor fallback
+    // instead and keep the edge height flat until a later seam refresh exists.
+    return {vertex_x, chunk->mVertices[vertex_index].y, vertex_z};
+  }
+
+  void recalc_modern_tile_local_normals(MapTile* tile, MapChunk* chunk)
+  {
+    auto& tile_buffer = tile->getChunkHeightmapBuffer();
+    int const chunk_start = (chunk->px * 16 + chunk->py) * mapbufsize * 4;
+
+    for (int i = 0; i < mapbufsize; ++i)
+    {
+      glm::vec3 const P1 = get_modern_tile_local_neighbor(tile, chunk, i, 0);
+      glm::vec3 const P2 = get_modern_tile_local_neighbor(tile, chunk, i, 1);
+      glm::vec3 const P3 = get_modern_tile_local_neighbor(tile, chunk, i, 2);
+      glm::vec3 const P4 = get_modern_tile_local_neighbor(tile, chunk, i, 3);
+
+      glm::vec3 const N1 = glm::cross(P2 - chunk->mVertices[i], P1 - chunk->mVertices[i]);
+      glm::vec3 const N2 = glm::cross(P3 - chunk->mVertices[i], P2 - chunk->mVertices[i]);
+      glm::vec3 const N3 = glm::cross(P4 - chunk->mVertices[i], P3 - chunk->mVertices[i]);
+      glm::vec3 const N4 = glm::cross(P1 - chunk->mVertices[i], P4 - chunk->mVertices[i]);
+
+      glm::vec3 norm = glm::normalize(N1 + N2 + N3 + N4);
+      norm.x = std::floor(norm.x * 127.0f) / 127.0f;
+      norm.y = std::floor(norm.y * 127.0f) / 127.0f;
+      norm.z = std::floor(norm.z * 127.0f) / 127.0f;
+
+      int const pixel_start = chunk_start + i * 4;
+      tile_buffer[pixel_start] = -norm.z;
+      tile_buffer[pixel_start + 1] = norm.y;
+      tile_buffer[pixel_start + 2] = -norm.x;
+    }
+
+    chunk->requeueChunkUpdate(ChunkUpdateFlags::NORMALS);
+  }
+
   struct ModernTextureLayer
   {
     std::uint32_t texture_id = 0;
@@ -305,7 +361,7 @@ namespace
       else if (magic == on_disk_fourcc('M','C','N','K'))
       {
         ModernTexChunk tex_chunk;
-        std::size_t sub = payload; // TEX0 MCNK is headerless.
+        std::size_t sub = payload;
         while (sub + 8 <= payload + size)
         {
           std::uint32_t sub_magic = 0, sub_size = 0;
@@ -548,13 +604,14 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
     }
   }
 
-  LogDebug << "[ModernADT] Recalculating terrain normals from reconstructed MCVT geometry for tile "
-           << index.x << ',' << index.z << '.' << std::endl;
+  LogDebug << "[ModernADT] Recalculating tile-local terrain normals for tile "
+           << index.x << ',' << index.z
+           << " without cross-tile streaming dependencies." << std::endl;
 
   for (unsigned x = 0; x < 16; ++x)
   {
     for (unsigned z = 0; z < 16; ++z)
-      mChunks[x][z]->recalcNorms();
+      recalc_modern_tile_local_normals(this, mChunks[x][z].get());
   }
 
   for (unsigned x = 0; x < 16; ++x)
@@ -578,6 +635,6 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
   LogDebug << "[ModernADT] Shadowlands tile loaded: " << index.x << ',' << index.z
            << ". Direct MCVT terrain + TEX0 MCLY/MCAL textures on "
            << textured_chunks << "/256 chunks, " << texture_layers_bound
-           << " layers bound; normals recalculated from reconstructed terrain."
+           << " layers bound; normals recalculated tile-locally for streaming safety."
            << std::endl;
 }
