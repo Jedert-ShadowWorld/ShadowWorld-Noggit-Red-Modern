@@ -546,8 +546,21 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
       if (bound)
         ++textured_chunks;
     }
+  }
 
-    _renderer.initChunkData(chunk);
+  LogDebug << "[ModernADT] Recalculating terrain normals from reconstructed MCVT geometry for tile "
+           << index.x << ',' << index.z << '.' << std::endl;
+
+  for (unsigned x = 0; x < 16; ++x)
+  {
+    for (unsigned z = 0; z < 16; ++z)
+      mChunks[x][z]->recalcNorms();
+  }
+
+  for (unsigned x = 0; x < 16; ++x)
+  {
+    for (unsigned z = 0; z < 16; ++z)
+      _renderer.initChunkData(mChunks[x][z].get());
   }
 
   mTextureFilenames.clear();
@@ -565,6 +578,6 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
   LogDebug << "[ModernADT] Shadowlands tile loaded: " << index.x << ',' << index.z
            << ". Direct MCVT terrain + TEX0 MCLY/MCAL textures on "
            << textured_chunks << "/256 chunks, " << texture_layers_bound
-           << " layers bound."
+           << " layers bound; normals recalculated from reconstructed terrain."
            << std::endl;
 }
