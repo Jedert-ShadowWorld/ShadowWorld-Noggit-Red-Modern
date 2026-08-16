@@ -50,10 +50,11 @@ namespace
     return out.str();
   }
 
-  // Diagnostic-only modern MH2O pass. Do not feed the chunk to the legacy
-  // TileWater parser yet: current Shadowlands data produces invalid LiquidType
-  // values, so first identify the exact header/layer layout from raw offsets.
-  void inspect_modern_mh2o_if_needed(AsyncObject const* object)
+  // Shadowlands ROOT ADTs still use the classic 256 x 12-byte MH2O header
+  // table. We first validate every non-empty header against the payload and only
+  // then hand the chunk to Noggit's existing TileWater reader. This keeps bad or
+  // unexpected modern liquid data from taking down terrain streaming.
+  void load_modern_mh2o_if_needed(AsyncObject const* object)
   {
     auto* tile = dynamic_cast<MapTile*>(const_cast<AsyncObject*>(object));
     if (!tile || !object->file_key().hasFilepath())
@@ -110,83 +111,83 @@ namespace
         pos = payload + size;
       }
 
+      // Legacy monolithic ADTs are handled by the normal MapTile loader.
       if (has_legacy_mcin || mcnk_count != 256 || !mh2o_payload || !mh2o_size)
         return;
 
-      auto const* mh2o = data + mh2o_payload;
-      LogDebug << "[ModernADT][WaterDiag] tile=" << tile->index.x << ',' << tile->index.z
-               << " MH2O payload=" << mh2o_payload << " size=" << mh2o_size
-               << " first256={" << hex_dump(mh2o, mh2o_size, 256) << '}'
-               << std::endl;
-
-      // Classic MH2O uses 256 x 12-byte headers:
-      //   uint32 ofsLiquid; uint32 layerCount; uint32 ofsAttributes.
-      // Log every non-empty candidate header, but do not trust it yet. Offsets
-      // are checked against this MH2O payload so bad interpretations stand out.
-      constexpr std::size_t candidate_header_size = 12;
-      constexpr std::size_t candidate_table_size = 256 * candidate_header_size;
-      if (mh2o_size >= candidate_table_size)
+      constexpr std::size_t header_size = 12;
+      constexpr std::size_t header_table_size = 256 * header_size;
+      if (mh2o_size < header_table_size)
       {
-        std::size_t nonzero_headers = 0;
-        std::size_t plausible_headers = 0;
-        for (std::size_t i = 0; i < 256; ++i)
-        {
-          auto const base = i * candidate_header_size;
-          auto const ofs_liquid = read_u32(mh2o, base);
-          auto const layer_count = read_u32(mh2o, base + 4);
-          auto const ofs_attributes = read_u32(mh2o, base + 8);
-
-          if (!ofs_liquid && !layer_count && !ofs_attributes)
-            continue;
-
-          ++nonzero_headers;
-          bool const liquid_in_range = !ofs_liquid || ofs_liquid < mh2o_size;
-          bool const attrs_in_range = !ofs_attributes || ofs_attributes < mh2o_size;
-          bool const count_sane = layer_count <= 64;
-          bool const plausible = liquid_in_range && attrs_in_range && count_sane;
-          if (plausible)
-            ++plausible_headers;
-
-          if (nonzero_headers <= 32)
-          {
-            LogDebug << "[ModernADT][WaterDiag] headerCandidate chunk=" << i
-                     << " grid=" << (i / 16) << ',' << (i % 16)
-                     << " ofsLiquid=" << ofs_liquid
-                     << " layers=" << layer_count
-                     << " ofsAttrs=" << ofs_attributes
-                     << " liquidInRange=" << liquid_in_range
-                     << " attrsInRange=" << attrs_in_range
-                     << " countSane=" << count_sane
-                     << std::endl;
-
-            if (ofs_liquid && ofs_liquid < mh2o_size)
-            {
-              auto const available = static_cast<std::size_t>(mh2o_size - ofs_liquid);
-              LogDebug << "[ModernADT][WaterDiag] layerBytes chunk=" << i
-                       << " @" << ofs_liquid << " first64={"
-                       << hex_dump(mh2o + ofs_liquid, available, 64) << '}'
-                       << std::endl;
-            }
-          }
-        }
-
-        LogDebug << "[ModernADT][WaterDiag] candidateSummary tile="
-                 << tile->index.x << ',' << tile->index.z
-                 << " nonzero=" << nonzero_headers
-                 << " plausible=" << plausible_headers
-                 << "/256 using 12-byte classic header hypothesis."
-                 << std::endl;
+        LogError << "[ModernADT][Water] MH2O too small on tile "
+                 << tile->index.x << ',' << tile->index.z << ": " << mh2o_size
+                 << " bytes." << std::endl;
+        return;
       }
 
-      LogDebug << "[ModernADT][WaterDiag] Legacy TileWater parsing intentionally skipped for tile "
+      auto const* mh2o = data + mh2o_payload;
+      std::size_t nonzero_headers = 0;
+      std::size_t plausible_headers = 0;
+
+      for (std::size_t i = 0; i < 256; ++i)
+      {
+        auto const base = i * header_size;
+        auto const ofs_information = read_u32(mh2o, base);
+        auto const layer_count = read_u32(mh2o, base + 4);
+        auto const ofs_attributes = read_u32(mh2o, base + 8);
+
+        if (!ofs_information && !layer_count && !ofs_attributes)
+          continue;
+
+        ++nonzero_headers;
+        bool const information_in_range = !ofs_information || ofs_information < mh2o_size;
+        bool const attributes_in_range = !ofs_attributes || ofs_attributes < mh2o_size;
+        bool const count_sane = layer_count <= 64;
+        bool const information_table_fits =
+          !ofs_information || !layer_count ||
+          (static_cast<std::size_t>(ofs_information) +
+             static_cast<std::size_t>(layer_count) * sizeof(MH2O_Information) <= mh2o_size);
+
+        if (information_in_range && attributes_in_range && count_sane && information_table_fits)
+          ++plausible_headers;
+      }
+
+      if (nonzero_headers == 0)
+        return;
+
+      if (plausible_headers != nonzero_headers)
+      {
+        LogError << "[ModernADT][Water] Refusing MH2O on tile "
+                 << tile->index.x << ',' << tile->index.z
+                 << ": only " << plausible_headers << '/' << nonzero_headers
+                 << " non-empty headers validated." << std::endl;
+        return;
+      }
+
+      LogDebug << "[ModernADT][Water] Validated classic MH2O layout on tile "
                << tile->index.x << ',' << tile->index.z
-               << " until the Shadowlands MH2O layout is confirmed."
-               << std::endl;
+               << " (" << nonzero_headers << " wet chunks, " << mh2o_size
+               << " bytes). Loading through TileWater." << std::endl;
+
+      file.seek(mh2o_payload);
+      tile->Water.readFromFile(file, mh2o_payload);
+
+      LogDebug << "[ModernADT][Water] Loaded ROOT MH2O for tile "
+               << tile->index.x << ',' << tile->index.z
+               << " (" << mh2o_size << " bytes, " << nonzero_headers
+               << " wet chunks)." << std::endl;
+    }
+    catch (std::exception const& e)
+    {
+      LogError << "[ModernADT][Water] Failed to load MH2O for '"
+               << path << "': " << e.what()
+               << ". Terrain remains usable." << std::endl;
     }
     catch (...)
     {
-      LogError << "[ModernADT][WaterDiag] Failed to inspect MH2O for '"
-               << path << "'. Terrain remains usable." << std::endl;
+      LogError << "[ModernADT][Water] Failed to load MH2O for '"
+               << path << "' with an unknown exception. Terrain remains usable."
+               << std::endl;
     }
   }
 }
@@ -204,7 +205,7 @@ bool AsyncObject::finishedLoading() const
 {
   bool const done = finished.load();
   if (done)
-    inspect_modern_mh2o_if_needed(this);
+    load_modern_mh2o_if_needed(this);
   return done;
 }
 
