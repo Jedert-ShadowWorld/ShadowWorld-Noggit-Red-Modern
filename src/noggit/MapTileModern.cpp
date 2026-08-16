@@ -19,12 +19,15 @@
 
 namespace
 {
-  constexpr std::uint32_t reversed_fourcc(char a, char b, char c, char d)
+  // ClientFile exposes the four bytes as a little-endian uint32_t. WoW stores
+  // chunk names reversed on disk, so canonical MCVT appears as bytes TVCM and
+  // therefore as integer 0x4D435654 when read this way.
+  constexpr std::uint32_t on_disk_fourcc(char a, char b, char c, char d)
   {
-    return (static_cast<std::uint32_t>(d) << 24)
-         | (static_cast<std::uint32_t>(c) << 16)
-         | (static_cast<std::uint32_t>(b) << 8)
-         | static_cast<std::uint32_t>(a);
+    return (static_cast<std::uint32_t>(a) << 24)
+         | (static_cast<std::uint32_t>(b) << 16)
+         | (static_cast<std::uint32_t>(c) << 8)
+         | static_cast<std::uint32_t>(d);
   }
 
   struct ModernHeightDiagnostic
@@ -35,6 +38,7 @@ namespace
     float raw_header_ypos = 0.0f;
     float mcvt_min = 0.0f;
     float mcvt_max = 0.0f;
+    std::vector<float> heights;
     std::vector<float> first_heights;
   };
 
@@ -62,10 +66,9 @@ namespace
     if (payload_end > file_size || declared_size < 128)
       return result;
 
-    // Shadowlands ROOT MCNK keeps a 128-byte header followed by normal
-    // fourcc+size terrain subchunks. Read MCVT directly instead of trusting
-    // the legacy header offsets so we can compare raw heights to MapChunk's
-    // decoded vertex Y values.
+    // Shadowlands ROOT MCNK has a 128-byte header followed by standard
+    // fourcc+size terrain subchunks. Locate MCVT by walking those subchunks
+    // instead of trusting the legacy header's ofsHeight field.
     std::size_t sub = payload_begin + 128;
     while (sub + 8 <= payload_end)
     {
@@ -78,17 +81,19 @@ namespace
       if (size > payload_end - data_begin)
         break;
 
-      if (magic == reversed_fourcc('M', 'C', 'V', 'T') && size >= 145 * sizeof(float))
+      if (magic == on_disk_fourcc('M', 'C', 'V', 'T') && size >= 145 * sizeof(float))
       {
         result.found_mcvt = true;
         result.mcvt_min = std::numeric_limits<float>::max();
         result.mcvt_max = std::numeric_limits<float>::lowest();
+        result.heights.reserve(145);
         result.first_heights.reserve(10);
 
         for (std::size_t i = 0; i < 145; ++i)
         {
           float height = 0.0f;
           std::memcpy(&height, file_data + data_begin + i * sizeof(float), sizeof(height));
+          result.heights.push_back(height);
           result.mcvt_min = std::min(result.mcvt_min, height);
           result.mcvt_max = std::max(result.mcvt_max, height);
           if (i < 10)
@@ -139,20 +144,26 @@ namespace
              << std::endl;
   }
 
-  void rebase_modern_chunk_to_tile_grid(MapChunk* chunk, MapTile const* tile)
+  void rebuild_modern_chunk_geometry(
+    MapChunk* chunk,
+    MapTile const* tile,
+    ModernHeightDiagnostic const& raw)
   {
-    // Shadowlands ROOT MCNK still provides usable MCVT/MCNR terrain data, but
-    // its stored world-position fields must not be fed through the legacy
-    // WotLK coordinate conversion.  The logical chunk position is already
-    // known from the tile and the MCNK's 16x16 grid coordinates, so rebuild
-    // X/Z deterministically and preserve only the parsed vertex heights.
     if (chunk->px < 0 || chunk->px >= 16 || chunk->py < 0 || chunk->py >= 16)
       throw std::runtime_error("Shadowlands ROOT MCNK contains an invalid chunk grid coordinate.");
 
+    if (!raw.found_mcvt || raw.heights.size() != 145)
+      throw std::runtime_error("Shadowlands ROOT MCNK is missing a valid 145-float MCVT subchunk.");
+
+    // X/Z are deterministic from the tile/chunk grid. Y is the modern MCNK
+    // base height plus the directly decoded MCVT delta. This bypasses the
+    // legacy ofsHeight path that was reading unrelated bytes as float heights.
     chunk->xbase = tile->xbase + static_cast<float>(chunk->px) * CHUNKSIZE;
     chunk->zbase = tile->zbase + static_cast<float>(chunk->py) * CHUNKSIZE;
+    chunk->ybase = 0.0f;
 
     auto* vertex = chunk->mVertices;
+    std::size_t height_index = 0;
     float min_y = std::numeric_limits<float>::max();
     float max_y = std::numeric_limits<float>::lowest();
 
@@ -165,13 +176,12 @@ namespace
         if (row % 2)
           local_x += UNITSIZE * 0.5f;
 
-        // Keep Y exactly as decoded by the existing MCVT path.  Only X/Z are
-        // corrected here; this lets us validate modern height parsing without
-        // trusting legacy MCNK world-position semantics.
+        float const y = raw.raw_header_ypos + raw.heights[height_index++];
         vertex->x = chunk->xbase + local_x;
+        vertex->y = y;
         vertex->z = chunk->zbase + local_z;
-        min_y = std::min(min_y, vertex->y);
-        max_y = std::max(max_y, vertex->y);
+        min_y = std::min(min_y, y);
+        max_y = std::max(max_y, y);
         ++vertex;
       }
     }
@@ -239,19 +249,12 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
            << " from 256 ROOT MCNK chunks. Textures, objects and liquids are intentionally disabled."
            << std::endl;
 
-  // The ROOT MCNK still exposes terrain subchunks in a form the current
-  // MapChunk reader can decode.  We use it for MCVT/MCNR, then explicitly
-  // rebase every chunk to the known Noggit tile grid instead of trusting the
-  // legacy WotLK world-position conversion for modern MCNK headers.
   for (std::size_t next_chunk = 0; next_chunk < mcnk_offsets.size(); ++next_chunk)
   {
-    // Capture the raw modern header and MCVT before MapChunk touches the file.
-    // Limit verbose diagnostics to the tile being actively tested and its first
-    // four chunks so the async loader does not flood the log for nearby tiles.
-    ModernHeightDiagnostic raw_diag;
-    bool const emit_height_diag = (index.x == 34 && index.z == 49 && next_chunk < 4);
-    if (emit_height_diag)
-      raw_diag = inspect_modern_height_data(data, file_size, mcnk_offsets[next_chunk]);
+    // Decode the modern height data before the legacy MapChunk constructor
+    // touches the stream. We still use MapChunk to initialize the surrounding
+    // Noggit structures, then replace its bad legacy-derived geometry below.
+    auto const raw_height = inspect_modern_height_data(data, file_size, mcnk_offsets[next_chunk]);
 
     root_file.seek(mcnk_offsets[next_chunk]);
 
@@ -269,10 +272,11 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
       false);
 
     auto* chunk = mChunks[x][z].get();
-    rebase_modern_chunk_to_tile_grid(chunk, this);
+    rebuild_modern_chunk_geometry(chunk, this, raw_height);
 
+    bool const emit_height_diag = (index.x == 34 && index.z == 49 && next_chunk < 4);
     if (emit_height_diag)
-      log_modern_height_diagnostic(this, chunk, next_chunk, raw_diag);
+      log_modern_height_diagnostic(this, chunk, next_chunk, raw_height);
 
     _renderer.initChunkData(chunk);
   }
@@ -293,6 +297,6 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
   _state_changed.notify_all();
 
   LogDebug << "[ModernADT] Terrain-only Shadowlands tile loaded successfully: "
-           << index.x << ',' << index.z << ". Chunk X/Z rebased to tile grid."
+           << index.x << ',' << index.z << ". Direct MCVT heights applied on tile grid."
            << std::endl;
 }
