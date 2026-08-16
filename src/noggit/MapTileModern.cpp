@@ -4,13 +4,62 @@
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
+#include <noggit/MapHeaders.h>
 
 #include <ClientFile.hpp>
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <vector>
+
+namespace
+{
+  void rebase_modern_chunk_to_tile_grid(MapChunk* chunk, MapTile const* tile)
+  {
+    // Shadowlands ROOT MCNK still provides usable MCVT/MCNR terrain data, but
+    // its stored world-position fields must not be fed through the legacy
+    // WotLK coordinate conversion.  The logical chunk position is already
+    // known from the tile and the MCNK's 16x16 grid coordinates, so rebuild
+    // X/Z deterministically and preserve only the parsed vertex heights.
+    if (chunk->px < 0 || chunk->px >= 16 || chunk->py < 0 || chunk->py >= 16)
+      throw std::runtime_error("Shadowlands ROOT MCNK contains an invalid chunk grid coordinate.");
+
+    chunk->xbase = tile->xbase + static_cast<float>(chunk->px) * CHUNKSIZE;
+    chunk->zbase = tile->zbase + static_cast<float>(chunk->py) * CHUNKSIZE;
+
+    auto* vertex = chunk->mVertices;
+    float min_y = std::numeric_limits<float>::max();
+    float max_y = std::numeric_limits<float>::lowest();
+
+    for (int row = 0; row < 17; ++row)
+    {
+      for (int column = 0; column < ((row % 2) ? 8 : 9); ++column)
+      {
+        float local_x = static_cast<float>(column) * UNITSIZE;
+        float const local_z = static_cast<float>(row) * 0.5f * UNITSIZE;
+        if (row % 2)
+          local_x += UNITSIZE * 0.5f;
+
+        // Keep Y exactly as decoded by the existing MCVT path.  Only X/Z are
+        // corrected here; this lets us validate modern height parsing without
+        // trusting legacy MCNK world-position semantics.
+        vertex->x = chunk->xbase + local_x;
+        vertex->z = chunk->zbase + local_z;
+        min_y = std::min(min_y, vertex->y);
+        max_y = std::max(max_y, vertex->y);
+        ++vertex;
+      }
+    }
+
+    chunk->vmin = glm::vec3(chunk->xbase, min_y, chunk->zbase);
+    chunk->vmax = glm::vec3(chunk->xbase + 8.0f * UNITSIZE,
+                            max_y,
+                            chunk->zbase + 8.0f * UNITSIZE);
+    chunk->vcenter = (chunk->vmin + chunk->vmax) * 0.5f;
+  }
+}
 
 void MapTile::finishLoadingShadowlandsTerrainOnly()
 {
@@ -67,9 +116,10 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
            << " from 256 ROOT MCNK chunks. Textures, objects and liquids are intentionally disabled."
            << std::endl;
 
-  // The 9.2.7 ROOT MCNK header still contains usable legacy-compatible
-  // terrain offsets for MCVT/MCNR. Feed only the ROOT file to MapChunk and
-  // explicitly disable texture loading; TEX0/OBJ0 integration comes later.
+  // The ROOT MCNK still exposes terrain subchunks in a form the current
+  // MapChunk reader can decode.  We use it for MCVT/MCNR, then explicitly
+  // rebase every chunk to the known Noggit tile grid instead of trusting the
+  // legacy WotLK world-position conversion for modern MCNK headers.
   for (std::size_t next_chunk = 0; next_chunk < mcnk_offsets.size(); ++next_chunk)
   {
     root_file.seek(mcnk_offsets[next_chunk]);
@@ -87,7 +137,9 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
       0,
       false);
 
-    _renderer.initChunkData(mChunks[x][z].get());
+    auto* chunk = mChunks[x][z].get();
+    rebase_modern_chunk_to_tile_grid(chunk, this);
+    _renderer.initChunkData(chunk);
   }
 
   // There are deliberately no modern textures/objects wired into this first
@@ -99,10 +151,13 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
 
   root_file.close();
 
+  recalcExtents();
+
   finished = true;
   _tile_is_being_reloaded = false;
   _state_changed.notify_all();
 
   LogDebug << "[ModernADT] Terrain-only Shadowlands tile loaded successfully: "
-           << index.x << ',' << index.z << '.' << std::endl;
+           << index.x << ',' << index.z << ". Chunk X/Z rebased to tile grid."
+           << std::endl;
 }
