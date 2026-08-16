@@ -9,6 +9,7 @@
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/errorHandling.h>
 #include <noggit/Log.h>
+#include <noggit/MapTile.h>
 #include <noggit/project/CurrentProject.hpp>
 #include <util/exception_to_string.hpp>
 
@@ -47,6 +48,13 @@ namespace
       && !string_ends_with(path, "_obj0.adt")
       && !string_ends_with(path, "_obj1.adt")
       && !string_ends_with(path, "_lod.adt");
+  }
+
+  bool is_shadowlands_root_adt(std::string const& path)
+  {
+    auto* project = Noggit::Project::CurrentProject::get();
+    return project->projectVersion == Noggit::Project::ProjectVersion::SL
+      && is_root_adt_path(path);
   }
 
   std::string split_adt_path(std::string const& root_path, std::string const& suffix)
@@ -223,16 +231,8 @@ namespace
 
   bool run_shadowlands_split_adt_diagnostics(std::string const& root_path)
   {
-    auto* project = Noggit::Project::CurrentProject::get();
-    if (project->projectVersion != Noggit::Project::ProjectVersion::SL)
-      return false;
-
-    if (!is_root_adt_path(root_path))
-      return false;
-
     LogDebug << "[ModernADT] Shadowlands split-ADT diagnostic path engaged for '"
-             << root_path << "'. Legacy WotLK MapTile parsing will be skipped for this tile."
-             << std::endl;
+             << root_path << "'." << std::endl;
 
     auto const root = scan_modern_adt_file(root_path, "ROOT", true);
     auto const tex0 = scan_modern_adt_file(split_adt_path(root_path, "_tex0"), "TEX0", false);
@@ -255,7 +255,7 @@ namespace
                << std::endl;
     }
 
-    return true;
+    return complete;
   }
 }
 
@@ -325,19 +325,51 @@ void AsyncLoader::process()
         LogDebug << "Loading file '" << object_name << "'" << std::endl;
       }
 
-      if (run_shadowlands_split_adt_diagnostics(object_name))
+      if (is_shadowlands_root_adt(object_name))
       {
-        std::lock_guard<std::mutex> const lock(_guard);
-        LogDebug << "[ModernADT] Diagnostic scan completed for '" << object_name
-                 << "'. Marking the tile load as failed intentionally so no legacy MapChunk/render path consumes split modern data."
-                 << std::endl;
+        bool const split_verified = run_shadowlands_split_adt_diagnostics(object_name);
+        if (!split_verified)
+        {
+          std::lock_guard<std::mutex> const lock(_guard);
+          LogError << "[ModernADT] Refusing to pass an unverified Shadowlands ADT to the legacy loader: '"
+                   << object_name << "'." << std::endl;
 
-        if (object->is_required_when_saving())
-          _important_object_failed_loading = true;
+          if (object->is_required_when_saving())
+            _important_object_failed_loading = true;
 
-        _currently_loading.remove(object);
-        object->error_on_loading();
-        _state_changed.notify_all();
+          _currently_loading.remove(object);
+          object->error_on_loading();
+          _state_changed.notify_all();
+          continue;
+        }
+
+        if (auto* tile = dynamic_cast<MapTile*>(object))
+        {
+          tile->finishLoadingShadowlandsTerrainOnly();
+
+          if (additional_log)
+          {
+            std::lock_guard<std::mutex> const lock(_guard);
+            LogDebug << "[ModernADT] Loaded terrain-only Shadowlands tile '"
+                     << object_name << "'." << std::endl;
+          }
+
+          {
+            std::lock_guard<std::mutex> const lock(_guard);
+            _currently_loading.remove(object);
+            _state_changed.notify_all();
+          }
+          continue;
+        }
+
+        {
+          std::lock_guard<std::mutex> const lock(_guard);
+          LogError << "[ModernADT] Verified Shadowlands root ADT was not a MapTile object: '"
+                   << object_name << "'." << std::endl;
+          _currently_loading.remove(object);
+          object->error_on_loading();
+          _state_changed.notify_all();
+        }
         continue;
       }
 
@@ -405,8 +437,6 @@ void AsyncLoader::ensure_deletable (AsyncObject* object)
     {
       auto& to_load = _to_load[(size_t)object->loading_priority()];
       auto const& it = std::find (to_load.begin(), to_load.end(), object);
-
-      // don't load it if it's just to delete it afterward
       if (it != to_load.end())
       {
         to_load.erase(it);
@@ -423,10 +453,6 @@ void AsyncLoader::ensure_deletable (AsyncObject* object)
 AsyncLoader::AsyncLoader(int numThreads)
   : _stop (false)
 {
-  // use half of the available threads
-  // unsigned int maxThreads = std::thread::hardware_concurrency() / 2;
-  // numThreads = maxThreads > numThreads ? maxThreads : numThreads;
-
   for (int i = 0; i < numThreads; ++i)
   {
     _threads.emplace_back (&AsyncLoader::process, this);
