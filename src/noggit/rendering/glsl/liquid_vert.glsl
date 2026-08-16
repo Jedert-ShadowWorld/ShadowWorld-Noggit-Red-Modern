@@ -66,9 +66,15 @@ float makeNaN(float nonneg)
   return sqrt(-nonneg-1.0);
 }
 
-int get_texture_frame(int n_frames)
+int get_texture_frame(int n_frames, uint liquid_type)
 {
-  return int(ceil(animtime / 60)) % n_frames;
+  // Keep the original timing for legacy liquid profiles. The synthetic
+  // Shadowlands scene-lit fallback (types 4/5) only has four subtle ripple
+  // frames, so stepping them every 60 animation ticks looks unnaturally fast.
+  // Run those profiles at one quarter of the legacy rate instead.
+  int safe_frames = max(n_frames, 1);
+  float frame_interval = (liquid_type == 4u || liquid_type == 5u) ? 240.0 : 60.0;
+  return int(floor(animtime / frame_interval)) % safe_frames;
 }
 
 void main()
@@ -101,7 +107,7 @@ void main()
   dist_from_camera_ = distance(camera, final_pos.xyz);
   tex_array = params.texture_array;
   type = params.type;
-  tex_frame = get_texture_frame(int(params.n_tex_frames));
+  tex_frame = get_texture_frame(int(params.n_tex_frames), params.type);
   anim_uv = vec2(params.anim_u, params.anim_v);
 
   if(use_transform == 1)
