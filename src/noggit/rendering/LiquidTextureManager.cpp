@@ -124,12 +124,10 @@ void LiquidTextureManager::upload()
   }
 
   // Modern clients do not expose the legacy LiquidType.dbc profiles Noggit's
-  // water shader expects.  Keep MH2O geometry authoritative and bootstrap the
-  // shader with small, low-energy ripple textures.  The liquid shader already
-  // supplies RiverColor*/OceanColor* from the lighting block, so feeding it a
-  // bright blue texture double-tints the result and creates the flat cyan look.
-  // These profiles deliberately contribute only a subtle animated ripple and
-  // let the existing river/ocean lighting colors provide the actual water tint.
+  // water shader expects. Keep MH2O geometry authoritative and bootstrap the
+  // shader with small, low-energy ripple textures. The special compatibility
+  // types 4/5 tell liquid_frag.glsl to derive a visible water tint from the
+  // current scene lighting instead of trusting missing/black River/Ocean colors.
   if (_texture_frames_map.empty())
   {
     constexpr unsigned fallback_frames = 4;
@@ -151,7 +149,6 @@ void LiquidTextureManager::upload()
               (((frame * fallback_height + y) * fallback_width + x) * 4u);
 
             // Moving diagonal ripple with a very small additive contribution.
-            // liquid_frag.glsl adds this RGB value to River/Ocean lighting.
             const unsigned wave = (x * 3u + y * 5u + frame * 4u) % 13u;
             pixels[pixel_index + 0] = static_cast<unsigned char>(3u + wave / 3u);
             pixels[pixel_index + 1] = static_cast<unsigned char>(5u + wave / 2u);
@@ -177,19 +174,17 @@ void LiquidTextureManager::upload()
         std::make_tuple(array, anim, liquid_type, fallback_frames);
     };
 
-    // Observed in the Shadowlands MH2O samples:
-    //   id 5 - river/lake style layers
-    //   id 2 - ocean/depth-only layers
-    // id 1 also occurs in modern MH2O and behaves as ordinary water in the
-    // compatibility path, so give it the river profile instead of an arbitrary
-    // robin_map "first profile" fallback.
-    install_modern_profile(5u, 0, glm::vec2(1.0f, 0.0f));
-    install_modern_profile(1u, 0, glm::vec2(0.9f, 6.0f));
-    install_modern_profile(2u, 1, glm::vec2(0.7f, 12.0f));
+    // Compatibility-only shader types:
+    //   4 = modern river/lake
+    //   5 = modern ocean
+    // They are intentionally outside the legacy 0..3 LiquidType meanings.
+    install_modern_profile(5u, 4, glm::vec2(1.0f, 0.0f));
+    install_modern_profile(1u, 4, glm::vec2(0.9f, 6.0f));
+    install_modern_profile(2u, 5, glm::vec2(0.7f, 12.0f));
 
     LogDebug << "[ModernADT][WaterRender] Legacy LiquidType profiles are unavailable; "
-             << "installed separate modern MH2O fallback profiles: river/lake ids={1,5} type=0, "
-             << "ocean id=2 type=1, each with " << fallback_frames
+             << "installed scene-lit modern MH2O fallback profiles: river/lake ids={1,5} type=4, "
+             << "ocean id=2 type=5, each with " << fallback_frames
              << " low-energy ripple frame(s)." << std::endl;
   }
 
