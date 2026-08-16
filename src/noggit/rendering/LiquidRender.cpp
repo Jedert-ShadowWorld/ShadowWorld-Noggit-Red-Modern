@@ -86,6 +86,23 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
 {
   tsl::robin_map<unsigned, std::tuple<GLuint, glm::vec2, int, unsigned>> const& tex_frames = tex_manager->getTextureFrames();
 
+  // Modern clients can expose MH2O before Noggit has a matching legacy
+  // LiquidType.dbc bridge. In that case the texture-frame map can be empty.
+  // Do not throw from tex_frames.at(); keep the terrain/editor alive and log
+  // the missing renderer dependency so a procedural fallback can be attached.
+  if (tex_frames.empty())
+  {
+    static bool warned_empty_profiles = false;
+    if (!warned_empty_profiles)
+    {
+      LogError << "[ModernADT][WaterRender] No liquid texture profiles are available. "
+               << "Skipping liquid GPU upload instead of throwing; MH2O geometry remains loaded."
+               << std::endl;
+      warned_empty_profiles = true;
+    }
+    return;
+  }
+
   // create opengl resources if needed
   if (_need_buffer_update)
   {
@@ -128,8 +145,24 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
 
           auto& layer_params = _render_layers[layer_counter];
 
-          // fill per-chunk data
-          std::tuple<GLuint, glm::vec2, int, unsigned> const& tex_profile = tex_frames.at(layer.liquidID());
+          // fill per-chunk data. Modern MH2O liquid IDs may not exist in the
+          // legacy texture-profile map yet; fall back to the first available
+          // profile rather than throwing std::out_of_range.
+          auto tex_it = tex_frames.find(static_cast<unsigned>(layer.liquidID()));
+          if (tex_it == tex_frames.end())
+          {
+            static bool warned_missing_profile = false;
+            if (!warned_missing_profile)
+            {
+              LogError << "[ModernADT][WaterRender] Missing liquid texture profile for id "
+                       << layer.liquidID()
+                       << "; using the first available legacy profile as a temporary renderer fallback."
+                       << std::endl;
+              warned_missing_profile = true;
+            }
+            tex_it = tex_frames.begin();
+          }
+          std::tuple<GLuint, glm::vec2, int, unsigned> const& tex_profile = tex_it->second;
           OpenGL::LiquidChunkInstanceDataUniformBlock& params_data = layer_params.chunk_data[n_chunks];
 
           params_data.xbase = layer.getChunk()->xbase;
@@ -165,8 +198,6 @@ void LiquidRender::updateLayerData(LiquidTextureManager* tex_manager)
 
           // fill vertex data
           auto& vertices = layer.getVertices();
-          // auto& tex_coords = layer.getTexCoords();
-          // auto& depth = layer.getDepth();
 
           for (int z_v = 0; z_v < 9; ++z_v)
           {
