@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <list>
 #include <sstream>
 
@@ -142,7 +143,7 @@ namespace
     auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
     try
     {
-      BlizzardArchive::Listfile::FileKey key(path, client_data->listfile());
+      BlizzardArchive::Listfile::FileKey key(path);
       BlizzardArchive::ClientFile file(key, client_data);
       result.opened = true;
 
@@ -221,7 +222,7 @@ namespace
   bool run_shadowlands_split_adt_diagnostics(std::string const& root_path)
   {
     auto* project = Noggit::Project::CurrentProject::get();
-    if (!project || project->projectVersion != Noggit::Project::ProjectVersion::SL)
+    if (project->projectVersion != Noggit::Project::ProjectVersion::SL)
       return false;
 
     if (!is_root_adt_path(root_path))
