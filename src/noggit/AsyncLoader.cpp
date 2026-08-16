@@ -60,10 +60,12 @@ namespace
 
   std::string fourcc_name(std::uint32_t value)
   {
+    // WoW stores chunk FourCC bytes reversed on disk (e.g. MCNK appears as KNCM).
+    // Present them in canonical documentation order in diagnostics.
     std::string result(4, '.');
     for (std::size_t i = 0; i < 4; ++i)
     {
-      auto const c = static_cast<unsigned char>((value >> (i * 8)) & 0xFFu);
+      auto const c = static_cast<unsigned char>((value >> ((3 - i) * 8)) & 0xFFu);
       result[i] = c >= 32 && c <= 126 ? static_cast<char>(c) : '.';
     }
     return result;
@@ -174,7 +176,7 @@ namespace
           break;
         }
 
-        if (magic == 0x4B4E434Du) // MCNK in little-endian byte order
+        if (magic == 0x4D434E4Bu) // on-disk bytes KNCM == canonical MCNK
         {
           scan_mcnk_payload(data + payload_pos,
                             declared_size,
