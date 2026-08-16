@@ -8,14 +8,137 @@
 
 #include <ClientFile.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
 namespace
 {
+  constexpr std::uint32_t reversed_fourcc(char a, char b, char c, char d)
+  {
+    return (static_cast<std::uint32_t>(d) << 24)
+         | (static_cast<std::uint32_t>(c) << 16)
+         | (static_cast<std::uint32_t>(b) << 8)
+         | static_cast<std::uint32_t>(a);
+  }
+
+  struct ModernHeightDiagnostic
+  {
+    bool found_mcvt = false;
+    float raw_header_zpos = 0.0f;
+    float raw_header_xpos = 0.0f;
+    float raw_header_ypos = 0.0f;
+    float mcvt_min = 0.0f;
+    float mcvt_max = 0.0f;
+    std::vector<float> first_heights;
+  };
+
+  ModernHeightDiagnostic inspect_modern_height_data(
+    std::uint8_t const* file_data,
+    std::size_t file_size,
+    std::size_t mcnk_offset)
+  {
+    ModernHeightDiagnostic result;
+
+    if (mcnk_offset + 8 + sizeof(MapChunkHeader) > file_size)
+      return result;
+
+    MapChunkHeader raw_header{};
+    std::memcpy(&raw_header, file_data + mcnk_offset + 8, sizeof(raw_header));
+    result.raw_header_zpos = raw_header.zpos;
+    result.raw_header_xpos = raw_header.xpos;
+    result.raw_header_ypos = raw_header.ypos;
+
+    std::uint32_t declared_size = 0;
+    std::memcpy(&declared_size, file_data + mcnk_offset + 4, sizeof(declared_size));
+
+    auto const payload_begin = mcnk_offset + 8;
+    auto const payload_end = payload_begin + declared_size;
+    if (payload_end > file_size || declared_size < 128)
+      return result;
+
+    // Shadowlands ROOT MCNK keeps a 128-byte header followed by normal
+    // fourcc+size terrain subchunks. Read MCVT directly instead of trusting
+    // the legacy header offsets so we can compare raw heights to MapChunk's
+    // decoded vertex Y values.
+    std::size_t sub = payload_begin + 128;
+    while (sub + 8 <= payload_end)
+    {
+      std::uint32_t magic = 0;
+      std::uint32_t size = 0;
+      std::memcpy(&magic, file_data + sub, sizeof(magic));
+      std::memcpy(&size, file_data + sub + 4, sizeof(size));
+
+      auto const data_begin = sub + 8;
+      if (size > payload_end - data_begin)
+        break;
+
+      if (magic == reversed_fourcc('M', 'C', 'V', 'T') && size >= 145 * sizeof(float))
+      {
+        result.found_mcvt = true;
+        result.mcvt_min = std::numeric_limits<float>::max();
+        result.mcvt_max = std::numeric_limits<float>::lowest();
+        result.first_heights.reserve(10);
+
+        for (std::size_t i = 0; i < 145; ++i)
+        {
+          float height = 0.0f;
+          std::memcpy(&height, file_data + data_begin + i * sizeof(float), sizeof(height));
+          result.mcvt_min = std::min(result.mcvt_min, height);
+          result.mcvt_max = std::max(result.mcvt_max, height);
+          if (i < 10)
+            result.first_heights.push_back(height);
+        }
+        break;
+      }
+
+      sub = data_begin + size;
+    }
+
+    return result;
+  }
+
+  void log_modern_height_diagnostic(
+    MapTile const* tile,
+    MapChunk const* chunk,
+    std::size_t chunk_index,
+    ModernHeightDiagnostic const& raw)
+  {
+    float final_min_y = std::numeric_limits<float>::max();
+    float final_max_y = std::numeric_limits<float>::lowest();
+    for (auto const& vertex : chunk->mVertices)
+    {
+      final_min_y = std::min(final_min_y, vertex.y);
+      final_max_y = std::max(final_max_y, vertex.y);
+    }
+
+    std::ostringstream heights;
+    heights << std::fixed << std::setprecision(3);
+    for (std::size_t i = 0; i < raw.first_heights.size(); ++i)
+    {
+      if (i)
+        heights << ',';
+      heights << raw.first_heights[i];
+    }
+
+    LogDebug << "[ModernADT][HeightDiag] tile=" << tile->index.x << ',' << tile->index.z
+             << " chunk=" << chunk_index
+             << " grid(parsed)=" << chunk->px << ',' << chunk->py
+             << " rawHeaderPos(z,x,y)=" << raw.raw_header_zpos << ','
+             << raw.raw_header_xpos << ',' << raw.raw_header_ypos
+             << " MapChunkBase(x,y,z)=" << chunk->xbase << ',' << chunk->ybase << ',' << chunk->zbase
+             << " directMCVT=" << (raw.found_mcvt ? "yes" : "no")
+             << " MCVT[min,max]=" << raw.mcvt_min << ',' << raw.mcvt_max
+             << " finalY[min,max]=" << final_min_y << ',' << final_max_y
+             << " first10={" << heights.str() << "}"
+             << std::endl;
+  }
+
   void rebase_modern_chunk_to_tile_grid(MapChunk* chunk, MapTile const* tile)
   {
     // Shadowlands ROOT MCNK still provides usable MCVT/MCNR terrain data, but
@@ -122,6 +245,14 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
   // legacy WotLK world-position conversion for modern MCNK headers.
   for (std::size_t next_chunk = 0; next_chunk < mcnk_offsets.size(); ++next_chunk)
   {
+    // Capture the raw modern header and MCVT before MapChunk touches the file.
+    // Limit verbose diagnostics to the tile being actively tested and its first
+    // four chunks so the async loader does not flood the log for nearby tiles.
+    ModernHeightDiagnostic raw_diag;
+    bool const emit_height_diag = (index.x == 34 && index.z == 49 && next_chunk < 4);
+    if (emit_height_diag)
+      raw_diag = inspect_modern_height_data(data, file_size, mcnk_offsets[next_chunk]);
+
     root_file.seek(mcnk_offsets[next_chunk]);
 
     unsigned const x = static_cast<unsigned>(next_chunk / 16);
@@ -139,6 +270,10 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
 
     auto* chunk = mChunks[x][z].get();
     rebase_modern_chunk_to_tile_grid(chunk, this);
+
+    if (emit_height_diag)
+      log_modern_height_diagnostic(this, chunk, next_chunk, raw_diag);
+
     _renderer.initChunkData(chunk);
   }
 
