@@ -7,10 +7,9 @@
 
 #include <ClientFile.hpp>
 
-#include <algorithm>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
-#include <iomanip>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -41,34 +40,12 @@ namespace
     return value;
   }
 
-  float read_f32(char const* data, std::size_t offset)
-  {
-    float value = 0.0f;
-    std::memcpy(&value, data + offset, sizeof(value));
-    return value;
-  }
-
-  std::string hex_dump(char const* data, std::size_t size, std::size_t max_bytes)
-  {
-    std::ostringstream out;
-    auto const count = std::min(size, max_bytes);
-    out << std::hex << std::setfill('0');
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (i && (i % 16) == 0)
-        out << " | ";
-      out << std::setw(2)
-          << static_cast<unsigned>(static_cast<unsigned char>(data[i]));
-      if ((i % 16) != 15 && i + 1 < count)
-        out << ' ';
-    }
-    return out.str();
-  }
-
-  // Validate the modern ROOT MH2O, keep a small amount of diagnostics, then
-  // feed it through TileWater. liquid_layer now adapts the modern second uint16
-  // metadata/reference field into Noggit's legacy vertex-format enum.
-  void inspect_and_load_modern_mh2o_if_needed(AsyncObject const* object)
+  // Water is currently attached after MapTile's terrain loader sets finished=true.
+  // finishedLoading() can be queried from several threads, so the old one-shot set
+  // allowed a second caller to observe/use the tile while the first caller was still
+  // mutating TileWater. Keep a per-path loading/completed state and make every caller
+  // wait until the MH2O attachment has fully completed before reporting the tile ready.
+  void load_modern_mh2o_before_exposing_tile(AsyncObject const* object)
   {
     auto* tile = dynamic_cast<MapTile*>(const_cast<AsyncObject*>(object));
     if (!tile || !object->file_key().hasFilepath())
@@ -78,13 +55,32 @@ namespace
     if (path.size() < 4 || path.compare(path.size() - 4, 4, ".adt") != 0)
       return;
 
-    static std::mutex processed_guard;
-    static std::unordered_set<std::string> processed_tiles;
+    static std::mutex state_mutex;
+    static std::condition_variable state_changed;
+    static std::unordered_set<std::string> loading;
+    static std::unordered_set<std::string> completed;
+
     {
-      std::lock_guard<std::mutex> lock(processed_guard);
-      if (!processed_tiles.emplace(path).second)
+      std::unique_lock<std::mutex> lock(state_mutex);
+      if (completed.count(path))
         return;
+
+      if (loading.count(path))
+      {
+        state_changed.wait(lock, [&] { return completed.count(path) != 0; });
+        return;
+      }
+
+      loading.insert(path);
     }
+
+    auto finish_state = [&]
+    {
+      std::lock_guard<std::mutex> lock(state_mutex);
+      loading.erase(path);
+      completed.insert(path);
+      state_changed.notify_all();
+    };
 
     try
     {
@@ -110,7 +106,10 @@ namespace
 
         auto const payload = pos + 8;
         if (size > file_size - payload)
+        {
+          finish_state();
           return;
+        }
 
         if (magic == on_disk_fourcc('M', 'C', 'I', 'N'))
           has_legacy_mcin = true;
@@ -126,27 +125,29 @@ namespace
       }
 
       if (has_legacy_mcin || mcnk_count != 256 || !mh2o_payload || !mh2o_size)
+      {
+        finish_state();
         return;
+      }
 
       constexpr std::size_t header_size = 12;
       constexpr std::size_t header_table_size = 256 * header_size;
-      constexpr std::size_t classic_info_size = 24;
+      constexpr std::size_t info_size = 24;
 
       if (mh2o_size < header_table_size)
       {
         LogError << "[ModernADT][WaterAdapter] MH2O too small on tile "
                  << tile->index.x << ',' << tile->index.z << ": " << mh2o_size
                  << " bytes." << std::endl;
+        finish_state();
         return;
       }
 
       auto const* mh2o = data + mh2o_payload;
       std::size_t wet_chunks = 0;
-      std::size_t layer_records = 0;
       std::size_t plausible_headers = 0;
-      std::size_t emitted_payloads = 0;
-      std::set<std::uint16_t> field02_values;
-      std::set<std::uint16_t> payload_fields_emitted;
+      std::size_t layer_records = 0;
+      std::set<std::uint16_t> metadata_values;
 
       for (std::size_t i = 0; i < 256; ++i)
       {
@@ -163,75 +164,35 @@ namespace
         bool const attributes_in_range = !ofs_attributes || ofs_attributes < mh2o_size;
         bool const count_sane = layer_count > 0 && layer_count <= 64;
         bool const information_table_fits = information_in_range && count_sane &&
-          (static_cast<std::size_t>(ofs_information) +
-             static_cast<std::size_t>(layer_count) * classic_info_size <= mh2o_size);
+          static_cast<std::size_t>(ofs_information) +
+            static_cast<std::size_t>(layer_count) * info_size <= mh2o_size;
 
         if (!(information_in_range && attributes_in_range && count_sane && information_table_fits))
-        {
-          LogError << "[ModernADT][WaterAdapter] implausible header tile="
-                   << tile->index.x << ',' << tile->index.z
-                   << " chunk=" << i
-                   << " ofsInfo=" << ofs_information
-                   << " layers=" << layer_count
-                   << " ofsAttrs=" << ofs_attributes << std::endl;
           continue;
-        }
 
         ++plausible_headers;
         layer_records += layer_count;
-
         for (std::size_t layer = 0; layer < layer_count; ++layer)
         {
-          auto const info_offset = static_cast<std::size_t>(ofs_information) + layer * classic_info_size;
-          auto const* info = mh2o + info_offset;
-
-          auto const liquid_id = read_u16(info, 0);
-          auto const field_02 = read_u16(info, 2);
-          auto const min_height = read_f32(info, 4);
-          auto const max_height = read_f32(info, 8);
-          auto const width = static_cast<unsigned>(static_cast<unsigned char>(info[14]));
-          auto const height = static_cast<unsigned>(static_cast<unsigned char>(info[15]));
-          auto const ofs_vertex = read_u32(info, 20);
-
-          field02_values.insert(field_02);
-
-          if (ofs_vertex && ofs_vertex < mh2o_size &&
-              payload_fields_emitted.insert(field_02).second && emitted_payloads < 8)
-          {
-            auto const vertex_count = static_cast<std::size_t>(width + 1) *
-                                      static_cast<std::size_t>(height + 1);
-            auto const available = static_cast<std::size_t>(mh2o_size - ofs_vertex);
-            auto const dump_bytes = std::min<std::size_t>(available, 64);
-
-            LogDebug << "[ModernADT][WaterAdapter] sample tile="
-                     << tile->index.x << ',' << tile->index.z
-                     << " liquidId=" << liquid_id
-                     << " metadata=0x" << std::hex << field_02 << std::dec
-                     << " min=" << min_height << " max=" << max_height
-                     << " vertexCount=" << vertex_count
-                     << " first" << dump_bytes << "={"
-                     << hex_dump(mh2o + ofs_vertex, available, dump_bytes) << '}'
-                     << std::endl;
-            ++emitted_payloads;
-          }
+          auto const info_offset = static_cast<std::size_t>(ofs_information) + layer * info_size;
+          metadata_values.insert(read_u16(mh2o + info_offset, 2));
         }
       }
 
-      if (!wet_chunks)
-        return;
-
-      if (plausible_headers != wet_chunks)
+      if (!wet_chunks || plausible_headers != wet_chunks)
       {
-        LogError << "[ModernADT][WaterAdapter] Refusing MH2O on tile "
-                 << tile->index.x << ',' << tile->index.z
-                 << ": only " << plausible_headers << '/' << wet_chunks
-                 << " wet headers validated." << std::endl;
+        if (wet_chunks)
+          LogError << "[ModernADT][WaterAdapter] Refusing MH2O on tile "
+                   << tile->index.x << ',' << tile->index.z << ": only "
+                   << plausible_headers << '/' << wet_chunks << " headers validated."
+                   << std::endl;
+        finish_state();
         return;
       }
 
       std::ostringstream fields;
       bool first = true;
-      for (auto const value : field02_values)
+      for (auto const value : metadata_values)
       {
         if (!first)
           fields << ',';
@@ -239,31 +200,31 @@ namespace
         first = false;
       }
 
-      LogDebug << "[ModernADT][WaterAdapter] Validated tile="
+      LogDebug << "[ModernADT][WaterAdapter] Attaching synchronized water tile="
                << tile->index.x << ',' << tile->index.z
                << " wetChunks=" << wet_chunks
                << " layerRecords=" << layer_records
-               << " metadataValues={" << fields.str() << "}"
-               << " MH2O=" << mh2o_size << " bytes; loading adapted water."
-               << std::endl;
+               << " metadataValues={" << fields.str() << "}." << std::endl;
 
       file.seek(mh2o_payload);
       tile->Water.readFromFile(file, mh2o_payload);
 
-      LogDebug << "[ModernADT][WaterAdapter] Loaded adapted MH2O water for tile "
+      LogDebug << "[ModernADT][WaterAdapter] Synchronized MH2O attachment complete for tile "
                << tile->index.x << ',' << tile->index.z << '.' << std::endl;
     }
     catch (std::exception const& e)
     {
-      LogError << "[ModernADT][WaterAdapter] Failed to load MH2O for '"
+      LogError << "[ModernADT][WaterAdapter] Failed to attach MH2O for '"
                << path << "': " << e.what() << ". Terrain remains usable." << std::endl;
     }
     catch (...)
     {
-      LogError << "[ModernADT][WaterAdapter] Failed to load MH2O for '"
+      LogError << "[ModernADT][WaterAdapter] Failed to attach MH2O for '"
                << path << "' with an unknown exception. Terrain remains usable."
                << std::endl;
     }
+
+    finish_state();
   }
 }
 
@@ -280,7 +241,7 @@ bool AsyncObject::finishedLoading() const
 {
   bool const done = finished.load();
   if (done)
-    inspect_and_load_modern_mh2o_if_needed(this);
+    load_modern_mh2o_before_exposing_tile(this);
   return done;
 }
 
