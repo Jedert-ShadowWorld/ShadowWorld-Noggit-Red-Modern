@@ -1,10 +1,13 @@
 // ShadowWorld visual theme for Noggit.
-// Installed at Qt application startup. Existing widgets, signals and actions
-// remain untouched, so the existing buttons keep their original behavior.
+// The theme is installed at Qt application startup and does not replace
+// existing signals/actions, so existing buttons keep their original behavior.
 #include <QApplication>
 #include <QCoreApplication>
 #include <QColor>
+#include <QDialog>
+#include <QEvent>
 #include <QPalette>
+#include <QPushButton>
 #include <QStyleFactory>
 
 namespace
@@ -137,8 +140,59 @@ QToolTip {
     border: 1px solid #8c57b5;
     padding: 5px;
 }
+QDialog#shadowworld_welcome {
+    background: #08060e;
+    border: 2px solid #5f3480;
+}
+QDialog#shadowworld_welcome QLabel {
+    color: #e7d5f8;
+}
+QDialog#shadowworld_welcome QPushButton {
+    min-height: 42px;
+    font-size: 11pt;
+    font-weight: 600;
+    border-radius: 7px;
+}
 )QSS";
 }
+
+class ShadowWorldUiFilter final : public QObject
+{
+public:
+    using QObject::QObject;
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() == QEvent::Show)
+        {
+            auto* dialog = qobject_cast<QDialog*>(watched);
+            if (dialog && dialog->objectName() != "shadowworld_welcome")
+            {
+                const auto buttons = dialog->findChildren<QPushButton*>();
+                int projectActions = 0;
+                for (auto* button : buttons)
+                {
+                    const auto text = button->text().toLower();
+                    if (text.contains("create") || text.contains("new project") ||
+                        text.contains("open") || text.contains("convert"))
+                    {
+                        ++projectActions;
+                    }
+                }
+
+                if (projectActions >= 2)
+                {
+                    dialog->setObjectName("shadowworld_welcome");
+                    dialog->setWindowTitle("Noggit — ShadowWorld");
+                    dialog->setMinimumSize(1050, 650);
+                }
+            }
+        }
+
+        return QObject::eventFilter(watched, event);
+    }
+};
 
 void installShadowWorldTheme()
 {
@@ -162,6 +216,9 @@ void installShadowWorldTheme()
     palette.setColor(QPalette::HighlightedText, QColor("#ffffff"));
     app->setPalette(palette);
     app->setStyleSheet(shadowWorldStyleSheet());
+
+    auto* filter = new ShadowWorldUiFilter(app);
+    app->installEventFilter(filter);
 }
 }
 
