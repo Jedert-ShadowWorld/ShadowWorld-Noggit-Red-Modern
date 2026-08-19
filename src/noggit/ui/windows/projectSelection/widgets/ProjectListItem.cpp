@@ -10,10 +10,10 @@ namespace Noggit::Ui::Widget
 {
   ProjectListItem::ProjectListItem(const ProjectListItemData& data, QWidget* parent = nullptr) : QWidget(parent)
   {
-    auto layout = QGridLayout();
-    layout.setContentsMargins(4, 4, 4, 4);
-    layout.setHorizontalSpacing(6);
-    layout.setVerticalSpacing(0);
+    auto layout = new QGridLayout(this);
+    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setHorizontalSpacing(6);
+    layout->setVerticalSpacing(0);
 
     QIcon icon;
     if (data.project_version == Project::ProjectVersion::WOTLK)
@@ -106,16 +106,14 @@ namespace Noggit::Ui::Widget
         "QWidget { background: transparent; }"
         "QLabel { background: transparent; }");
 
-    layout.addWidget(_project_version_icon, 0, 0, 3, 1, Qt::AlignCenter);
-    layout.addWidget(_project_name_label, 0, 1, 1, 2);
-    layout.addWidget(_project_directory_label, 1, 1, 1, 2);
-    layout.addWidget(_project_version_label, 2, 1, 1, 1);
-    layout.addWidget(_project_last_edited_label, 2, 2, 1, 1);
+    layout->addWidget(_project_version_icon, 0, 0, 3, 1, Qt::AlignCenter);
+    layout->addWidget(_project_name_label, 0, 1, 1, 2);
+    layout->addWidget(_project_directory_label, 1, 1, 1, 2);
+    layout->addWidget(_project_version_label, 2, 1, 1, 1);
+    layout->addWidget(_project_last_edited_label, 2, 2, 1, 1);
 
     if (_project_favorite_icon)
-      layout.addWidget(_project_favorite_icon, 0, 3, 1, 1, Qt::AlignRight | Qt::AlignTop);
-
-    setLayout(layout);
+      layout->addWidget(_project_favorite_icon, 0, 3, 1, 1, Qt::AlignRight | Qt::AlignTop);
   }
 
   QSize ProjectListItem::minimumSizeHint() const
