@@ -6,6 +6,7 @@
 #include <QColor>
 #include <QDialog>
 #include <QEvent>
+#include <QIcon>
 #include <QPalette>
 #include <QPushButton>
 #include <QStyleFactory>
@@ -144,9 +145,7 @@ QDialog#shadowworld_welcome {
     background: #08060e;
     border: 2px solid #5f3480;
 }
-QDialog#shadowworld_welcome QLabel {
-    color: #e7d5f8;
-}
+QDialog#shadowworld_welcome QLabel { color: #e7d5f8; }
 QDialog#shadowworld_welcome QPushButton {
     min-height: 42px;
     font-size: 11pt;
@@ -185,6 +184,7 @@ protected:
                 {
                     dialog->setObjectName("shadowworld_welcome");
                     dialog->setWindowTitle("Noggit — ShadowWorld");
+                    dialog->setWindowIcon(QIcon(":/icon-shadow"));
                     dialog->setMinimumSize(1050, 650);
                 }
             }
