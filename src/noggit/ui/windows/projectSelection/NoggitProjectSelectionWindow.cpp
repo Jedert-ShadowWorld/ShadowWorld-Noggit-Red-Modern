@@ -56,7 +56,6 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
 
     QString project_final_path;
 
-    // for (int i = 0; i < size; ++i)
     if (size > favorite_proj_idx)
     {
       settings.setArrayIndex(favorite_proj_idx);
@@ -65,17 +64,10 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
       if (std::filesystem::exists(project_path) && std::filesystem::is_directory(project_path))
       {
         auto project_reader = Noggit::Project::ApplicationProjectReader();
-        
         auto project = project_reader.readProject(project_path);
-        
-        if (project.has_value())
-        {
-          // project->projectVersion;
-          // project_directory = QString::fromStdString(project_path.generic_string());
-          // auto project_name = QString::fromStdString(project->ProjectName);
 
+        if (project.has_value())
           project_final_path = QString(project_path.string().c_str());
-        }
       }
     }
     settings.endArray();
@@ -104,7 +96,6 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   }
   ///////////////////////////
 
-
   _ui->label->setObjectName("title");
   _ui->label->setStyleSheet("QLabel#title { font-size: 18px; padding: 0px; }");
 
@@ -112,17 +103,11 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   _ui->label_2->setStyleSheet("QLabel#title { font-size: 18px; padding: 0px; }");
 
   _settings = new Noggit::Ui::settings(this);
-  //_changelog = new Noggit::Ui::CChangelog(this);
-
 
   _ui->settings_button->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::Icons::cog));
   _ui->settings_button->setIconSize(QSize(20,20));
 
   _ui->changelog_button->hide();
-  //_ui->changelog_button->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::Icons::file));
-  //_ui->changelog_button->setIconSize(QSize(20, 20));
-  //_ui->changelog_button->setText(tr(" Changelog"));
-  //_ui->changelog_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
   Component::RecentProjectsComponent::buildRecentProjectsList(this);
 
@@ -132,11 +117,9 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
       }
   );
 
-  /*QObject::connect(_ui->changelog_button, &QToolButton::clicked, [&]()
-      {
-          _changelog->SelectFirst();
-          _changelog->show();
-      });*/
+  // ShadowWorld launcher close button. This intentionally closes only the launcher;
+  // the existing project actions below retain their original behavior.
+  QObject::connect(_ui->button_exit_project, &QPushButton::clicked, this, &QWidget::close);
 
   QObject::connect(_ui->button_create_new_project, &QPushButton::clicked, [=, this]
                    {
@@ -197,7 +180,6 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
                        return;
                      }
 
-
                      std::filesystem::path filepath(proj_file.toStdString());
 
                      auto project = project_reader.readProjectFile(filepath);
@@ -219,7 +201,7 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
                      if (!project_to_launch)
                      {
                         QMessageBox::critical(this, "Error", "Failed to load selected project. Check the client path and project file.");
-                       return;
+                        return;
                      }
 
                      Noggit::Application::NoggitApplication::instance()->setClientData(project_to_launch->ClientData);
@@ -242,7 +224,7 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
                      if (!selected_project)
                      {
                        LogError << "Selected Project is null, loading failed." << std::endl;
-                        QMessageBox::critical(this, "Error", "Failed to load selected recent project. Check the client path and project file.");
+                       QMessageBox::critical(this, "Error", "Failed to load selected recent project. Check the client path and project file.");
                        return;
                      }
 
@@ -251,39 +233,12 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
                      _project_selection_page = std::make_unique<Noggit::Ui::Windows::NoggitWindow>(
                          _noggit_application->getConfiguration(),
                          selected_project);
-                         _project_selection_page->showMaximized();
+                     _project_selection_page->showMaximized();
 
                      close();
                    }
   );
 
-  // !disable-update && !force-changelog
-  /*if (!_noggit_application->GetCommand(0) && !_noggit_application->GetCommand(1))
-  {
-      _updater = new Noggit::Ui::CUpdater(this);
-
-      QObject::connect(_updater, &CUpdater::OpenUpdater, [=]()
-          {
-              _updater->setModal(true);
-              _updater->show();
-          });
-  }*/
-
-  // auto _set = new QSettings(this);
-  //auto first_changelog = _set->value("first_changelog", false);
-
-  // force-changelog
-  /*if (_noggit_application->GetCommand(1) || !first_changelog.toBool())
-  {
-      _changelog->setModal(true);
-      _changelog->show();
-
-      if (!first_changelog.toBool())
-      {
-          _set->setValue("first_changelog", true);
-          _set->sync();
-      }
-  }*/
   show();
 }
 
