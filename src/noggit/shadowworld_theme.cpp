@@ -3,6 +3,7 @@
 // remain untouched, so the existing buttons keep their original behavior.
 #include <QApplication>
 #include <QCoreApplication>
+#include <QColor>
 #include <QPalette>
 #include <QStyleFactory>
 
