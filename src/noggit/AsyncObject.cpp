@@ -57,9 +57,10 @@ namespace
   // Shadowlands split ADTs keep the placement records in _obj0. Unlike the
   // legacy root ADT, there is no MMDX/MMID/MWMO/MWID name table in the files we
   // are targeting: MDDF/MODF nameID is the model/WMO FileDataID directly.
-  // Keep that FileDataID authoritative all the way into CASC. The listfile path
-  // is only optional metadata for diagnostics and must not be used to re-resolve
-  // the asset, otherwise stale/aliased paths can point at the wrong modern file.
+  // Keep that FileDataID authoritative all the way into CASC, while retaining
+  // the listfile path on the FileKey because existing Noggit model/WMO code still
+  // uses filepath() for cache identity, sidecar filenames (for example .skin),
+  // diagnostics and editor details. CASC prefers the FileDataID when both exist.
   void load_modern_objects_before_exposing_tile(AsyncObject const* object)
   {
     auto* tile = dynamic_cast<MapTile*>(const_cast<AsyncObject*>(object));
@@ -171,9 +172,12 @@ namespace
 
         auto const path = client_data->listfile()->getPath(placement.nameID);
         if (path.empty())
+        {
           ++unnamed_m2;
+          continue;
+        }
 
-        BlizzardArchive::Listfile::FileKey key(placement.nameID);
+        BlizzardArchive::Listfile::FileKey key(path, placement.nameID);
         tile->add_model(world->add_model_instance(
           ModelInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
         ++loaded_m2;
@@ -189,12 +193,15 @@ namespace
 
         auto const path = client_data->listfile()->getPath(placement.nameID);
         if (path.empty())
+        {
           ++unnamed_wmo;
+          continue;
+        }
 
         if (placement.scale == 0)
           placement.scale = 1024;
 
-        BlizzardArchive::Listfile::FileKey key(placement.nameID);
+        BlizzardArchive::Listfile::FileKey key(path, placement.nameID);
         tile->add_model(world->add_wmo_instance(
           WMOInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
         ++loaded_wmo;
