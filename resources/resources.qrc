@@ -23,6 +23,12 @@
         <file alias="icon-battle">../media/project-icon-battle.png</file>
         <file alias="icon-shadow">../media/project-icon-shadow.png</file>
     </qresource>
+    <qresource prefix="/sw-ui">
+        <file alias="outer-frame">shadowworld/outer_frame.svg</file>
+        <file alias="panel-frame">shadowworld/panel_frame.svg</file>
+        <file alias="action-frame">shadowworld/action_frame.svg</file>
+        <file alias="title-ornament">shadowworld/title_ornament.svg</file>
+    </qresource>
     <qresource prefix="/shader">
       <file alias="m2_vs">../src/noggit/rendering/glsl/m2_vert.glsl</file>
       <file alias="m2_fs">../src/noggit/rendering/glsl/m2_frag.glsl</file>
@@ -58,7 +64,7 @@
       <file alias="square_fs">../src/noggit/rendering/glsl/square_frag.glsl</file>
       <file alias="cylinder_vs">../src/noggit/rendering/glsl/cylinder_vert.glsl</file>
       <file alias="cylinder_fs">../src/noggit/rendering/glsl/cylinder_frag.glsl</file>
-	  <file alias="line_vs">../src/noggit/rendering/glsl/line_vert.glsl</file>
-	  <file alias="line_fs">../src/noggit/rendering/glsl/line_frag.glsl</file>
+      <file alias="line_vs">../src/noggit/rendering/glsl/line_vert.glsl</file>
+      <file alias="line_fs">../src/noggit/rendering/glsl/line_frag.glsl</file>
     </qresource>
 </RCC>
