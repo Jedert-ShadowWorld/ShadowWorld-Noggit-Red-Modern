@@ -1,0 +1,15 @@
+COLUMNS
+int ID
+int<Map::ID> ContinentID
+int<LightParams::ID> LightParamsID
+float GameCoords
+float GameFalloffEnd
+float GameFalloffStart
+
+BUILD 9.2.7.45745
+$noninline,id$ID<32>
+GameCoords[3]
+GameFalloffStart
+GameFalloffEnd
+ContinentID<16>
+LightParamsID<u16>[8]
