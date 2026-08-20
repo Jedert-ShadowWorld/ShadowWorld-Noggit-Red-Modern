@@ -3,6 +3,7 @@
 #include <noggit/DBC.h>
 #include <noggit/Log.h>
 #include <noggit/Misc.h>
+#include <noggit/client_data/ShadowlandsMapDB2Bridge.hpp>
 #include <noggit/client_data/ShadowlandsSkyDB2Bridge.hpp>
 #include <noggit/project/CurrentProject.hpp>
 #include <blizzard-archive-library/include/ClientData.hpp>
@@ -36,19 +37,23 @@ void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData)
 
   if (shadowlands)
   {
-    Log << "Opening Shadowlands client databases (modern DB2 path)..." << std::endl;
+    Log << "Opening Shadowlands client databases from CASC DB2..." << std::endl;
 
-    // Sky/lighting must never fall back to the old Light*.dbc files on a modern
-    // client. Load Light.db2, LightParams.db2 and LightData.db2 directly from
-    // the active CASC and adapt those records to the renderer's current in-memory
-    // table interface.
-    if (!Noggit::ClientData::loadShadowlandsSkyDB2Bridge(clientData))
+    bool const map_db2_ok = Noggit::ClientData::loadShadowlandsMapDB2Bridge(clientData);
+    bool const sky_db2_ok = Noggit::ClientData::loadShadowlandsSkyDB2Bridge(clientData);
+
+    if (!map_db2_ok)
+      LogError << "[ModernDB2][Map] Shadowlands map DB2 bootstrap is incomplete." << std::endl;
+    if (!sky_db2_ok)
       LogError << "[ModernDB2][Sky] Shadowlands sky DB2 bridge did not load usable data." << std::endl;
+
+    // Critical rule for modern clients: never continue into the WotLK .dbc
+    // bootstrap. All map/environment client data must originate from the active
+    // Shadowlands CASC/DB2 set.
+    return;
   }
-  else
-  {
-    Log << "Opening client DBCs..." << std::endl;
-  }
+
+  Log << "Opening client DBCs..." << std::endl;
 
   try
   {
@@ -56,16 +61,11 @@ void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData)
     gAreaTriggerDB.open(clientData);
     gMapDB.open(clientData);
     gLoadingScreensDB.open(clientData);
-
-    if (!shadowlands)
-    {
-      gLightDB.open(clientData);
-      gLightParamsDB.open(clientData);
-      gLightSkyboxDB.open(clientData);
-      gLightIntBandDB.open(clientData);
-      gLightFloatBandDB.open(clientData);
-    }
-
+    gLightDB.open(clientData);
+    gLightParamsDB.open(clientData);
+    gLightSkyboxDB.open(clientData);
+    gLightIntBandDB.open(clientData);
+    gLightFloatBandDB.open(clientData);
     gGroundEffectDoodadDB.open(clientData);
     gGroundEffectTextureDB.open(clientData);
     gTerrainTypeDB.open(clientData);
@@ -248,17 +248,15 @@ std::string WMOAreaTableDB::getWMOAreaName(int WMOId, int namesetId)
     {
         if (i->getUInt(WMOAreaTableDB::WmoId) == WMOId && i->getUInt(WMOAreaTableDB::NameSetId) == namesetId && i->getInt(WMOAreaTableDB::WMOGroupID) == -1)
         {
-            // wmoareatableid = i->getUInt(WMOAreaTableDB::ID);
             std::string areaName = i->getLocalizedString(WMOAreaTableDB::Name);
 
             if (!areaName.empty())
                 return areaName;
             else
-            {   // get name from area instead
+            {
                 int areatableid = i->getUInt(WMOAreaTableDB::AreaTableRefId);
                 if (areatableid)
                 {
-                    // return AreaDB::getAreaFullName(areatableid); // full name with zone
                     std::string arena_name = "";
                     try
                     {
@@ -273,7 +271,6 @@ std::string WMOAreaTableDB::getWMOAreaName(int WMOId, int namesetId)
                 }
                 else
                 {
-                    // if no areaId is set in the WMOAreaTableDB record, client uses the local terrain area id.
                     return "-Local Terrain Area-";
                 }
 
@@ -296,13 +293,12 @@ std::vector<std::string> WMOAreaTableDB::getWMOAreaNames(int WMOId)
     {
         if (i->getUInt(WMOAreaTableDB::WmoId) == WMOId && i->getInt(WMOAreaTableDB::WMOGroupID) == -1)
         {
-            // wmoareatableid = i->getUInt(WMOAreaTableDB::ID);
             std::string areaName = i->getLocalizedString(WMOAreaTableDB::Name);
 
             if (!areaName.empty())
                 areanamesvect.push_back(areaName);
             else
-            {   // get name from area instead
+            {
                 int areatableid = i->getUInt(WMOAreaTableDB::AreaTableRefId);
                 if (areatableid)
                 {
@@ -318,10 +314,9 @@ std::vector<std::string> WMOAreaTableDB::getWMOAreaNames(int WMOId)
 
                 }
                 else
-                    areanamesvect.push_back("-Local Terrain Area-"); // nullptr? need to get it from terrain
+                    areanamesvect.push_back("-Local Terrain Area-");
             }
         }
-        // could optimise and break when iterator WmoId is higher than the Wmodid, but this wouldn't support unordered DBCs. Client does this.
     }
     return areanamesvect;
 }
