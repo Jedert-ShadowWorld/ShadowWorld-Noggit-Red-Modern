@@ -96,18 +96,14 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   }
   ///////////////////////////
 
-  _ui->label->setObjectName("title");
-  _ui->label->setStyleSheet("QLabel#title { font-size: 18px; padding: 0px; }");
-
-  _ui->label_2->setObjectName("title");
-  _ui->label_2->setStyleSheet("QLabel#title { font-size: 18px; padding: 0px; }");
+  // Keep the panel title object names and styling defined by the ShadowWorld .ui file.
+  // The old launcher code overwrote both labels with a generic 18px style at runtime,
+  // which made the redesigned UI look like the stock Qt screen.
 
   _settings = new Noggit::Ui::settings(this);
 
   _ui->settings_button->setIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::Icons::cog));
-  _ui->settings_button->setIconSize(QSize(20,20));
-
-  _ui->changelog_button->hide();
+  _ui->settings_button->setIconSize(QSize(24,24));
 
   Component::RecentProjectsComponent::buildRecentProjectsList(this);
 
