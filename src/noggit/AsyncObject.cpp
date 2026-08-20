@@ -2,10 +2,15 @@
 
 #include <noggit/AsyncObject.h>
 #include <noggit/Log.h>
+#include <noggit/MapHeaders.h>
 #include <noggit/MapTile.h>
+#include <noggit/ModelInstance.h>
+#include <noggit/WMOInstance.h>
+#include <noggit/World.h>
 #include <noggit/application/NoggitApplication.hpp>
 
 #include <ClientFile.hpp>
+#include <Listfile.hpp>
 
 #include <condition_variable>
 #include <cstdint>
@@ -15,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace
 {
@@ -38,6 +44,177 @@ namespace
     std::uint32_t value = 0;
     std::memcpy(&value, data + offset, sizeof(value));
     return value;
+  }
+
+  std::string split_adt_path(std::string const& root_path, std::string const& suffix)
+  {
+    auto const extension = root_path.rfind(".adt");
+    if (extension == std::string::npos)
+      return root_path + suffix;
+    return root_path.substr(0, extension) + suffix + ".adt";
+  }
+
+  // Shadowlands split ADTs keep the placement records in _obj0. Unlike the
+  // legacy root ADT, there is no MMDX/MMID/MWMO/MWID name table in the files we
+  // are targeting: MDDF/MODF nameID is the model/WMO FileDataID directly.
+  // Resolve that ID through the active CASC listfile, then feed the unchanged
+  // placement record to Noggit's existing ModelInstance/WMOInstance layer.
+  void load_modern_objects_before_exposing_tile(AsyncObject const* object)
+  {
+    auto* tile = dynamic_cast<MapTile*>(const_cast<AsyncObject*>(object));
+    if (!tile || !object->file_key().hasFilepath())
+      return;
+
+    auto const& root_path = object->file_key().filepath();
+    if (root_path.size() < 4 || root_path.compare(root_path.size() - 4, 4, ".adt") != 0)
+      return;
+
+    static std::mutex state_mutex;
+    static std::condition_variable state_changed;
+    static std::unordered_set<std::string> loading;
+    static std::unordered_set<std::string> completed;
+
+    {
+      std::unique_lock<std::mutex> lock(state_mutex);
+      if (completed.count(root_path))
+        return;
+      if (loading.count(root_path))
+      {
+        state_changed.wait(lock, [&] { return completed.count(root_path) != 0; });
+        return;
+      }
+      loading.insert(root_path);
+    }
+
+    auto finish_state = [&]
+    {
+      std::lock_guard<std::mutex> lock(state_mutex);
+      loading.erase(root_path);
+      completed.insert(root_path);
+      state_changed.notify_all();
+    };
+
+    try
+    {
+      auto* app = Noggit::Application::NoggitApplication::instance();
+      auto* client_data = app->clientData();
+      auto* world = tile->getWorld();
+      if (!client_data || !client_data->listfile() || !world)
+      {
+        finish_state();
+        return;
+      }
+
+      auto const obj0_path = split_adt_path(root_path, "_obj0");
+      BlizzardArchive::Listfile::FileKey obj0_key(obj0_path);
+      BlizzardArchive::ClientFile obj0_file(obj0_key, client_data);
+      if (obj0_file.isEof() || obj0_file.getSize() < 12)
+      {
+        finish_state();
+        return;
+      }
+
+      auto const* data = obj0_file.getBuffer();
+      auto const file_size = obj0_file.getSize();
+      std::vector<ENTRY_MDDF> m2_placements;
+      std::vector<ENTRY_MODF> wmo_placements;
+
+      std::size_t pos = 0;
+      while (pos + 8 <= file_size)
+      {
+        std::uint32_t magic = 0;
+        std::uint32_t size = 0;
+        std::memcpy(&magic, data + pos, sizeof(magic));
+        std::memcpy(&size, data + pos + 4, sizeof(size));
+        auto const payload = pos + 8;
+        if (size > file_size - payload)
+          throw std::runtime_error("Shadowlands OBJ0 contains a truncated top-level chunk.");
+
+        if (magic == on_disk_fourcc('M', 'D', 'D', 'F'))
+        {
+          if (size % sizeof(ENTRY_MDDF) != 0)
+            throw std::runtime_error("Shadowlands OBJ0 MDDF size is not aligned to ENTRY_MDDF.");
+          auto const count = size / sizeof(ENTRY_MDDF);
+          m2_placements.resize(count);
+          if (size)
+            std::memcpy(m2_placements.data(), data + payload, size);
+        }
+        else if (magic == on_disk_fourcc('M', 'O', 'D', 'F'))
+        {
+          if (size % sizeof(ENTRY_MODF) != 0)
+            throw std::runtime_error("Shadowlands OBJ0 MODF size is not aligned to ENTRY_MODF.");
+          auto const count = size / sizeof(ENTRY_MODF);
+          wmo_placements.resize(count);
+          if (size)
+            std::memcpy(wmo_placements.data(), data + payload, size);
+        }
+
+        pos = payload + size;
+      }
+
+      std::size_t loaded_m2 = 0;
+      std::size_t loaded_wmo = 0;
+      std::size_t unresolved_m2 = 0;
+      std::size_t unresolved_wmo = 0;
+      auto const context = world->getRenderContext();
+
+      for (auto const& placement : m2_placements)
+      {
+        auto const path = client_data->listfile()->getPath(placement.nameID);
+        if (path.empty())
+        {
+          ++unresolved_m2;
+          continue;
+        }
+
+        BlizzardArchive::Listfile::FileKey key(path);
+        tile->add_model(world->add_model_instance(
+          ModelInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
+        ++loaded_m2;
+      }
+
+      for (auto placement : wmo_placements)
+      {
+        auto const path = client_data->listfile()->getPath(placement.nameID);
+        if (path.empty())
+        {
+          ++unresolved_wmo;
+          continue;
+        }
+
+        if (placement.scale == 0)
+          placement.scale = 1024;
+
+        BlizzardArchive::Listfile::FileKey key(path);
+        tile->add_model(world->add_wmo_instance(
+          WMOInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
+        ++loaded_wmo;
+      }
+
+      if (loaded_m2 || loaded_wmo)
+        world->need_model_updates = true;
+
+      LogDebug << "[ModernADT][Objects] tile=" << tile->index.x << ',' << tile->index.z
+               << " OBJ0 MDDF=" << m2_placements.size()
+               << " MODF=" << wmo_placements.size()
+               << " loadedM2=" << loaded_m2
+               << " loadedWMO=" << loaded_wmo
+               << " unresolvedM2FileDataID=" << unresolved_m2
+               << " unresolvedWMOFileDataID=" << unresolved_wmo
+               << std::endl;
+    }
+    catch (std::exception const& e)
+    {
+      LogError << "[ModernADT][Objects] Failed loading OBJ0 for '" << root_path
+               << "': " << e.what() << ". Terrain remains usable." << std::endl;
+    }
+    catch (...)
+    {
+      LogError << "[ModernADT][Objects] Failed loading OBJ0 for '" << root_path
+               << "' with an unknown exception. Terrain remains usable." << std::endl;
+    }
+
+    finish_state();
   }
 
   // Water is currently attached after MapTile's terrain loader sets finished=true.
@@ -241,7 +418,10 @@ bool AsyncObject::finishedLoading() const
 {
   bool const done = finished.load();
   if (done)
+  {
     load_modern_mh2o_before_exposing_tile(this);
+    load_modern_objects_before_exposing_tile(this);
+  }
   return done;
 }
 
