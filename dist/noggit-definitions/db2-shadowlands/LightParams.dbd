@@ -1,0 +1,27 @@
+COLUMNS
+int ID
+int HighlightSky
+int<LightSkybox::ID> LightSkyboxID
+int CloudTypeID
+float Glow
+float WaterShallowAlpha
+float WaterDeepAlpha
+float OceanShallowAlpha
+float OceanDeepAlpha
+int Flags
+float OverrideCelestialSphere
+int<SSAOSettings::ID> SsaoSettingsID
+
+BUILD 9.2.7.45745
+$noninline,id$ID<32>
+OverrideCelestialSphere[3]
+HighlightSky<u8>
+LightSkyboxID<u16>
+CloudTypeID<u8>
+Glow
+WaterShallowAlpha
+WaterDeepAlpha
+OceanShallowAlpha
+OceanDeepAlpha
+Flags<32>
+SsaoSettingsID<32>
