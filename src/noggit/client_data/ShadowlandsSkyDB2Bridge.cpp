@@ -273,6 +273,8 @@ namespace Noggit::ClientData
 
       std::size_t loaded_lights = 0;
       std::size_t unresolved_param_refs = 0;
+      std::size_t repaired_primary_param_refs = 0;
+      std::size_t lights_without_usable_params = 0;
       for (std::uint32_t i = 0; i < light_table.RecordCount(); ++i)
       {
         auto row = light_table.RecordByPosition(i);
@@ -280,6 +282,40 @@ namespace Noggit::ClientData
         auto const param_ids = uint_array(row, "LightParamsID");
         if (coords.size() < 3)
           continue;
+
+        std::array<std::uint32_t, 8> resolved_params{};
+        for (std::size_t param = 0; param < resolved_params.size(); ++param)
+        {
+          if (param >= param_ids.size() || param_ids[param] == 0)
+            continue;
+
+          if (params.contains(param_ids[param]))
+            resolved_params[param] = param_ids[param];
+          else
+            ++unresolved_param_refs;
+        }
+
+        // The legacy Noggit renderer starts on LightParams slot 0. Modern Light rows can
+        // legally have an empty/unresolved first slot while later slots still reference
+        // valid environment data. Do not turn such a perfectly usable modern light into
+        // a black/fallback sky: promote the first valid modern parameter to the primary
+        // compatibility slot while preserving all remaining slots verbatim.
+        if (resolved_params[0] == 0)
+        {
+          auto const replacement = std::find_if(
+              resolved_params.begin() + 1,
+              resolved_params.end(),
+              [](std::uint32_t id) { return id != 0; });
+          if (replacement != resolved_params.end())
+          {
+            resolved_params[0] = *replacement;
+            ++repaired_primary_param_refs;
+          }
+          else
+          {
+            ++lights_without_usable_params;
+          }
+        }
 
         auto record = light_dbc.addRecord(row_id(row));
         record.write(LightDB::Map, uint_value(row, "ContinentID"));
@@ -289,18 +325,9 @@ namespace Noggit::ClientData
         record.write(LightDB::RadiusInner, row.getFloat("GameFalloffStart") * legacy_sky_coordinate_scale);
         record.write(LightDB::RadiusOuter, row.getFloat("GameFalloffEnd") * legacy_sky_coordinate_scale);
 
-        for (std::size_t param = 0; param < 8; ++param)
-        {
-          std::uint32_t resolved = 0;
-          if (param < param_ids.size() && param_ids[param] != 0)
-          {
-            if (params.contains(param_ids[param]))
-              resolved = param_ids[param];
-            else
-              ++unresolved_param_refs;
-          }
-          record.write(LightDB::DataIDs + param, resolved);
-        }
+        for (std::size_t param = 0; param < resolved_params.size(); ++param)
+          record.write(LightDB::DataIDs + param, resolved_params[param]);
+
         ++loaded_lights;
       }
 
@@ -313,7 +340,9 @@ namespace Noggit::ClientData
       Log << "[ModernDB2][Sky] Loaded Shadowlands CASC DB2 lighting: Light=" << loaded_lights
           << " LightParams=" << params_table.RecordCount()
           << " LightData=" << data_table.RecordCount()
-          << " unresolved-param-refs=" << unresolved_param_refs << std::endl;
+          << " unresolved-param-refs=" << unresolved_param_refs
+          << " repaired-primary-param-refs=" << repaired_primary_param_refs
+          << " lights-without-usable-params=" << lights_without_usable_params << std::endl;
       return loaded_lights != 0 && !params.empty();
     }
     catch (std::exception const& e)
