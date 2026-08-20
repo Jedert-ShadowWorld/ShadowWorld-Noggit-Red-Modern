@@ -108,6 +108,12 @@ DBCFile DBCFile::createNew(std::string filename, std::uint32_t fieldCount, std::
   file.filename = std::move(filename);
   file.recordSize = recordSize;
   file.fieldCount = fieldCount;
+
+  // DBC string offset 0 is the canonical empty string. Synthetic in-memory
+  // tables created from modern DB2 data need the same invariant or getString()
+  // / getLocalizedString() will assert when a field is empty.
+  file.stringTable.push_back('\0');
+  file.stringSize = 1;
   return file;
 }
 
