@@ -54,16 +54,24 @@ namespace
     std::array<std::vector<TimedFloat>, modern_float_count> floats;
   };
 
+  std::uint32_t uint_value(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& row,
+                           std::string const& field)
+  {
+    auto const found = row.Columns.find(field);
+    if (found == row.Columns.end() || found->second.Value.empty())
+      throw std::runtime_error("Modern DB2 row is missing numeric field " + field + ".");
+
+    // The library's getUInt currently uses stoi(), which overflows on packed
+    // ARGB values with bit 31 set. Parse modern uint32 fields explicitly.
+    return static_cast<std::uint32_t>(std::stoul(found->second.Value));
+  }
+
   std::uint32_t row_id(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& row)
   {
     if (row.RecordId >= 0)
       return static_cast<std::uint32_t>(row.RecordId);
 
-    auto const found = row.Columns.find("ID");
-    if (found != row.Columns.end() && !found->second.Value.empty())
-      return static_cast<std::uint32_t>(std::stoul(found->second.Value));
-
-    throw std::runtime_error("Modern DB2 row has no usable ID.");
+    return uint_value(row, "ID");
   }
 
   std::uint32_t relation_id(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& row,
@@ -198,7 +206,7 @@ namespace Noggit::ClientData
         auto row = params_table.RecordByPosition(i);
         ModernParamData param;
         param.id = row_id(row);
-        param.highlight_sky = row.getUInt("HighlightSky") != 0;
+        param.highlight_sky = uint_value(row, "HighlightSky") != 0;
         param.glow = row.getFloat("Glow");
         param.water_shallow_alpha = row.getFloat("WaterShallowAlpha");
         param.water_deep_alpha = row.getFloat("WaterDeepAlpha");
@@ -216,27 +224,27 @@ namespace Noggit::ClientData
           continue;
 
         auto& param = found->second;
-        int const time = static_cast<int>(row.getUInt("Time"));
+        int const time = static_cast<int>(uint_value(row, "Time"));
 
         // LightData replaces the old LightIntBand table in modern clients.
-        append_color(param, 0, time, row.getUInt("DirectColor"));
-        append_color(param, 1, time, row.getUInt("AmbientColor"));
-        append_color(param, 2, time, row.getUInt("SkyTopColor"));
-        append_color(param, 3, time, row.getUInt("SkyMiddleColor"));
-        append_color(param, 4, time, row.getUInt("SkyBand1Color"));
-        append_color(param, 5, time, row.getUInt("SkyBand2Color"));
-        append_color(param, 6, time, row.getUInt("SkySmogColor"));
-        append_color(param, 7, time, row.getUInt("SkyFogColor"));
-        append_color(param, 8, time, row.getUInt("ShadowOpacity"));
-        append_color(param, 9, time, row.getUInt("SunColor"));
-        append_color(param, 10, time, row.getUInt("CloudSunColor"));
-        append_color(param, 11, time, row.getUInt("CloudEmissiveColor"));
-        append_color(param, 12, time, row.getUInt("CloudLayer1AmbientColor"));
-        append_color(param, 13, time, row.getUInt("CloudLayer2AmbientColor"));
-        append_color(param, 14, time, row.getUInt("OceanCloseColor"));
-        append_color(param, 15, time, row.getUInt("OceanFarColor"));
-        append_color(param, 16, time, row.getUInt("RiverCloseColor"));
-        append_color(param, 17, time, row.getUInt("RiverFarColor"));
+        append_color(param, 0, time, uint_value(row, "DirectColor"));
+        append_color(param, 1, time, uint_value(row, "AmbientColor"));
+        append_color(param, 2, time, uint_value(row, "SkyTopColor"));
+        append_color(param, 3, time, uint_value(row, "SkyMiddleColor"));
+        append_color(param, 4, time, uint_value(row, "SkyBand1Color"));
+        append_color(param, 5, time, uint_value(row, "SkyBand2Color"));
+        append_color(param, 6, time, uint_value(row, "SkySmogColor"));
+        append_color(param, 7, time, uint_value(row, "SkyFogColor"));
+        append_color(param, 8, time, uint_value(row, "ShadowOpacity"));
+        append_color(param, 9, time, uint_value(row, "SunColor"));
+        append_color(param, 10, time, uint_value(row, "CloudSunColor"));
+        append_color(param, 11, time, uint_value(row, "CloudEmissiveColor"));
+        append_color(param, 12, time, uint_value(row, "CloudLayer1AmbientColor"));
+        append_color(param, 13, time, uint_value(row, "CloudLayer2AmbientColor"));
+        append_color(param, 14, time, uint_value(row, "OceanCloseColor"));
+        append_color(param, 15, time, uint_value(row, "OceanFarColor"));
+        append_color(param, 16, time, uint_value(row, "RiverCloseColor"));
+        append_color(param, 17, time, uint_value(row, "RiverFarColor"));
 
         // Noggit's renderer still consumes the six legacy float slots. Fill the
         // modern equivalents directly from LightData; unused legacy slots remain 0.
@@ -261,6 +269,9 @@ namespace Noggit::ClientData
 
       for (auto const& [id, param] : params)
       {
+        if (id == 0)
+          continue;
+
         auto record = params_dbc.addRecord(id);
         record.write(LightParamsDB::highlightSky, static_cast<std::uint32_t>(param.highlight_sky));
         // LightSkybox.db2/FileDataID support is the next bridge step. Keep this 0
@@ -297,7 +308,7 @@ namespace Noggit::ClientData
           continue;
 
         auto record = light_dbc.addRecord(row_id(row));
-        record.write(LightDB::Map, row.getUInt("ContinentID"));
+        record.write(LightDB::Map, uint_value(row, "ContinentID"));
 
         // Sky.cpp's legacy in-memory representation divides these fields by 36.
         // Modern DB2 GameCoords/Falloff are game-space values, so adapt them here.
