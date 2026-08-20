@@ -3,6 +3,8 @@
 #include <noggit/DBC.h>
 #include <noggit/Log.h>
 #include <noggit/Misc.h>
+#include <noggit/client_data/ShadowlandsSkyDB2Bridge.hpp>
+#include <noggit/project/CurrentProject.hpp>
 #include <blizzard-archive-library/include/ClientData.hpp>
 #include <string>
 #include <Exception.hpp>
@@ -29,7 +31,24 @@ WMOAreaTableDB gWMOAreaTableDB;
 
 void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData)
 {
-  Log << "Opening client DBCs..." << std::endl;
+  bool const shadowlands = Noggit::Project::CurrentProject::get()->projectVersion
+    == Noggit::Project::ProjectVersion::SL;
+
+  if (shadowlands)
+  {
+    Log << "Opening Shadowlands client databases (modern DB2 path)..." << std::endl;
+
+    // Sky/lighting must never fall back to the old Light*.dbc files on a modern
+    // client. Load Light.db2, LightParams.db2 and LightData.db2 directly from
+    // the active CASC and adapt those records to the renderer's current in-memory
+    // table interface.
+    if (!Noggit::ClientData::loadShadowlandsSkyDB2Bridge(clientData))
+      LogError << "[ModernDB2][Sky] Shadowlands sky DB2 bridge did not load usable data." << std::endl;
+  }
+  else
+  {
+    Log << "Opening client DBCs..." << std::endl;
+  }
 
   try
   {
@@ -37,11 +56,16 @@ void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData)
     gAreaTriggerDB.open(clientData);
     gMapDB.open(clientData);
     gLoadingScreensDB.open(clientData);
-    gLightDB.open(clientData);
-    gLightParamsDB.open(clientData);
-    gLightSkyboxDB.open(clientData);
-    gLightIntBandDB.open(clientData);
-    gLightFloatBandDB.open(clientData);
+
+    if (!shadowlands)
+    {
+      gLightDB.open(clientData);
+      gLightParamsDB.open(clientData);
+      gLightSkyboxDB.open(clientData);
+      gLightIntBandDB.open(clientData);
+      gLightFloatBandDB.open(clientData);
+    }
+
     gGroundEffectDoodadDB.open(clientData);
     gGroundEffectTextureDB.open(clientData);
     gTerrainTypeDB.open(clientData);
@@ -268,7 +292,7 @@ std::vector<std::string> WMOAreaTableDB::getWMOAreaNames(int WMOId)
         return areanamesvect;
     }
 
-    for (Iterator i = gWMOAreaTableDB.begin(); i != gWMOAreaTableDB.end(); ++i)
+    for (Iterator i = gWMOAreaTableDB.begin(); i != gWMOAreaDB.end(); ++i)
     {
         if (i->getUInt(WMOAreaTableDB::WmoId) == WMOId && i->getInt(WMOAreaTableDB::WMOGroupID) == -1)
         {
