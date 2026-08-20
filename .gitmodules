@@ -16,7 +16,7 @@
 [submodule "dist/definitions"]
 	path = dist/definitions
 	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-DBD-Definitions.git
-	branch = dist-definitions
+	branch = shadowworld-modern
 [submodule "dist/themes"]
 	path = dist/themes
 	url = https://gitlab.com/prophecy-rp/build-dependencies.git
