@@ -7,34 +7,156 @@
   <property name="windowTitle"><string>ShadowWorld Noggit</string></property>
   <property name="windowIcon"><iconset><normalon>:/icon-shadow</normalon></iconset></property>
   <widget class="QWidget" name="centralwidget">
-   <property name="styleSheet"><string notr="true">QWidget#centralwidget { background:#030207; color:#eee7f4; }
-QFrame#outerFrame { background:#040309; border:2px solid #3c224c; }
-QFrame#topBar { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #0d0913,stop:1 #050408); border:1px solid #302038; }
-QFrame#recentPanel, QFrame#startPanel { background:#050409; border:1px solid #4a3653; }
-QFrame#heroPanel { background:qradialgradient(cx:.5,cy:.46,radius:.82,fx:.5,fy:.43,stop:0 #1b0b2e,stop:.45 #0b0713,stop:1 #030207); border:1px solid #302139; }
-QLabel#panelTitle { color:#cb77f2; font-family:"Segoe UI Semibold"; font-size:24px; font-weight:600; padding:10px 0 6px 0; }
-QFrame#ornamentLine { background:#5e376d; border:none; min-height:1px; max-height:1px; }
-QListWidget#listView { background:transparent; border:none; outline:0; padding:0; }
-QListWidget#listView::item { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #111018,stop:1 #07070b); border:1px solid #403347; margin:5px 0; padding:0; }
-QListWidget#listView::item:hover { background:#181021; border-color:#84529a; }
-QListWidget#listView::item:selected { background:#241331; border-color:#ba68dd; }
-QPushButton#actionButton, QPushButton#disabledActionButton { text-align:left; padding-left:28px; background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #121018,stop:1 #08070c); color:#d392ef; border:1px solid #4a3654; font-family:"Segoe UI Semibold"; font-size:17px; font-weight:600; }
-QPushButton#actionButton:hover { background:#1c1028; border-color:#a75dca; color:#f2d9ff; }
-QPushButton#disabledActionButton:disabled { color:#76677c; border-color:#2f2833; background:#09080c; }
-QToolButton#settings_button, QToolButton#changelog_button { background:transparent; border:none; color:#c76cf0; font-size:24px; }
-QToolButton#settings_button:hover, QToolButton#changelog_button:hover { background:#1b1025; }
-QPushButton#button_exit_project { background:#0b0810; color:#bdaec5; border:1px solid #493553; padding:6px 18px; }
-QPushButton#button_exit_project:hover { color:white; border-color:#a85cca; background:#1d1127; }
-QLabel#footerText { color:#a869c2; font-family:"Segoe UI Semibold"; font-size:12px; }
+   <property name="styleSheet"><string notr="true">QWidget#centralwidget {
+ background:qradialgradient(cx:.50,cy:.38,radius:1.05,fx:.50,fy:.35,stop:0 #13091e,stop:.34 #09060f,stop:.72 #030307,stop:1 #010103);
+ color:#eee7f4;
+}
+QFrame#outerFrame {
+ background:#020205;
+ border:2px solid #25172e;
+ border-radius:2px;
+}
+QFrame#topBar {
+ background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #100b16,stop:.48 #08060d,stop:1 #030306);
+ border:1px solid #382345;
+ border-bottom:2px solid #6e3a82;
+}
+QFrame#recentPanel, QFrame#startPanel {
+ background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #07070b,stop:.5 #030307,stop:1 #020205);
+ border:2px solid #2e2135;
+ border-radius:3px;
+}
+QFrame#recentInner, QFrame#startInner {
+ background:transparent;
+ border:1px solid #5a3666;
+ border-radius:2px;
+}
+QFrame#heroPanel {
+ background:qradialgradient(cx:.50,cy:.47,radius:.82,fx:.50,fy:.44,stop:0 #211037,stop:.34 #0f0818,stop:.70 #050409,stop:1 #020205);
+ border:2px solid #2f2137;
+}
+QFrame#heroInner {
+ background:qradialgradient(cx:.50,cy:.47,radius:.60,fx:.50,fy:.43,stop:0 rgba(115,48,157,62),stop:.56 rgba(42,17,58,24),stop:1 rgba(0,0,0,0));
+ border:1px solid #52305e;
+}
+QLabel#panelTitle {
+ color:#d27bff;
+ font-family:"Georgia";
+ font-size:25px;
+ font-weight:600;
+ letter-spacing:1px;
+ padding:8px 0 3px 0;
+}
+QLabel#panelGlyph {
+ color:#9e52c2;
+ font-size:15px;
+ padding:0;
+}
+QFrame#ornamentLine {
+ background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 transparent,stop:.18 #493052,stop:.50 #a05cc0,stop:.82 #493052,stop:1 transparent);
+ border:none;
+ min-height:1px;
+ max-height:1px;
+}
+QListWidget#listView { background:transparent; border:none; outline:0; padding:2px; }
+QListWidget#listView::item {
+ background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #111016,stop:.52 #09090d,stop:1 #050508);
+ border:1px solid #47344d;
+ border-radius:2px;
+ margin:5px 0;
+ padding:0;
+}
+QListWidget#listView::item:hover { background:#17101f; border-color:#86509a; }
+QListWidget#listView::item:selected { background:#21112e; border:1px solid #c16ae3; }
+QPushButton#actionButton, QPushButton#disabledActionButton {
+ text-align:left;
+ padding-left:30px;
+ background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #111016,stop:.5 #09080d,stop:1 #050508);
+ color:#dca0f7;
+ border:1px solid #5a3c64;
+ border-radius:3px;
+ font-family:"Georgia";
+ font-size:16px;
+ font-weight:600;
+}
+QPushButton#actionButton:hover { background:#1a1024; border-color:#bb64df; color:#f4dfff; }
+QPushButton#disabledActionButton:disabled { color:#88778e; border-color:#3b303f; background:#08070b; }
+QPushButton#button_open_project_folder {
+ background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #111017,stop:1 #07070a);
+ color:#d394ef;
+ border:1px solid #65416f;
+ border-radius:3px;
+ font-family:"Georgia";
+ font-size:16px;
+ font-weight:600;
+}
+QPushButton#button_open_project_folder:hover { background:#1b1124; border-color:#b463d1; color:#f1d8ff; }
+QToolButton#settings_button, QToolButton#changelog_button {
+ background:transparent; border:none; color:#c96af1; font-size:24px; padding:5px;
+}
+QToolButton#settings_button:hover, QToolButton#changelog_button:hover { background:#1a1022; border:1px solid #69417a; border-radius:3px; }
+QPushButton#button_exit_project {
+ background:#09070d; color:#c5b7cb; border:1px solid #4c3556; border-radius:2px; padding:6px 18px;
+}
+QPushButton#button_exit_project:hover { color:white; border-color:#a95dcc; background:#1c1025; }
+QLabel#brandMain { color:#dba6f7; font-family:"Georgia"; font-size:54px; font-weight:600; letter-spacing:5px; }
+QLabel#brandSub { color:#e9e0eb; font-family:"Georgia"; font-size:21px; letter-spacing:6px; }
+QLabel#heroHeading { color:#cf83ec; font-family:"Georgia"; font-size:24px; font-weight:600; letter-spacing:2px; }
+QLabel#heroSubtitle { color:#9d8aa5; font-size:12px; letter-spacing:3px; }
+QLabel#footerCenter { color:#bd72d5; font-family:"Georgia"; font-size:13px; letter-spacing:1px; }
 </string></property>
-   <layout class="QVBoxLayout" name="rootLayout"><property name="spacing"><number>0</number></property><property name="leftMargin"><number>8</number></property><property name="topMargin"><number>8</number></property><property name="rightMargin"><number>8</number></property><property name="bottomMargin"><number>8</number></property>
-    <item><widget class="QFrame" name="outerFrame"><layout class="QVBoxLayout" name="outerLayout"><property name="spacing"><number>8</number></property><property name="leftMargin"><number>8</number></property><property name="topMargin"><number>8</number></property><property name="rightMargin"><number>8</number></property><property name="bottomMargin"><number>8</number></property>
-     <item><widget class="QFrame" name="topBar"><property name="minimumSize"><size><width>0</width><height>112</height></size></property><property name="maximumSize"><size><width>16777215</width><height>112</height></size></property><layout class="QHBoxLayout" name="headerLayout"><property name="leftMargin"><number>18</number></property><property name="topMargin"><number>8</number></property><property name="rightMargin"><number>18</number></property><property name="bottomMargin"><number>8</number></property><item><spacer name="headerLeft"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item><item><layout class="QVBoxLayout" name="brandLayout"><property name="spacing"><number>0</number></property><item><widget class="QLabel" name="shadowWorldTitle"><property name="styleSheet"><string notr="true">QLabel#shadowWorldTitle { color:#d89af5; font-family:"Segoe UI Semibold"; font-size:48px; font-weight:700; letter-spacing:3px; }</string></property><property name="text"><string>NOGGIT</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item><item><widget class="QLabel" name="shadowWorldSubtitle"><property name="styleSheet"><string notr="true">QLabel#shadowWorldSubtitle { color:#e6dde9; font-size:21px; letter-spacing:6px; }</string></property><property name="text"><string>SHADOW • WORLD</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item></layout></item><item><spacer name="headerMiddle"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item><item><widget class="QToolButton" name="settings_button"><property name="minimumSize"><size><width>48</width><height>48</height></size></property><property name="text"><string>⚙</string></property></widget></item><item><widget class="QToolButton" name="changelog_button"><property name="minimumSize"><size><width>48</width><height>48</height></size></property><property name="text"><string>?</string></property></widget></item><item><widget class="QPushButton" name="button_exit_project"><property name="minimumSize"><size><width>92</width><height>36</height></size></property><property name="text"><string>Exit</string></property></widget></item></layout></widget></item>
-     <item><layout class="QHBoxLayout" name="contentLayout"><property name="spacing"><number>10</number></property><item><widget class="QFrame" name="recentPanel"><property name="minimumSize"><size><width>420</width><height>0</height></size></property><property name="maximumSize"><size><width>420</width><height>16777215</height></size></property><layout class="QVBoxLayout" name="recentLayout"><property name="spacing"><number>8</number></property><property name="leftMargin"><number>20</number></property><property name="topMargin"><number>12</number></property><property name="rightMargin"><number>20</number></property><property name="bottomMargin"><number>16</number></property><item><widget class="QLabel" name="label"><property name="objectName"><string>panelTitle</string></property><property name="text"><string>RECENT PROJECTS</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item><item><widget class="Line" name="recentLine"><property name="objectName"><string>ornamentLine</string></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item><item><widget class="QListWidget" name="listView"><property name="selectionMode"><enum>QAbstractItemView::SingleSelection</enum></property><property name="verticalScrollMode"><enum>QAbstractItemView::ScrollPerPixel</enum></property><property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property></widget></item><item><widget class="QPushButton" name="button_open_project_folder"><property name="minimumSize"><size><width>0</width><height>54</height></size></property><property name="text"><string>▰  OPEN PROJECT FOLDER</string></property></widget></item><item><widget class="QLabel" name="recentHint"><property name="text"><string>Double-click a project to open it.</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item></layout></widget></item><item><widget class="QFrame" name="heroPanel"><layout class="QVBoxLayout" name="heroLayout"><item><spacer name="heroTop"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item><item><widget class="QLabel" name="heroArtwork"><property name="minimumSize"><size><width>500</width><height>470</height></size></property><property name="pixmap"><pixmap resource="resources">:/icon-shadow</pixmap></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item><item><widget class="QLabel" name="heroHeading"><property name="text"><string>SHADOW WORLD</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item><item><widget class="QLabel" name="heroSubtitle"><property name="text"><string>MODERN WORLD EDITOR</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item><item><spacer name="heroBottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item></layout></widget></item><item><widget class="QFrame" name="startPanel"><property name="minimumSize"><size><width>400</width><height>0</height></size></property><property name="maximumSize"><size><width>400</width><height>16777215</height></size></property><layout class="QVBoxLayout" name="startLayout"><property name="spacing"><number>12</number></property><item><widget class="QLabel" name="label_2"><property name="objectName"><string>panelTitle</string></property><property name="text"><string>GETTING STARTED</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item><item><widget class="QPushButton" name="button_create_new_project"><property name="objectName"><string>actionButton</string></property><property name="minimumSize"><size><width>0</width><height>84</height></size></property><property name="text"><string>＋   CREATE A NEW PROJECT</string></property></widget></item><item><widget class="QPushButton" name="button_open_existing_project"><property name="objectName"><string>actionButton</string></property><property name="minimumSize"><size><width>0</width><height>84</height></size></property><property name="text"><string>▣   OPEN AN EXISTING PROJECT</string></property></widget></item><item><widget class="QPushButton" name="button_convert_project"><property name="objectName"><string>disabledActionButton</string></property><property name="enabled"><bool>false</bool></property><property name="minimumSize"><size><width>0</width><height>84</height></size></property><property name="text"><string>◈   CONVERT MAP / ADT</string></property></widget></item><item><widget class="QPushButton" name="button_tools_utilities"><property name="objectName"><string>disabledActionButton</string></property><property name="enabled"><bool>false</bool></property><property name="minimumSize"><size><width>0</width><height>84</height></size></property><property name="text"><string>⚒   TOOLS &amp; UTILITIES</string></property></widget></item><item><widget class="QPushButton" name="button_documentation"><property name="objectName"><string>disabledActionButton</string></property><property name="enabled"><bool>false</bool></property><property name="minimumSize"><size><width>0</width><height>84</height></size></property><property name="text"><string>▤   DOCUMENTATION</string></property></widget></item><item><spacer name="startBottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item></layout></widget></item></layout></item>
-     <item><widget class="QFrame" name="bottomBar"><property name="minimumSize"><size><width>0</width><height>44</height></size></property><property name="maximumSize"><size><width>16777215</width><height>44</height></size></property><layout class="QHBoxLayout" name="footerLayout"><item><widget class="QLabel" name="footerLeft"><property name="objectName"><string>footerText</string></property><property name="text"><string>NOGGIT AZURE - SHADOW WORLD EDITION</string></property></widget></item><item><spacer name="footerSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item><item><widget class="QLabel" name="footerCenter"><property name="objectName"><string>footerText</string></property><property name="text"><string>SHADOWWORLD • NOGGIT RED MODERN</string></property></widget></item></layout></widget></item>
+   <layout class="QVBoxLayout" name="rootLayout">
+    <property name="spacing"><number>0</number></property>
+    <property name="leftMargin"><number>7</number></property><property name="topMargin"><number>7</number></property><property name="rightMargin"><number>7</number></property><property name="bottomMargin"><number>7</number></property>
+    <item><widget class="QFrame" name="outerFrame"><layout class="QVBoxLayout" name="outerLayout">
+     <property name="spacing"><number>8</number></property><property name="leftMargin"><number>8</number></property><property name="topMargin"><number>8</number></property><property name="rightMargin"><number>8</number></property><property name="bottomMargin"><number>8</number></property>
+     <item><widget class="QFrame" name="topBar"><property name="minimumSize"><size><width>0</width><height>118</height></size></property><property name="maximumSize"><size><width>16777215</width><height>118</height></size></property><layout class="QHBoxLayout" name="headerLayout">
+      <property name="leftMargin"><number>24</number></property><property name="topMargin"><number>8</number></property><property name="rightMargin"><number>18</number></property><property name="bottomMargin"><number>8</number></property>
+      <item><spacer name="headerLeft"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item>
+      <item><layout class="QVBoxLayout" name="brandLayout"><property name="spacing"><number>0</number></property>
+       <item><widget class="QLabel" name="shadowWorldTitle"><property name="objectName"><string>brandMain</string></property><property name="text"><string>NOGGIT</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+       <item><widget class="QLabel" name="shadowWorldSubtitle"><property name="objectName"><string>brandSub</string></property><property name="text"><string>SHADOW • WORLD</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+      </layout></item>
+      <item><spacer name="headerRight"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item>
+      <item><widget class="QToolButton" name="settings_button"><property name="minimumSize"><size><width>46</width><height>46</height></size></property><property name="text"><string>⚙</string></property></widget></item>
+      <item><widget class="QToolButton" name="changelog_button"><property name="minimumSize"><size><width>46</width><height>46</height></size></property><property name="text"><string>?</string></property></widget></item>
+      <item><widget class="QPushButton" name="button_exit_project"><property name="minimumSize"><size><width>92</width><height>36</height></size></property><property name="text"><string>Exit</string></property></widget></item>
+     </layout></widget></item>
+     <item><layout class="QHBoxLayout" name="contentLayout"><property name="spacing"><number>10</number></property>
+      <item><widget class="QFrame" name="recentPanel"><property name="minimumSize"><size><width>420</width><height>0</height></size></property><property name="maximumSize"><size><width>420</width><height>16777215</height></size></property><layout class="QVBoxLayout" name="recentOuter"><property name="leftMargin"><number>7</number></property><property name="topMargin"><number>7</number></property><property name="rightMargin"><number>7</number></property><property name="bottomMargin"><number>7</number></property><item><widget class="QFrame" name="recentInner"><layout class="QVBoxLayout" name="recentLayout"><property name="spacing"><number>7</number></property><property name="leftMargin"><number>16</number></property><property name="topMargin"><number>11</number></property><property name="rightMargin"><number>16</number></property><property name="bottomMargin"><number>14</number></property>
+       <item><widget class="QLabel" name="label"><property name="objectName"><string>panelTitle</string></property><property name="text"><string>RECENT PROJECTS</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+       <item><widget class="Line" name="recentLine"><property name="objectName"><string>ornamentLine</string></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+       <item><widget class="QLabel" name="recentGlyph"><property name="objectName"><string>panelGlyph</string></property><property name="text"><string>◆</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+       <item><widget class="QListWidget" name="listView"><property name="selectionMode"><enum>QAbstractItemView::SingleSelection</enum></property><property name="verticalScrollMode"><enum>QAbstractItemView::ScrollPerPixel</enum></property><property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property></widget></item>
+       <item><widget class="QPushButton" name="button_open_project_folder"><property name="minimumSize"><size><width>0</width><height>58</height></size></property><property name="text"><string>▰   OPEN PROJECT FOLDER</string></property></widget></item>
+       <item><widget class="QLabel" name="recentHint"><property name="styleSheet"><string notr="true">QLabel#recentHint { color:#8c7b94; font-size:11px; }</string></property><property name="text"><string>Double-click a project to open it.</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+      </layout></widget></item></layout></widget></item>
+      <item><widget class="QFrame" name="heroPanel"><layout class="QVBoxLayout" name="heroOuter"><property name="leftMargin"><number>7</number></property><property name="topMargin"><number>7</number></property><property name="rightMargin"><number>7</number></property><property name="bottomMargin"><number>7</number></property><item><widget class="QFrame" name="heroInner"><layout class="QVBoxLayout" name="heroLayout"><property name="leftMargin"><number>18</number></property><property name="topMargin"><number>18</number></property><property name="rightMargin"><number>18</number></property><property name="bottomMargin"><number>18</number></property>
+       <item><spacer name="heroTop"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item>
+       <item><widget class="QLabel" name="heroArtwork"><property name="minimumSize"><size><width>500</width><height>470</height></size></property><property name="pixmap"><pixmap resource="resources">:/icon-shadow</pixmap></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+       <item><widget class="QLabel" name="heroHeading"><property name="objectName"><string>heroHeading</string></property><property name="text"><string>SHADOW WORLD</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+       <item><widget class="QLabel" name="heroSubtitle"><property name="objectName"><string>heroSubtitle</string></property><property name="text"><string>MODERN WORLD EDITOR</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+       <item><spacer name="heroBottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item>
+      </layout></widget></item></layout></widget></item>
+      <item><widget class="QFrame" name="startPanel"><property name="minimumSize"><size><width>400</width><height>0</height></size></property><property name="maximumSize"><size><width>400</width><height>16777215</height></size></property><layout class="QVBoxLayout" name="startOuter"><property name="leftMargin"><number>7</number></property><property name="topMargin"><number>7</number></property><property name="rightMargin"><number>7</number></property><property name="bottomMargin"><number>7</number></property><item><widget class="QFrame" name="startInner"><layout class="QVBoxLayout" name="startLayout"><property name="spacing"><number>13</number></property><property name="leftMargin"><number>16</number></property><property name="topMargin"><number>11</number></property><property name="rightMargin"><number>16</number></property><property name="bottomMargin"><number>16</number></property>
+       <item><widget class="QLabel" name="label_2"><property name="objectName"><string>panelTitle</string></property><property name="text"><string>GETTING STARTED</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+       <item><widget class="Line" name="startLine"><property name="objectName"><string>ornamentLine</string></property><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item>
+       <item><widget class="QLabel" name="startGlyph"><property name="objectName"><string>panelGlyph</string></property><property name="text"><string>◆</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+       <item><widget class="QPushButton" name="button_create_new_project"><property name="objectName"><string>actionButton</string></property><property name="minimumSize"><size><width>0</width><height>94</height></size></property><property name="text"><string>＋   CREATE A NEW PROJECT&#10;      Start a brand new project</string></property></widget></item>
+       <item><widget class="QPushButton" name="button_open_existing_project"><property name="objectName"><string>actionButton</string></property><property name="minimumSize"><size><width>0</width><height>94</height></size></property><property name="text"><string>▣   OPEN AN EXISTING PROJECT&#10;      Open a project from your disk</string></property></widget></item>
+       <item><widget class="QPushButton" name="button_convert_project"><property name="objectName"><string>disabledActionButton</string></property><property name="enabled"><bool>false</bool></property><property name="minimumSize"><size><width>0</width><height>94</height></size></property><property name="text"><string>◈   CONVERT MAP / ADT&#10;      Import / Convert existing maps</string></property></widget></item>
+       <item><spacer name="startBottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item>
+      </layout></widget></item></layout></widget></item>
+     </layout></item>
+     <item><widget class="QFrame" name="bottomBar"><property name="minimumSize"><size><width>0</width><height>44</height></size></property><property name="maximumSize"><size><width>16777215</width><height>44</height></size></property><property name="styleSheet"><string notr="true">QFrame#bottomBar { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #0b080f,stop:1 #040307); border:1px solid #3d2846; }</string></property><layout class="QHBoxLayout" name="footerLayout">
+      <item><spacer name="footerLeftSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item>
+      <item><widget class="QLabel" name="footerCenter"><property name="objectName"><string>footerCenter</string></property><property name="text"><string>SHADOWWORLD • NOGGIT RED MODERN</string></property><property name="alignment"><set>Qt::AlignCenter</set></property></widget></item>
+      <item><spacer name="footerRightSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeType"><enum>QSizePolicy::Expanding</enum></property></spacer></item>
+     </layout></widget></item>
     </layout></widget></item>
    </layout>
   </widget>
  </widget>
- <resources><include location="../../../../../resources/resources.qrc"/></resources><connections/>
+ <resources><include location="../../../../../resources/resources.qrc"/></resources>
+ <connections/>
 </ui>
