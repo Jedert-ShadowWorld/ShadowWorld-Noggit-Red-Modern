@@ -61,8 +61,6 @@ namespace
     if (found == row.Columns.end() || found->second.Value.empty())
       throw std::runtime_error("Modern DB2 row is missing numeric field " + field + ".");
 
-    // The library's getUInt currently uses stoi(), which overflows on packed
-    // ARGB values with bit 31 set. Parse modern uint32 fields explicitly.
     return static_cast<std::uint32_t>(std::stoul(found->second.Value));
   }
 
@@ -70,7 +68,6 @@ namespace
   {
     if (row.RecordId >= 0)
       return static_cast<std::uint32_t>(row.RecordId);
-
     return uint_value(row, "ID");
   }
 
@@ -80,13 +77,10 @@ namespace
     auto const found = row.Columns.find(field);
     if (found == row.Columns.end())
       throw std::runtime_error("Modern DB2 row is missing relation field " + field + ".");
-
     if (!found->second.Value.empty())
       return static_cast<std::uint32_t>(std::stoul(found->second.Value));
-
     if (found->second.ReferenceId >= 0)
       return static_cast<std::uint32_t>(found->second.ReferenceId);
-
     throw std::runtime_error("Modern DB2 relation field " + field + " has no value.");
   }
 
@@ -96,7 +90,6 @@ namespace
     auto const found = row.Columns.find(field);
     if (found == row.Columns.end())
       throw std::runtime_error("Modern DB2 row is missing array field " + field + ".");
-
     std::vector<float> values;
     values.reserve(found->second.Values.size());
     for (auto const& value : found->second.Values)
@@ -110,7 +103,6 @@ namespace
     auto const found = row.Columns.find(field);
     if (found == row.Columns.end())
       throw std::runtime_error("Modern DB2 row is missing array field " + field + ".");
-
     std::vector<std::uint32_t> values;
     values.reserve(found->second.Values.size());
     for (auto const& value : found->second.Values)
@@ -125,7 +117,6 @@ namespace
     BlizzardArchive::ClientFile file(filename, client_data.get());
     if (file.isEof() || file.getSize() == 0)
       throw std::runtime_error("Could not open modern DB2 from CASC: " + filename);
-
     return std::make_shared<BlizzardDatabaseLib::Stream::IMemStream>(file.getBuffer(), file.getSize());
   }
 
@@ -148,13 +139,10 @@ namespace
     auto record = table.addRecord(id);
     auto const count = std::min(values.size(), max_band_entries);
     record.write(LightIntBandDB::Entries, static_cast<std::uint32_t>(count));
-
     for (std::size_t i = 0; i < max_band_entries; ++i)
     {
-      record.write(LightIntBandDB::Times + i,
-                   i < count ? static_cast<std::uint32_t>(values[i].time) : 0u);
-      record.write(LightIntBandDB::Values + i,
-                   i < count ? values[i].value : 0u);
+      record.write(LightIntBandDB::Times + i, i < count ? static_cast<std::uint32_t>(values[i].time) : 0u);
+      record.write(LightIntBandDB::Values + i, i < count ? values[i].value : 0u);
     }
   }
 
@@ -165,13 +153,10 @@ namespace
     auto record = table.addRecord(id);
     auto const count = std::min(values.size(), max_band_entries);
     record.write(LightFloatBandDB::Entries, static_cast<std::uint32_t>(count));
-
     for (std::size_t i = 0; i < max_band_entries; ++i)
     {
-      record.write(LightFloatBandDB::Times + i,
-                   i < count ? static_cast<std::uint32_t>(values[i].time) : 0u);
-      record.write(LightFloatBandDB::Values + i,
-                   i < count ? values[i].value : 0.0f);
+      record.write(LightFloatBandDB::Times + i, i < count ? static_cast<std::uint32_t>(values[i].time) : 0u);
+      record.write(LightFloatBandDB::Values + i, i < count ? values[i].value : 0.0f);
     }
   }
 }
@@ -200,7 +185,6 @@ namespace Noggit::ClientData
       auto& data_table = database.LoadTable("LightData", callback);
 
       std::map<std::uint32_t, ModernParamData> params;
-
       for (std::uint32_t i = 0; i < params_table.RecordCount(); ++i)
       {
         auto row = params_table.RecordByPosition(i);
@@ -225,8 +209,6 @@ namespace Noggit::ClientData
 
         auto& param = found->second;
         int const time = static_cast<int>(uint_value(row, "Time"));
-
-        // LightData replaces the old LightIntBand table in modern clients.
         append_color(param, 0, time, uint_value(row, "DirectColor"));
         append_color(param, 1, time, uint_value(row, "AmbientColor"));
         append_color(param, 2, time, uint_value(row, "SkyTopColor"));
@@ -245,9 +227,6 @@ namespace Noggit::ClientData
         append_color(param, 15, time, uint_value(row, "OceanFarColor"));
         append_color(param, 16, time, uint_value(row, "RiverCloseColor"));
         append_color(param, 17, time, uint_value(row, "RiverFarColor"));
-
-        // Noggit's renderer still consumes the six legacy float slots. Fill the
-        // modern equivalents directly from LightData; unused legacy slots remain 0.
         append_float(param, 0, time, row.getFloat("FogEnd"));
         append_float(param, 1, time, row.getFloat("FogScaler"));
         append_float(param, 3, time, row.getFloat("CloudDensity"));
@@ -274,8 +253,6 @@ namespace Noggit::ClientData
 
         auto record = params_dbc.addRecord(id);
         record.write(LightParamsDB::highlightSky, static_cast<std::uint32_t>(param.highlight_sky));
-        // LightSkybox.db2/FileDataID support is the next bridge step. Keep this 0
-        // rather than accidentally resolving a modern ID through legacy DBC data.
         record.write(LightParamsDB::skybox, 0u);
         record.write(LightParamsDB::cloudTypeID, 0u);
         record.write(LightParamsDB::glow, param.glow);
@@ -287,18 +264,15 @@ namespace Noggit::ClientData
 
         auto const color_start = id * modern_color_count - (modern_color_count - 1);
         for (std::size_t band = 0; band < modern_color_count; ++band)
-          write_legacy_color_band(int_band_dbc,
-                                  static_cast<std::uint32_t>(color_start + band),
-                                  param.colors[band]);
+          write_legacy_color_band(int_band_dbc, static_cast<std::uint32_t>(color_start + band), param.colors[band]);
 
         auto const float_start = id * modern_float_count - (modern_float_count - 1);
         for (std::size_t band = 0; band < modern_float_count; ++band)
-          write_legacy_float_band(float_band_dbc,
-                                  static_cast<std::uint32_t>(float_start + band),
-                                  param.floats[band]);
+          write_legacy_float_band(float_band_dbc, static_cast<std::uint32_t>(float_start + band), param.floats[band]);
       }
 
       std::size_t loaded_lights = 0;
+      std::size_t unresolved_param_refs = 0;
       for (std::uint32_t i = 0; i < light_table.RecordCount(); ++i)
       {
         auto row = light_table.RecordByPosition(i);
@@ -309,9 +283,6 @@ namespace Noggit::ClientData
 
         auto record = light_dbc.addRecord(row_id(row));
         record.write(LightDB::Map, uint_value(row, "ContinentID"));
-
-        // Sky.cpp's legacy in-memory representation divides these fields by 36.
-        // Modern DB2 GameCoords/Falloff are game-space values, so adapt them here.
         record.write(LightDB::PositionX, coords[0] * legacy_sky_coordinate_scale);
         record.write(LightDB::PositionY, coords[1] * legacy_sky_coordinate_scale);
         record.write(LightDB::PositionZ, coords[2] * legacy_sky_coordinate_scale);
@@ -319,8 +290,17 @@ namespace Noggit::ClientData
         record.write(LightDB::RadiusOuter, row.getFloat("GameFalloffEnd") * legacy_sky_coordinate_scale);
 
         for (std::size_t param = 0; param < 8; ++param)
-          record.write(LightDB::DataIDs + param,
-                       param < param_ids.size() ? param_ids[param] : 0u);
+        {
+          std::uint32_t resolved = 0;
+          if (param < param_ids.size() && param_ids[param] != 0)
+          {
+            if (params.contains(param_ids[param]))
+              resolved = param_ids[param];
+            else
+              ++unresolved_param_refs;
+          }
+          record.write(LightDB::DataIDs + param, resolved);
+        }
         ++loaded_lights;
       }
 
@@ -332,7 +312,8 @@ namespace Noggit::ClientData
 
       Log << "[ModernDB2][Sky] Loaded Shadowlands CASC DB2 lighting: Light=" << loaded_lights
           << " LightParams=" << params_table.RecordCount()
-          << " LightData=" << data_table.RecordCount() << std::endl;
+          << " LightData=" << data_table.RecordCount()
+          << " unresolved-param-refs=" << unresolved_param_refs << std::endl;
       return loaded_lights != 0 && !params.empty();
     }
     catch (std::exception const& e)
@@ -343,7 +324,6 @@ namespace Noggit::ClientData
     {
       LogError << "[ModernDB2][Sky] Failed loading Shadowlands sky DB2 data: unknown error." << std::endl;
     }
-
     return false;
   }
 }
