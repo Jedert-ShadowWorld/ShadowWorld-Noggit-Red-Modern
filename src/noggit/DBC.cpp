@@ -292,7 +292,7 @@ std::vector<std::string> WMOAreaTableDB::getWMOAreaNames(int WMOId)
         return areanamesvect;
     }
 
-    for (Iterator i = gWMOAreaTableDB.begin(); i != gWMOAreaDB.end(); ++i)
+    for (Iterator i = gWMOAreaTableDB.begin(); i != gWMOAreaTableDB.end(); ++i)
     {
         if (i->getUInt(WMOAreaTableDB::WmoId) == WMOId && i->getInt(WMOAreaTableDB::WMOGroupID) == -1)
         {
