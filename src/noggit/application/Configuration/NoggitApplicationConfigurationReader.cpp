@@ -32,11 +32,13 @@ namespace Noggit::Application {
             if (noggitConfiguration.contains("ApplicationDatabaseDefinitionsPath"))
                 noggitApplicationConfiguration.ApplicationDatabaseDefinitionsPath = noggitConfiguration["ApplicationDatabaseDefinitionsPath"].toString().toStdString();
             if (noggitConfiguration.contains("ApplicationNoggitDefinitionsPath"))
-            {
-              noggitApplicationConfiguration.ApplicationNoggitDefinitionsPath = noggitConfiguration["ApplicationNoggitDefinitionsPath"].toString().toStdString();
-            }
-            else
+                noggitApplicationConfiguration.ApplicationNoggitDefinitionsPath = noggitConfiguration["ApplicationNoggitDefinitionsPath"].toString().toStdString();
 
+            // This used to be accidentally attached to the missing
+            // ApplicationNoggitDefinitionsPath branch via an `else`, so normal
+            // configs never loaded the listfile path at all. Modern CASC path
+            // lookups then had no listfile mapping and thousands of valid M2
+            // names appeared to be missing.
             if (noggitConfiguration.contains("ApplicationListFilePath"))
                 noggitApplicationConfiguration.ApplicationListFilePath = noggitConfiguration["ApplicationListFilePath"].toString().toStdString();
 
