@@ -370,14 +370,18 @@ void ModelRender::fixShaderIdBlendOverride()
     int shader = 0;
     bool blend_mode_override = (_model->Flags & m2_flag_use_texture_combiner_combos);
 
-    // fuckporting check
-    if (pass.texture_coord_combo_index + pass.texture_count - 1 >= _model->_texture_unit_lookup.size())
+    auto const lookup_size = _model->_texture_unit_lookup.size();
+    bool const invalid_texture_coord_combo =
+        pass.texture_count == 0
+        || pass.texture_coord_combo_index >= lookup_size
+        || pass.texture_count > lookup_size - pass.texture_coord_combo_index;
+
+    if (invalid_texture_coord_combo)
     {
-      LogDebug << "wrong texture coord combo index on fuckported model: " << _model->_file_key.stringRepr() << std::endl;
-      // use default stuff
+      LogDebug << "wrong texture coord combo index on modern/fuckported model: " << _model->_file_key.stringRepr() << std::endl;
+      // Keep the pass renderable. initUVTypes() will supply the t1 fallback.
       pass.shader_id = 0;
       pass.texture_count = 1;
-
       continue;
     }
 
@@ -504,6 +508,27 @@ void ModelRender::fixShaderIDLayer()
         }
 
         some_flags = (some_flags & 0xFF00);
+      }
+
+      auto const lookup_size = _model->_texture_unit_lookup.size();
+      bool const invalid_texture_coord_combo =
+          pass.texture_count == 0
+          || pass.texture_coord_combo_index >= lookup_size
+          || pass.texture_count > lookup_size - pass.texture_coord_combo_index;
+
+      if (invalid_texture_coord_combo)
+      {
+        // Modern M2/SKIN data can reference texture-coordinate combo entries
+        // that are not present in the legacy lookup array exposed to Noggit.
+        // Do not dereference the invalid index here. Keep the pass and let
+        // initUVTypes() apply its t1/t2 fallback later in initRenderPasses().
+        pass.texture_count = 1;
+        pass.textures[0] = pass.texture_combo_index;
+        pass.textures[1] = 0;
+        pass.uv_animations[0] = pass.animation_combo_index;
+        pass.uv_animations[1] = 0;
+        passes.push_back(pass);
+        continue;
       }
 
       int16_t texture_unit_lookup = _model->_texture_unit_lookup[pass.texture_coord_combo_index];
@@ -1086,22 +1111,22 @@ void ModelRenderPass::initUVTypes(Model* m)
   tu_lookups[0] = texture_unit_lookup::none;
   tu_lookups[1] = texture_unit_lookup::none;
 
-  if (m->_texture_unit_lookup.size() < texture_coord_combo_index + texture_count)
-  {
-    LogError << "model: texture_coord_combo_index out of range " << m->file_key().stringRepr() << std::endl;
+  auto const lookup_size = m->_texture_unit_lookup.size();
+  bool const invalid_texture_coord_combo =
+      texture_count == 0
+      || texture_coord_combo_index >= lookup_size
+      || texture_count > lookup_size - texture_coord_combo_index;
 
-    for (int i = 0; i < texture_count; ++i)
-    {
-      switch (i)
-      {
-        case 0: tu_lookups[i] = texture_unit_lookup::t1; break;
-        case 1: tu_lookups[i] = texture_unit_lookup::t2; break;
-      }
-    }
+  if (invalid_texture_coord_combo)
+  {
+    LogDebug << "model: texture_coord_combo_index fallback " << m->file_key().stringRepr() << std::endl;
+
+    if (texture_count > 0)
+      tu_lookups[0] = texture_unit_lookup::t1;
+    if (texture_count > 1)
+      tu_lookups[1] = texture_unit_lookup::t2;
 
     return;
-
-    //throw std::out_of_range("model: texture_coord_combo_index out of range " + m->filename);
   }
 
   for (int i = 0; i < texture_count; ++i)
