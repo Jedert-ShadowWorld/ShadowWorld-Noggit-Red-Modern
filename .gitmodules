@@ -5,6 +5,7 @@
 [submodule "src/external/blizzard-archive-library"]
 	path = src/external/blizzard-archive-library
 	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-Blizzard-Archive-Library.git
+	branch = shadowworld-modern
 [submodule "cmake"]
 	path = cmake
 	url = https://gitlab.com/T1ti/build-dependencies.git
