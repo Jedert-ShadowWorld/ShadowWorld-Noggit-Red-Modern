@@ -54,13 +54,12 @@ namespace
     return root_path.substr(0, extension) + suffix + ".adt";
   }
 
-  // Shadowlands split ADTs keep the placement records in _obj0. Unlike the
-  // legacy root ADT, there is no MMDX/MMID/MWMO/MWID name table in the files we
-  // are targeting: MDDF/MODF nameID is the model/WMO FileDataID directly.
-  // Keep that FileDataID authoritative all the way into CASC, while retaining
-  // the listfile path on the FileKey because existing Noggit model/WMO code still
-  // uses filepath() for cache identity, sidecar filenames (for example .skin),
-  // diagnostics and editor details. CASC prefers the FileDataID when both exist.
+  // Modern OBJ0 placement IDs are resolved to their listfile paths before they
+  // enter Noggit's legacy model pipeline. This mirrors what downport tools do:
+  // translate the modern FileDataID reference to the canonical asset name, then
+  // let the active client/listfile resolve that name back to the FileDataID that
+  // actually exists in the currently opened CASC. It also gives the M2 loader a
+  // real pathname for .skin/.anim sidecars and modern MD21 adaptation.
   void load_modern_objects_before_exposing_tile(AsyncObject const* object)
   {
     auto* tile = dynamic_cast<MapTile*>(const_cast<AsyncObject*>(object));
@@ -177,7 +176,7 @@ namespace
           continue;
         }
 
-        BlizzardArchive::Listfile::FileKey key(path, placement.nameID);
+        BlizzardArchive::Listfile::FileKey key(path);
         tile->add_model(world->add_model_instance(
           ModelInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
         ++loaded_m2;
@@ -201,7 +200,7 @@ namespace
         if (placement.scale == 0)
           placement.scale = 1024;
 
-        BlizzardArchive::Listfile::FileKey key(path, placement.nameID);
+        BlizzardArchive::Listfile::FileKey key(path);
         tile->add_model(world->add_wmo_instance(
           WMOInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
         ++loaded_wmo;
