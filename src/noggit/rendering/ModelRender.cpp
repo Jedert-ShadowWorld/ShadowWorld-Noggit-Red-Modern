@@ -6,6 +6,7 @@
 #include <noggit/Misc.h>
 #include <noggit/Particle.h>
 #include <noggit/TextureManager.h>
+#include <noggit/project/CurrentProject.hpp>
 
 #include <math/bounding_box.hpp>
 #include <math/frustum.hpp>
@@ -16,6 +17,15 @@
 
 
 using namespace Noggit::Rendering;
+
+namespace
+{
+  bool isShadowlandsProject()
+  {
+    auto* project = Noggit::Project::CurrentProject::get();
+    return project && project->projectVersion == Noggit::Project::ProjectVersion::SL;
+  }
+}
 
 ModelRender::ModelRender(Model* model)
 : _model(model)
@@ -207,8 +217,7 @@ void ModelRender::draw(glm::mat4x4 const& model_view
       _model->anim_calculated = true;
     }
 
-    // store the model count to draw the bounding boxes later
-    if (all_boxes || _model->_hidden ) 
+    if (all_boxes || _model->_hidden )
     {
       model_boxes_to_draw.emplace(_model, instances.size());
 
@@ -217,8 +226,8 @@ void ModelRender::draw(glm::mat4x4 const& model_view
       }
 
     }
-    else if (draw_fake_geometry_box && _model->use_fake_geometry() /*|| _model->particles_only()*/)
-    { // hackfix for rendering particle only objects bounds as they currently don't render
+    else if (draw_fake_geometry_box && _model->use_fake_geometry())
+    {
       model_boxes_to_draw.emplace(_model, instances.size());
     }
 
@@ -227,7 +236,6 @@ void ModelRender::draw(glm::mat4x4 const& model_view
     {
       OpenGL::Scoped::buffer_binder<GL_ARRAY_BUFFER> const transform_binder (_transform_buffer);
       gl.bufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(::glm::mat4x4), instances.data(), GL_DYNAMIC_DRAW);
-      //m2_shader.attrib("transform", 0, 1);
     }
 
     if (_model->animBones)
@@ -248,11 +256,9 @@ void ModelRender::draw(glm::mat4x4 const& model_view
       if (p.prepareDraw(m2_shader, _model, model_render_state))
       {
         gl.drawElementsInstanced(GL_TRIANGLES, p.index_count, GL_UNSIGNED_SHORT, reinterpret_cast<void*>(p.index_start * sizeof(GLushort)), static_cast<GLsizei>(instances.size()));
-        //p.after_draw();
       }
     }
   }
-
 }
 
 void ModelRender::drawParticles(glm::mat4x4 const& model_view
@@ -310,7 +316,6 @@ void ModelRender::drawRibbons( OpenGL::Scoped::use_program& ribbons_shader
 
 void ModelRender::drawBox(OpenGL::Scoped::use_program& m2_box_shader, std::size_t box_count)
 {
-
   OpenGL::Scoped::vao_binder const _ (_box_vao);
 
   {
@@ -357,7 +362,6 @@ void ModelRender::setupVAO(OpenGL::Scoped::use_program& m2_shader)
   _vao_setup = true;
 }
 
-
 void ModelRender::fixShaderIdBlendOverride()
 {
   for (auto& pass : _render_passes)
@@ -378,8 +382,17 @@ void ModelRender::fixShaderIdBlendOverride()
 
     if (invalid_texture_coord_combo)
     {
+      if (isShadowlandsProject())
+      {
+        LogDebug << "modern M2: using shader UV semantics for " << _model->_file_key.stringRepr() << std::endl;
+        if (pass.texture_count == 0)
+          pass.texture_count = 1;
+        if (pass.texture_count > 2)
+          pass.texture_count = 2;
+        continue;
+      }
+
       LogDebug << "wrong texture coord combo index on modern/fuckported model: " << _model->_file_key.stringRepr() << std::endl;
-      // Keep the pass renderable. initUVTypes() will supply the t1 fallback.
       pass.shader_id = 0;
       pass.texture_count = 1;
       continue;
@@ -492,17 +505,13 @@ void ModelRender::fixShaderIDLayer()
         if ((_model->_render_flags[pass.renderflag_index].blend == 1 || _model->_render_flags[pass.renderflag_index].blend == 2)
             && pass.texture_count == 1
             && xor_unlit
-            && pass.texture_combo_index == first_pass->texture_combo_index
-            )
+            && pass.texture_combo_index == first_pass->texture_combo_index)
         {
           if (_model->_transparency_lookup[pass.transparency_combo_index] == _model->_transparency_lookup[first_pass->transparency_combo_index])
           {
             pass.shader_id = 0x8000;
             first_pass->shader_id = 0x8001;
-
             some_flags = (some_flags & 0xFF00) | 3;
-
-            // current pass removed (not needed)
             continue;
           }
         }
@@ -518,15 +527,17 @@ void ModelRender::fixShaderIDLayer()
 
       if (invalid_texture_coord_combo)
       {
-        // Modern M2/SKIN data can reference texture-coordinate combo entries
-        // that are not present in the legacy lookup array exposed to Noggit.
-        // Do not dereference the invalid index here. Keep the pass and let
-        // initUVTypes() apply its t1/t2 fallback later in initRenderPasses().
-        pass.texture_count = 1;
+        if (pass.texture_count == 0)
+          pass.texture_count = 1;
+        if (pass.texture_count > 2)
+          pass.texture_count = 2;
+        if (!isShadowlandsProject())
+          pass.texture_count = 1;
+
         pass.textures[0] = pass.texture_combo_index;
-        pass.textures[1] = 0;
+        pass.textures[1] = pass.texture_count > 1 ? pass.texture_combo_index + 1 : 0;
         pass.uv_animations[0] = pass.animation_combo_index;
-        pass.uv_animations[1] = 0;
+        pass.uv_animations[1] = pass.texture_count > 1 ? pass.animation_combo_index + 1 : 0;
         passes.push_back(pass);
         continue;
       }
@@ -552,23 +563,17 @@ void ModelRender::fixShaderIDLayer()
           {
             some_flags &= 0xFF00;
           }
-          // tod
-          else  if ((_model->_transparency_lookup.size() > pass.transparency_combo_index
+          else if ((_model->_transparency_lookup.size() > pass.transparency_combo_index
           && _model->_transparency_lookup.size() > first_pass->transparency_combo_index)
           && _model->_transparency_lookup[pass.transparency_combo_index]
             == _model->_transparency_lookup[first_pass->transparency_combo_index])
           {
             pass.shader_id = 0x8000;
             first_pass->shader_id = _model->_render_flags[pass.renderflag_index].blend != 4 ? 0xE : 0x8002;
-
             some_flags = (some_flags & 0xFF) | (2 << 8);
-
             first_pass->texture_count = 2;
-
             first_pass->textures[1] = pass.texture_combo_index;
             first_pass->uv_animations[1] = pass.animation_combo_index;
-
-            // current pass removed (merged with the previous one)
             continue;
           }
         }
@@ -579,17 +584,15 @@ void ModelRender::fixShaderIDLayer()
             continue;
           }
 
-          if ( ((_model->_render_flags[pass.renderflag_index].blend != 2) && (_model->_render_flags[pass.renderflag_index].blend != 1))
+          if (((_model->_render_flags[pass.renderflag_index].blend != 2) && (_model->_render_flags[pass.renderflag_index].blend != 1))
                || (pass.texture_count != 1)
                || xor_unlit
-               || ((pass.texture_combo_index & 0xff) != (first_pass->texture_combo_index & 0xff))
-              )
+               || ((pass.texture_combo_index & 0xff) != (first_pass->texture_combo_index & 0xff)))
           {
             some_flags &= 0xFF00;
           }
-          else  if (_model->_transparency_lookup[pass.transparency_combo_index] == _model->_transparency_lookup[first_pass->transparency_combo_index])
+          else if (_model->_transparency_lookup[pass.transparency_combo_index] == _model->_transparency_lookup[first_pass->transparency_combo_index])
           {
-            // current pass ignored/removed
             pass.shader_id = 0x8000;
             first_pass->shader_id = ((first_pass->shader_id == 0x8002 ? 2 : 0) - 0x7FFF) & 0xFFFF;
             some_flags = (some_flags & 0xFF) | (3 << 8);
@@ -604,7 +607,6 @@ void ModelRender::fixShaderIDLayer()
         some_flags = (some_flags & 0xFF) | (1 << 8);
       }
 
-      // setup texture and anim lookup indices
       pass.textures[0] = pass.texture_combo_index;
       pass.textures[1] = pass.texture_count > 1 ? pass.texture_combo_index + 1 : 0;
       pass.uv_animations[0] = pass.animation_combo_index;
@@ -637,7 +639,6 @@ void ModelRender::fixShaderIDLayer()
 
     _render_passes = passes;
   }
-    // no layering, just setting some infos
   else
   {
     for (auto& pass : _render_passes)
@@ -652,14 +653,10 @@ void ModelRender::fixShaderIDLayer()
 
 namespace
 {
-
-// https://wowdev.wiki/M2/.skin/WotLK_shader_selection
   std::optional<ModelPixelShader> GetPixelShader(uint16_t texture_count, uint16_t shader_id)
   {
     uint16_t texture1_fragment_mode = (shader_id >> 4) & 7;
     uint16_t texture2_fragment_mode = shader_id & 7;
-    // uint16_t texture1_env_map = (shader_id >> 4) & 8;
-    // uint16_t texture2_env_map = shader_id & 8;
 
     std::optional<ModelPixelShader> pixel_shader;
 
@@ -667,24 +664,12 @@ namespace
     {
       switch (texture1_fragment_mode)
       {
-        case 0:
-          pixel_shader = ModelPixelShader::Combiners_Opaque;
-          break;
-        case 2:
-          pixel_shader = ModelPixelShader::Combiners_Decal;
-          break;
-        case 3:
-          pixel_shader = ModelPixelShader::Combiners_Add;
-          break;
-        case 4:
-          pixel_shader = ModelPixelShader::Combiners_Mod2x;
-          break;
-        case 5:
-          pixel_shader = ModelPixelShader::Combiners_Fade;
-          break;
-        default:
-          pixel_shader = ModelPixelShader::Combiners_Mod;
-          break;
+        case 0: pixel_shader = ModelPixelShader::Combiners_Opaque; break;
+        case 2: pixel_shader = ModelPixelShader::Combiners_Decal; break;
+        case 3: pixel_shader = ModelPixelShader::Combiners_Add; break;
+        case 4: pixel_shader = ModelPixelShader::Combiners_Mod2x; break;
+        case 5: pixel_shader = ModelPixelShader::Combiners_Fade; break;
+        default: pixel_shader = ModelPixelShader::Combiners_Mod; break;
       }
     }
     else
@@ -693,56 +678,30 @@ namespace
       {
         switch (texture2_fragment_mode)
         {
-          case 0:
-            pixel_shader = ModelPixelShader::Combiners_Opaque_Opaque;
-            break;
-          case 3:
-            pixel_shader = ModelPixelShader::Combiners_Opaque_Add;
-            break;
-          case 4:
-            pixel_shader = ModelPixelShader::Combiners_Opaque_Mod2x;
-            break;
-          case 6:
-            pixel_shader = ModelPixelShader::Combiners_Opaque_Mod2xNA;
-            break;
-          case 7:
-            pixel_shader = ModelPixelShader::Combiners_Opaque_AddNA;
-            break;
-          default:
-            pixel_shader = ModelPixelShader::Combiners_Opaque_Mod;
-            break;
+          case 0: pixel_shader = ModelPixelShader::Combiners_Opaque_Opaque; break;
+          case 3: pixel_shader = ModelPixelShader::Combiners_Opaque_Add; break;
+          case 4: pixel_shader = ModelPixelShader::Combiners_Opaque_Mod2x; break;
+          case 6: pixel_shader = ModelPixelShader::Combiners_Opaque_Mod2xNA; break;
+          case 7: pixel_shader = ModelPixelShader::Combiners_Opaque_AddNA; break;
+          default: pixel_shader = ModelPixelShader::Combiners_Opaque_Mod; break;
         }
       }
       else if (texture1_fragment_mode == 1)
       {
         switch (texture2_fragment_mode)
         {
-          case 0:
-            pixel_shader = ModelPixelShader::Combiners_Mod_Opaque;
-            break;
-          case 3:
-            pixel_shader = ModelPixelShader::Combiners_Mod_Add;
-            break;
-          case 4:
-            pixel_shader = ModelPixelShader::Combiners_Mod_Mod2x;
-            break;
-          case 6:
-            pixel_shader = ModelPixelShader::Combiners_Mod_Mod2xNA;
-            break;
-          case 7:
-            pixel_shader = ModelPixelShader::Combiners_Mod_AddNA;
-            break;
-          default:
-            pixel_shader = ModelPixelShader::Combiners_Mod_Mod;
-            break;
+          case 0: pixel_shader = ModelPixelShader::Combiners_Mod_Opaque; break;
+          case 3: pixel_shader = ModelPixelShader::Combiners_Mod_Add; break;
+          case 4: pixel_shader = ModelPixelShader::Combiners_Mod_Mod2x; break;
+          case 6: pixel_shader = ModelPixelShader::Combiners_Mod_Mod2xNA; break;
+          case 7: pixel_shader = ModelPixelShader::Combiners_Mod_AddNA; break;
+          default: pixel_shader = ModelPixelShader::Combiners_Mod_Mod; break;
         }
       }
       else if (texture1_fragment_mode == 3)
       {
         if (texture2_fragment_mode == 1)
-        {
           pixel_shader = ModelPixelShader::Combiners_Add_Mod;
-        }
       }
       else if (texture1_fragment_mode == 4 && texture2_fragment_mode == 4)
       {
@@ -754,40 +713,60 @@ namespace
       }
     }
 
-
     return pixel_shader;
   }
 
-  std::optional<ModelPixelShader> M2GetPixelShaderID (uint16_t texture_count, uint16_t shader_id)
+  std::optional<ModelPixelShader> M2GetPixelShaderID(uint16_t texture_count, uint16_t shader_id)
   {
     std::optional<ModelPixelShader> pixel_shader;
 
     if (!(shader_id & 0x8000))
     {
       pixel_shader = GetPixelShader(texture_count, shader_id);
-
       if (!pixel_shader)
-      {
         pixel_shader = GetPixelShader(texture_count, 0x11);
-      }
     }
     else
     {
       switch (shader_id & 0x7FFF)
       {
-        case 1:
-          pixel_shader = ModelPixelShader::Combiners_Opaque_Mod2xNA_Alpha;
-          break;
-        case 2:
-          pixel_shader = ModelPixelShader::Combiners_Opaque_AddAlpha;
-          break;
-        case 3:
-          pixel_shader = ModelPixelShader::Combiners_Opaque_AddAlpha_Alpha;
-          break;
+        case 1: pixel_shader = ModelPixelShader::Combiners_Opaque_Mod2xNA_Alpha; break;
+        case 2: pixel_shader = ModelPixelShader::Combiners_Opaque_AddAlpha; break;
+        case 3: pixel_shader = ModelPixelShader::Combiners_Opaque_AddAlpha_Alpha; break;
       }
     }
 
     return pixel_shader;
+  }
+
+  std::optional<ModelPixelShader> M2GetShadowlandsPixelShaderID(uint16_t texture_count, uint16_t shader_id)
+  {
+    if (!(shader_id & 0x8000))
+      return M2GetPixelShaderID(texture_count, shader_id);
+
+    switch (shader_id & 0xFF)
+    {
+      case 0:
+      case 3:
+      case 9:
+      case 17:
+      case 24:
+        return ModelPixelShader::Combiners_Mod_Mod2x;
+      case 2:
+        return ModelPixelShader::Combiners_Mod_Add;
+      case 21:
+        return ModelPixelShader::Combiners_Mod_Mod;
+      case 1:
+      case 5:
+      case 8:
+      case 10:
+      case 12:
+      case 15:
+      case 16:
+      case 23:
+      default:
+        return ModelPixelShader::Combiners_Mod;
+    }
   }
 }
 
@@ -795,7 +774,9 @@ void ModelRender::computePixelShaderIDs()
 {
   for (auto& pass : _render_passes)
   {
-    pass.pixel_shader = M2GetPixelShaderID(pass.texture_count, pass.shader_id);
+    pass.pixel_shader = isShadowlandsProject()
+        ? M2GetShadowlandsPixelShaderID(pass.texture_count, pass.shader_id)
+        : M2GetPixelShaderID(pass.texture_count, pass.shader_id);
   }
 }
 
@@ -817,31 +798,23 @@ void ModelRender::initRenderPasses(ModelView const* view, ModelTexUnit const* te
     _render_passes.push_back(std::move(pass));
   }
 
-
   fixShaderIdBlendOverride();
   fixShaderIDLayer();
   computePixelShaderIDs();
-
 
   for (auto& pass : _render_passes)
   {
     pass.initUVTypes(_model);
   }
 
-  // transparent parts come later
   std::sort(_render_passes.begin(), _render_passes.end());
 }
 
 void ModelRender::updateBoneMatrices()
 {
-  {
-    OpenGL::Scoped::buffer_binder<GL_TEXTURE_BUFFER> const binder (_bone_matrices_buffer);
-    gl.bufferSubData(GL_TEXTURE_BUFFER, 0, _model->bone_matrices.size() * sizeof(glm::mat4x4), _model->bone_matrices.data());
-  }
+  OpenGL::Scoped::buffer_binder<GL_TEXTURE_BUFFER> const binder (_bone_matrices_buffer);
+  gl.bufferSubData(GL_TEXTURE_BUFFER, 0, _model->bone_matrices.size() * sizeof(glm::mat4x4), _model->bone_matrices.data());
 }
-
-// ModelRenderPass
-
 
 ModelRenderPass::ModelRenderPass(ModelTexUnit const& tex_unit, Model* m)
     : ModelTexUnit(tex_unit)
@@ -856,14 +829,11 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     return false;
   }
 
-  // COLOUR
-  // Get the colour and transparency and check that we should even render
-  glm::vec4 mesh_color = glm::vec4(1.0f, 1.0f, 1.0f, m->trans); // ??
+  glm::vec4 mesh_color = glm::vec4(1.0f, 1.0f, 1.0f, m->trans);
   glm::vec4 emissive_color = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
   auto const& renderflag(m->_render_flags[renderflag_index]);
 
-  // emissive colors
   if (color_index != -1 && m->_colors[color_index].color.uses(0))
   {
     ::glm::vec3 c (m->_colors[color_index].color.getValue (0, m->_anim_time, m->_global_animtime));
@@ -873,11 +843,9 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     }
 
     mesh_color.x = c.x; mesh_color.y = c.y; mesh_color.z = c.z;
-
     emissive_color = glm::vec4(c.x,c.y,c.z, mesh_color.w);
   }
 
-  // opacity
   if (transparency_combo_index != 0xFFFF && transparency_combo_index < m->_transparency_lookup.size())
   {
     auto& transparency (m->_transparency[m->_transparency_lookup[transparency_combo_index]].trans);
@@ -887,12 +855,10 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     }
   }
 
-  // exit and return false before affecting the opengl render state
   if (!((mesh_color.w > 0) && (color_index == -1 || emissive_color.w > 0)))
   {
     return false;
   }
-
 
   if (model_render_state.blend != renderflag.blend)
   {
@@ -932,13 +898,9 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
   if (model_render_state.backface_cull != !renderflag.flags.two_sided)
   {
     if (renderflag.flags.two_sided)
-    {
       gl.disable(GL_CULL_FACE);
-    }
     else
-    {
       gl.enable(GL_CULL_FACE);
-    }
 
     model_render_state.backface_cull = !renderflag.flags.two_sided;
   }
@@ -946,13 +908,9 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
   if (model_render_state.z_buffered != renderflag.flags.z_buffered)
   {
     if (renderflag.flags.z_buffered)
-    {
       gl.depthMask(GL_FALSE);
-    }
     else
-    {
       gl.depthMask(GL_TRUE);
-    }
 
     model_render_state.z_buffered = renderflag.flags.z_buffered;
   }
@@ -970,9 +928,7 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
   }
 
   if (texture_count > 1)
-  {
     bindTexture(1, m, model_render_state, m2_shader);
-  }
 
   bindTexture(0, m, model_render_state, m2_shader);
 
@@ -1000,13 +956,9 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     {
       tex_anim_lookup = m->_texture_animation_lookups[uv_animations[1]];
       if (tex_anim_lookup != -1)
-      {
         m2_shader.uniform("tex_matrix_2", m->_texture_animations[tex_anim_lookup].mat);
-      }
       else
-      {
         m2_shader.uniform("tex_matrix_2", unit);
-      }
     }
   }
   else
@@ -1014,7 +966,6 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     m2_shader.uniform("tex_matrix_1", unit);
     m2_shader.uniform("tex_matrix_2", unit);
   }
-
 
   GLint ps = static_cast<GLint>(pixel_shader.value());
   if (model_render_state.pixel_shader != ps)
@@ -1035,7 +986,6 @@ void ModelRenderPass::afterDraw()
 
 void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader)
 {
-
   uint16_t tex = m->_texture_lookup[textures[index]];
 
   if (m->_specialTextures[tex] == -1)
@@ -1047,34 +997,16 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
 
     gl.activeTexture(static_cast<GLenum>(GL_TEXTURE0 + index + 1));
     gl.bindTexture(GL_TEXTURE_2D_ARRAY, tex_array);
-    /*
-    if (model_render_state.tex_arrays[index] != tex_array)
-    {
-      gl.activeTexture(GL_TEXTURE0 + index + 1);
-      gl.bindTexture(GL_TEXTURE_2D_ARRAY, tex_array);
-      model_render_state.tex_arrays[index] = tex_array;
-    }
-
-
-    if (model_render_state.tex_indices[index] != tex_index)
-    {
-      m2_shader.uniform(index ? "tex2_index" : "tex1_index", tex_index);
-      model_render_state.tex_indices[index] = tex_index;
-    }
-
-          */
-
     m2_shader.uniform(index ? "tex2_index" : "tex1_index", tex_index);
     model_render_state.tex_indices[index] = tex_index;
-
   }
   else
   {
     if (m->_specialTextures[tex] >= m->_replaceTextures.size())
-	{
-	  LogError << "model: special texture index out of range " << m->file_key().stringRepr() << std::endl;
-	  return;
-	}
+    {
+      LogError << "model: special texture index out of range " << m->file_key().stringRepr() << std::endl;
+      return;
+    }
 
     auto& texture = m->_replaceTextures.at (m->_specialTextures[tex]);
     texture->upload();
@@ -1083,26 +1015,8 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
 
     gl.activeTexture(static_cast<GLenum>(GL_TEXTURE0 + index + 1));
     gl.bindTexture(GL_TEXTURE_2D_ARRAY, tex_array);
-
-    /*
-    if (model_render_state.tex_arrays[index] != tex_array)
-    {
-      gl.activeTexture(GL_TEXTURE0 + index + 1);
-      gl.bindTexture(GL_TEXTURE_2D_ARRAY, tex_array);
-      model_render_state.tex_arrays[index] = tex_array;
-    }
-
-    if (model_render_state.tex_indices[index] != tex_index)
-    {
-      m2_shader.uniform(index ? "tex2_index" : "tex1_index", tex_index);
-      model_render_state.tex_indices[index] = tex_index;
-    }
-
-          */
-
     m2_shader.uniform(index ? "tex2_index" : "tex1_index", tex_index);
     model_render_state.tex_indices[index] = tex_index;
-
   }
 }
 
@@ -1119,13 +1033,66 @@ void ModelRenderPass::initUVTypes(Model* m)
 
   if (invalid_texture_coord_combo)
   {
-    LogDebug << "model: texture_coord_combo_index fallback " << m->file_key().stringRepr() << std::endl;
+    if (isShadowlandsProject())
+    {
+      LogDebug << "modern M2: texture_coord_combo_index resolved from shader " << m->file_key().stringRepr() << std::endl;
 
+      if (texture_count == 0)
+        texture_count = 1;
+      if (texture_count > 2)
+        texture_count = 2;
+
+      if (shader_id & 0x8000)
+      {
+        switch (shader_id & 0xFF)
+        {
+          case 0:
+          case 2:
+          case 3:
+          case 9:
+          case 17:
+          case 24:
+            tu_lookups[0] = texture_unit_lookup::t1;
+            if (texture_count > 1)
+              tu_lookups[1] = texture_unit_lookup::environment;
+            break;
+          case 21:
+            tu_lookups[0] = texture_unit_lookup::t1;
+            if (texture_count > 1)
+              tu_lookups[1] = texture_unit_lookup::t2;
+            break;
+          default:
+            tu_lookups[0] = texture_unit_lookup::t1;
+            if (texture_count > 1)
+              tu_lookups[1] = texture_unit_lookup::t1;
+            break;
+        }
+      }
+      else
+      {
+        tu_lookups[0] = (shader_id & 0x80)
+            ? texture_unit_lookup::environment
+            : texture_unit_lookup::t1;
+
+        if (texture_count > 1)
+        {
+          if (shader_id & 0x8)
+            tu_lookups[1] = texture_unit_lookup::environment;
+          else if (shader_id & 0x4000)
+            tu_lookups[1] = texture_unit_lookup::t2;
+          else
+            tu_lookups[1] = texture_unit_lookup::t1;
+        }
+      }
+
+      return;
+    }
+
+    LogDebug << "model: texture_coord_combo_index fallback " << m->file_key().stringRepr() << std::endl;
     if (texture_count > 0)
       tu_lookups[0] = texture_unit_lookup::t1;
     if (texture_count > 1)
       tu_lookups[1] = texture_unit_lookup::t2;
-
     return;
   }
 
