@@ -43,7 +43,12 @@ enum M2Versions
   m2_version_wrath = 264,
   m2_version_cataclysm = 272, // 265-272
   m2_version_pandaria_draenor = 272,
-  m2_version_legion_bfa_sl = 274, // 272-274 Legion, Battle for Azeroth, Shadowlands
+  // Shadowlands 9.2.7 MD21 containers unwrap to an embedded MD20 payload
+  // whose on-disk version is 0x110 (272). Keep 274 documented separately
+  // because some Legion/BFA-era assets use it, but the SL project gate must
+  // accept the payload actually present in the 9.2.7 CASC data.
+  m2_version_legion_bfa_sl = 272,
+  m2_version_legion_bfa_274 = 274,
 };
 
 enum M2GlobalFlags
