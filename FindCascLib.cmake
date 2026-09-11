@@ -34,32 +34,72 @@ FetchContent_MakeAvailable(casclib) # replaces FetchContent_PopulateFast
   endif()
 # endif()
 
-find_path (CASCLIB_INCLUDE_DIR CascLib.h CascPort.h)
-
-find_library (_casc_debug_lib NAMES CascLibDAD CascLibDAS CascLibDUD CascLibDUS casc casclib CascLib PATHS ${CASCLIB_LIBRARY_DEBUG_DIR})
-find_library (_casc_release_lib NAMES CascLibRAD CascLibRAS CascLibRUD CascLibRUS casc casclib CascLib PATHS ${CASCLIB_LIBRARY_RELEASE_DIR})
-find_library (_casc_any_lib NAMES casc casclib CascLib)
-
-set (CASC_LIBRARIES)
-if (_casc_debug_lib AND _casc_release_lib)
-  list (APPEND CASC_LIBRARIES debug ${_casc_debug_lib} optimized ${_casc_release_lib})
-else()
-  list (APPEND CASC_LIBRARIES ${_casc_any_lib})
-endif()
+find_path (CASCLIB_INCLUDE_DIR CascLib.h CascPort.h PATHS "${casclib_SOURCE_DIR}/includes")
 
 include (FindPackageHandleStandardArgs)
-find_package_handle_standard_args (CascLib DEFAULT_MSG CASC_LIBRARIES CASCLIB_INCLUDE_DIR)
+find_package_handle_standard_args (CascLib DEFAULT_MSG CASCLIB_INCLUDE_DIR)
 
 mark_as_advanced (CASCLIB_INCLUDE_DIR _casc_debug_lib _casc_release_lib _casc_any_lib CASC_LIBRARIES)
 
-add_library (CascLib INTERFACE)
-target_link_libraries (CascLib INTERFACE ${CASC_LIBRARIES})
-set_property  (TARGET CascLib APPEND PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${CASCLIB_INCLUDE_DIR})
-set_property  (TARGET CascLib APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES ${CASCLIB_INCLUDE_DIR})
+if (WIN32 AND EXISTS "${casclib_SOURCE_DIR}/includes/CascOpenStorage.cpp")
+  set(CASCLIB_SOURCE_ROOT "${casclib_SOURCE_DIR}/includes")
+  add_library (CascLib STATIC
+    "${CASCLIB_SOURCE_ROOT}/CascDecompress.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascDecrypt.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascFiles.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascFindFile.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascIndexFiles.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascOpenFile.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascOpenStorage.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascReadFile.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascRootFile_Diablo3.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascRootFile_Install.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascRootFile_MNDX.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascRootFile_OW.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascRootFile_Text.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascRootFile_TVFS.cpp"
+    "${CASCLIB_SOURCE_ROOT}/CascRootFile_WoW.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/Common.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/Csv.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/Directory.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/FileStream.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/FileTree.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/ListFile.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/Mime.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/RootHandler.cpp"
+    "${CASCLIB_SOURCE_ROOT}/common/Sockets.cpp"
+    "${CASCLIB_SOURCE_ROOT}/jenkins/lookup3.c"
+    "${CASCLIB_SOURCE_ROOT}/md5/md5.cpp"
+    "${CASCLIB_SOURCE_ROOT}/zlib/adler32.c"
+    "${CASCLIB_SOURCE_ROOT}/zlib/crc32.c"
+    "${CASCLIB_SOURCE_ROOT}/zlib/deflate.c"
+    "${CASCLIB_SOURCE_ROOT}/zlib/inffast.c"
+    "${CASCLIB_SOURCE_ROOT}/zlib/inflate.c"
+    "${CASCLIB_SOURCE_ROOT}/zlib/inftrees.c"
+    "${CASCLIB_SOURCE_ROOT}/zlib/trees.c"
+    "${CASCLIB_SOURCE_ROOT}/zlib/zutil.c"
+  )
+  target_include_directories (CascLib SYSTEM PUBLIC "${CASCLIB_SOURCE_ROOT}")
+  target_link_libraries (CascLib PUBLIC ws2_32)
+  target_compile_definitions (CascLib PUBLIC -DCASCLIB_NO_AUTO_LINK_LIBRARY)
+else()
+  find_library (_casc_debug_lib NAMES CascLibDAD CascLibDAS CascLibDUD CascLibDUS casc casclib CascLib PATHS ${CASCLIB_LIBRARY_DEBUG_DIR})
+  find_library (_casc_release_lib NAMES CascLibRAD CascLibRAS CascLibRUD CascLibRUS casc casclib CascLib PATHS ${CASCLIB_LIBRARY_RELEASE_DIR})
+  find_library (_casc_any_lib NAMES casc casclib CascLib)
 
-#remove_definitions(-D_DLL)
-#! \note on Windows, Casc tries to auto-link. There is no proper flag to disable that, so abuse this one.
-target_compile_definitions (CascLib INTERFACE -DCASCLIB_NO_AUTO_LINK_LIBRARY)
+  set (CASC_LIBRARIES)
+  if (_casc_debug_lib AND _casc_release_lib)
+    list (APPEND CASC_LIBRARIES debug ${_casc_debug_lib} optimized ${_casc_release_lib})
+  else()
+    list (APPEND CASC_LIBRARIES ${_casc_any_lib})
+  endif()
+
+  add_library (CascLib INTERFACE)
+  target_link_libraries (CascLib INTERFACE ${CASC_LIBRARIES})
+  set_property  (TARGET CascLib APPEND PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${CASCLIB_INCLUDE_DIR})
+  set_property  (TARGET CascLib APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES ${CASCLIB_INCLUDE_DIR})
+  target_compile_definitions (CascLib INTERFACE -DCASCLIB_NO_AUTO_LINK_LIBRARY)
+endif()
 
 MESSAGE(STATUS "Casclib Include         : ${CASCLIB_INCLUDE_DIR}")
 MESSAGE(STATUS "Casclib Debug Lib       : ${_casc_debug_lib}")

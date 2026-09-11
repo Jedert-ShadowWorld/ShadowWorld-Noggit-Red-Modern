@@ -18,7 +18,9 @@ macro (execute _output_var) # , command...
   endif()
 endmacro()
 
-execute (_status "${GIT_EXECUTABLE}" "status" "--porcelain")
+set (_git_safe_directory "-c" "safe.directory=${CMAKE_SOURCE_DIR}")
+
+execute (_status "${GIT_EXECUTABLE}" ${_git_safe_directory} "status" "--porcelain")
 set (_dirty_marker "+")
 if (_status STREQUAL "")
   set (_dirty_marker "")
@@ -27,8 +29,8 @@ endif()
 # \todo If head is tagged, use tag.
 # \todo Add deploy script that adds tags so that we have sane
 # revisions again, at all times.
-execute (_revision "${GIT_EXECUTABLE}" "rev-parse" "--short" "HEAD")
-execute (_commit_count "${GIT_EXECUTABLE}" "rev-list" "--count" "--all")
+execute (_revision "${GIT_EXECUTABLE}" ${_git_safe_directory} "rev-parse" "--short" "HEAD")
+execute (_commit_count "${GIT_EXECUTABLE}" ${_git_safe_directory} "rev-list" "--count" "--all")
 
 file (READ "${_noggit_revision_template_file}" _template_blob)
 file (READ "${CMAKE_CURRENT_LIST_FILE}" _self_blob)
