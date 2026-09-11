@@ -231,7 +231,9 @@ namespace Noggit::Project
     auto client_archive_locale = BlizzardArchive::Locale::AUTO;
     if (project->projectVersion == ProjectVersion::SL || project->projectVersion == ProjectVersion::RETAIL)
     {
-      client_archive_version = BlizzardArchive::ClientVersion::SL;
+      client_archive_version = project->projectVersion == ProjectVersion::RETAIL
+        ? BlizzardArchive::ClientVersion::RETAIL
+        : BlizzardArchive::ClientVersion::SL;
       auto detected_build = detectClientBuildVersion(project->ClientPath);
       if (detected_build.empty())
       {
@@ -244,6 +246,25 @@ namespace Noggit::Project
       }
 
       client_build = BlizzardDatabaseLib::Structures::Build(detected_build);
+      try
+      {
+        std::size_t parsed_length = 0;
+        auto const major_version = std::stoi(detected_build, &parsed_length);
+        if (parsed_length != 0)
+        {
+          client_archive_version = major_version >= 10
+            ? BlizzardArchive::ClientVersion::RETAIL
+            : BlizzardArchive::ClientVersion::SL;
+          Log << "Selected modern CASC profile from build: "
+              << (client_archive_version == BlizzardArchive::ClientVersion::SL ? "Shadowlands" : "Retail")
+              << std::endl;
+        }
+      }
+      catch (std::exception const& e)
+      {
+        LogError << "Could not select CASC profile from build " << detected_build
+                 << ": " << e.what() << std::endl;
+      }
       client_archive_locale = BlizzardArchive::Locale::enUS;
     }
 
