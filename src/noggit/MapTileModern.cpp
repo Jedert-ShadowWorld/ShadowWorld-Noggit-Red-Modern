@@ -373,7 +373,9 @@ namespace
 
           if (sub_magic == on_disk_fourcc('M','C','L','Y'))
           {
-            if (sub_size < 16 || sub_size % 16 != 0)
+            // WMO-only Shadowlands tiles (including Torghast) legitimately
+            // contain an empty MCLY in every TEX0 MCNK.
+            if (sub_size % 16 != 0)
               throw std::runtime_error("Shadowlands TEX0 MCLY has an invalid size.");
 
             auto const entry_count = sub_size / 16;

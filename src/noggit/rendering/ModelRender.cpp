@@ -23,7 +23,9 @@ namespace
   bool isShadowlandsProject()
   {
     auto* project = Noggit::Project::CurrentProject::get();
-    return project && project->projectVersion == Noggit::Project::ProjectVersion::SL;
+    return project
+      && (project->projectVersion == Noggit::Project::ProjectVersion::SL
+          || project->projectVersion == Noggit::Project::ProjectVersion::RETAIL);
   }
 }
 
@@ -366,6 +368,15 @@ void ModelRender::fixShaderIdBlendOverride()
 {
   for (auto& pass : _render_passes)
   {
+    // Noggit's M2 shader path and ModelRenderPass storage support two texture
+    // stages. Newer clients may advertise more; never write past the arrays.
+    if (pass.texture_count > 2)
+    {
+      LogDebug << "modern M2: limiting texture stages to 2 for "
+               << _model->_file_key.stringRepr() << std::endl;
+      pass.texture_count = 2;
+    }
+
     if (pass.shader_id & 0x8000)
     {
       continue;
@@ -423,7 +434,17 @@ void ModelRender::fixShaderIdBlendOverride()
     {
       uint16_t runtime_shader_val[2] = { 0, 0 };
 
-      for (int i = 0; i < pass.texture_count; ++i)
+      if (pass.shader_id >= _model->blend_override.size()
+          || pass.texture_count > _model->blend_override.size() - pass.shader_id)
+      {
+        LogDebug << "modern M2: invalid blend override range for "
+                 << _model->_file_key.stringRepr() << std::endl;
+        pass.shader_id = 0;
+        pass.texture_count = 1;
+        continue;
+      }
+
+      for (std::size_t i = 0; i < pass.texture_count; ++i)
       {
         uint16_t override_blend = _model->blend_override[pass.shader_id + i];
         uint16_t texture_unit_lookup = _model->_texture_unit_lookup[pass.texture_coord_combo_index + i];
@@ -472,6 +493,16 @@ void ModelRender::fixShaderIDLayer()
     ModelRenderPass* first_pass = nullptr;
     bool need_reducing = false;
     uint16_t previous_render_flag = -1, some_flags = 0;
+    auto same_transparency = [this](ModelRenderPass const& lhs, ModelRenderPass const& rhs)
+    {
+      if (lhs.transparency_combo_index >= _model->_transparency_lookup.size()
+          || rhs.transparency_combo_index >= _model->_transparency_lookup.size())
+        return lhs.transparency_combo_index == 0xFFFF
+            && rhs.transparency_combo_index == 0xFFFF;
+
+      return _model->_transparency_lookup[lhs.transparency_combo_index]
+          == _model->_transparency_lookup[rhs.transparency_combo_index];
+    };
 
     for (auto& pass : _render_passes)
     {
@@ -507,7 +538,7 @@ void ModelRender::fixShaderIDLayer()
             && xor_unlit
             && pass.texture_combo_index == first_pass->texture_combo_index)
         {
-          if (_model->_transparency_lookup[pass.transparency_combo_index] == _model->_transparency_lookup[first_pass->transparency_combo_index])
+          if (same_transparency(pass, *first_pass))
           {
             pass.shader_id = 0x8000;
             first_pass->shader_id = 0x8001;
@@ -563,10 +594,7 @@ void ModelRender::fixShaderIDLayer()
           {
             some_flags &= 0xFF00;
           }
-          else if ((_model->_transparency_lookup.size() > pass.transparency_combo_index
-          && _model->_transparency_lookup.size() > first_pass->transparency_combo_index)
-          && _model->_transparency_lookup[pass.transparency_combo_index]
-            == _model->_transparency_lookup[first_pass->transparency_combo_index])
+          else if (same_transparency(pass, *first_pass))
           {
             pass.shader_id = 0x8000;
             first_pass->shader_id = _model->_render_flags[pass.renderflag_index].blend != 4 ? 0xE : 0x8002;
@@ -591,7 +619,7 @@ void ModelRender::fixShaderIDLayer()
           {
             some_flags &= 0xFF00;
           }
-          else if (_model->_transparency_lookup[pass.transparency_combo_index] == _model->_transparency_lookup[first_pass->transparency_combo_index])
+          else if (same_transparency(pass, *first_pass))
           {
             pass.shader_id = 0x8000;
             first_pass->shader_id = ((first_pass->shader_id == 0x8002 ? 2 : 0) - 0x7FFF) & 0xFFFF;
@@ -787,6 +815,14 @@ void ModelRender::initRenderPasses(ModelView const* view, ModelTexUnit const* te
   {
     size_t geoset = tex_unit[j].submesh;
 
+    if (geoset >= view->n_submesh
+        || tex_unit[j].renderflag_index >= _model->_render_flags.size())
+    {
+      LogDebug << "modern M2: skipping invalid render pass for "
+               << _model->_file_key.stringRepr() << std::endl;
+      continue;
+    }
+
     ModelRenderPass pass(tex_unit[j], _model);
     pass.ordering_thingy = model_geosets[geoset].BoundingBox[0].x;
 
@@ -824,7 +860,10 @@ ModelRenderPass::ModelRenderPass(ModelTexUnit const& tex_unit, Model* m)
 
 bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state)
 {
-  if (!m->showGeosets[submesh] || !pixel_shader)
+  if (submesh >= m->showGeosets.size()
+      || renderflag_index >= m->_render_flags.size()
+      || !m->showGeosets[submesh]
+      || !pixel_shader)
   {
     return false;
   }
@@ -834,7 +873,9 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
 
   auto const& renderflag(m->_render_flags[renderflag_index]);
 
-  if (color_index != -1 && m->_colors[color_index].color.uses(0))
+  if (color_index >= 0
+      && static_cast<std::size_t>(color_index) < m->_colors.size()
+      && m->_colors[color_index].color.uses(0))
   {
     ::glm::vec3 c (m->_colors[color_index].color.getValue (0, m->_anim_time, m->_global_animtime));
     if (m->_colors[color_index].opacity.uses (m->_current_anim_seq))
@@ -848,10 +889,15 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
 
   if (transparency_combo_index != 0xFFFF && transparency_combo_index < m->_transparency_lookup.size())
   {
-    auto& transparency (m->_transparency[m->_transparency_lookup[transparency_combo_index]].trans);
-    if (transparency.uses (0))
+    auto const transparency_index = m->_transparency_lookup[transparency_combo_index];
+    if (transparency_index >= 0
+        && static_cast<std::size_t>(transparency_index) < m->_transparency.size())
     {
-      mesh_color.w = mesh_color.w * transparency.getValue(0, m->_anim_time, m->_global_animtime);
+      auto& transparency (m->_transparency[transparency_index].trans);
+      if (transparency.uses (0))
+      {
+        mesh_color.w = mesh_color.w * transparency.getValue(0, m->_anim_time, m->_global_animtime);
+      }
     }
   }
 
@@ -888,6 +934,10 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
       case M2Blend::Mod2x:
         gl.enable(GL_BLEND);
         gl.blendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+        break;
+      case M2Blend::InvSrcAlphaAdd:
+        gl.enable(GL_BLEND);
+        gl.blendFunc(GL_ONE_MINUS_SRC_ALPHA, GL_ONE);
         break;
     }
 
@@ -946,15 +996,28 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     model_render_state.tex_unit_lookups[1] = tu2;
   }
 
-  int16_t tex_anim_lookup = m->_texture_animation_lookups[uv_animations[0]];
   static const glm::mat4x4 unit(glm::mat4x4(1));
+  auto texture_animation = [m](uint16_t lookup_index) -> int16_t
+  {
+    if (lookup_index >= m->_texture_animation_lookups.size())
+      return -1;
+
+    auto const animation_index = m->_texture_animation_lookups[lookup_index];
+    if (animation_index < 0
+        || static_cast<std::size_t>(animation_index) >= m->_texture_animations.size())
+      return -1;
+
+    return animation_index;
+  };
+
+  int16_t tex_anim_lookup = texture_animation(uv_animations[0]);
 
   if (tex_anim_lookup != -1)
   {
     m2_shader.uniform("tex_matrix_1", m->_texture_animations[tex_anim_lookup].mat);
     if (texture_count > 1)
     {
-      tex_anim_lookup = m->_texture_animation_lookups[uv_animations[1]];
+      tex_anim_lookup = texture_animation(uv_animations[1]);
       if (tex_anim_lookup != -1)
         m2_shader.uniform("tex_matrix_2", m->_texture_animations[tex_anim_lookup].mat);
       else
@@ -986,10 +1049,26 @@ void ModelRenderPass::afterDraw()
 
 void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader)
 {
+  if (index >= std::size(textures) || textures[index] >= m->_texture_lookup.size())
+  {
+    LogError << "model: texture lookup index out of range " << m->file_key().stringRepr() << std::endl;
+    return;
+  }
+
   uint16_t tex = m->_texture_lookup[textures[index]];
+  if (tex >= m->_specialTextures.size())
+  {
+    LogError << "model: texture index out of range " << m->file_key().stringRepr() << std::endl;
+    return;
+  }
 
   if (m->_specialTextures[tex] == -1)
   {
+    if (tex >= m->_textures.size())
+    {
+      LogError << "model: ordinary texture index out of range " << m->file_key().stringRepr() << std::endl;
+      return;
+    }
     auto& texture = m->_textures[tex];
     texture->upload();
     GLuint tex_array = texture->texture_array();
@@ -1002,13 +1081,14 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
   }
   else
   {
-    if (m->_specialTextures[tex] >= m->_replaceTextures.size())
+    auto const replacement = m->_replaceTextures.find(static_cast<std::size_t>(m->_specialTextures[tex]));
+    if (replacement == m->_replaceTextures.end())
     {
       LogError << "model: special texture index out of range " << m->file_key().stringRepr() << std::endl;
       return;
     }
 
-    auto& texture = m->_replaceTextures.at (m->_specialTextures[tex]);
+    auto& texture = replacement->second;
     texture->upload();
     GLuint tex_array = texture->texture_array();
     int tex_index = texture->array_index();

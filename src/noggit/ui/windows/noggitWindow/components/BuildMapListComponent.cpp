@@ -93,7 +93,7 @@ void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* pare
     try
     {      Widget::MapListData map_list_data{};
 
-      auto map_name = shadowWorldFirstTextValue(record, {"MapName_lang", "MapName_lang_enUS", "MapName_lang_enGB", "MapName", "Directory"});
+      auto map_name = shadowWorldFirstTextValue(record, {"MapName_lang", "MapName_lang_enUS", "MapName_lang_enGB", "MapName", "Directory", "InternalName"});
       if (map_name.empty())
         map_name = std::to_string(record.RecordId);
 

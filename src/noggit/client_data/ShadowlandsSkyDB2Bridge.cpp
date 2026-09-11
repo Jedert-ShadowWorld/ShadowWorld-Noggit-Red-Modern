@@ -4,8 +4,7 @@
 
 #include <noggit/DBC.h>
 #include <noggit/Log.h>
-#include <noggit/application/NoggitApplication.hpp>
-#include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
+#include <noggit/project/CurrentProject.hpp>
 
 #include <blizzard-archive-library/include/ClientFile.hpp>
 #include <blizzard-database-library/include/BlizzardDatabase.h>
@@ -14,7 +13,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <filesystem>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -44,6 +42,9 @@ namespace
   struct ModernParamData
   {
     std::uint32_t id = 0;
+    std::uint32_t skybox_id = 0;
+    std::uint32_t cloud_type_id = 0;
+    std::uint32_t flags = 0;
     bool highlight_sky = false;
     float glow = 0.5f;
     float water_shallow_alpha = 0.5f;
@@ -62,6 +63,24 @@ namespace
       throw std::runtime_error("Modern DB2 row is missing numeric field " + field + ".");
 
     return static_cast<std::uint32_t>(std::stoul(found->second.Value));
+  }
+
+  std::uint32_t uint_value_or(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& row,
+                              std::string const& field,
+                              std::uint32_t fallback = 0)
+  {
+    auto const found = row.Columns.find(field);
+    if (found == row.Columns.end() || found->second.Value.empty())
+      return fallback;
+
+    try
+    {
+      return static_cast<std::uint32_t>(std::stoul(found->second.Value));
+    }
+    catch (...)
+    {
+      return fallback;
+    }
   }
 
   std::uint32_t row_id(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& row)
@@ -167,13 +186,11 @@ namespace Noggit::ClientData
   {
     try
     {
-      auto const definitions = std::filesystem::path(
-          Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationNoggitDefinitionsPath)
-          / "db2-shadowlands";
+      auto const project = Noggit::Project::CurrentProject::get();
+      if (!project || !project->ClientDatabase)
+        throw std::runtime_error("Modern sky DB2 bridge has no active project client database.");
 
-      BlizzardDatabaseLib::BlizzardDatabase database(
-          definitions.generic_string(),
-          BlizzardDatabaseLib::Structures::Build("9.2.7.45745"));
+      auto& database = *project->ClientDatabase;
 
       auto callback = [&client_data](std::string const& filename)
       {
@@ -183,6 +200,25 @@ namespace Noggit::ClientData
       auto& light_table = database.LoadTable("Light", callback);
       auto& params_table = database.LoadTable("LightParams", callback);
       auto& data_table = database.LoadTable("LightData", callback);
+      auto& skybox_table = database.LoadTable("LightSkybox", callback);
+
+      std::map<std::uint32_t, std::pair<std::string, std::uint32_t>> skyboxes;
+      for (std::uint32_t i = 0; i < skybox_table.RecordCount(); ++i)
+      {
+        auto row = skybox_table.RecordByPosition(i);
+        auto const id = row_id(row);
+        auto const primary_fdid = uint_value_or(row, "SkyboxFileDataID");
+        auto const celestial_fdid = uint_value_or(row, "CelestialSkyboxFileDataID");
+        auto const fdid = primary_fdid != 0 ? primary_fdid : celestial_fdid;
+        if (id == 0 || fdid == 0)
+          continue;
+
+        auto path = client_data->listfile()->getPath(fdid);
+        if (path.empty())
+          continue;
+
+        skyboxes.emplace(id, std::make_pair(std::move(path), uint_value_or(row, "Flags")));
+      }
 
       std::map<std::uint32_t, ModernParamData> params;
       for (std::uint32_t i = 0; i < params_table.RecordCount(); ++i)
@@ -190,6 +226,9 @@ namespace Noggit::ClientData
         auto row = params_table.RecordByPosition(i);
         ModernParamData param;
         param.id = row_id(row);
+        param.skybox_id = uint_value_or(row, "LightSkyboxID");
+        param.cloud_type_id = uint_value_or(row, "CloudTypeID");
+        param.flags = uint_value_or(row, "Flags");
         param.highlight_sky = uint_value(row, "HighlightSky") != 0;
         param.glow = row.getFloat("Glow");
         param.water_shallow_alpha = row.getFloat("WaterShallowAlpha");
@@ -253,14 +292,14 @@ namespace Noggit::ClientData
 
         auto record = params_dbc.addRecord(id);
         record.write(LightParamsDB::highlightSky, static_cast<std::uint32_t>(param.highlight_sky));
-        record.write(LightParamsDB::skybox, 0u);
-        record.write(LightParamsDB::cloudTypeID, 0u);
+        record.write(LightParamsDB::skybox, skyboxes.contains(param.skybox_id) ? param.skybox_id : 0u);
+        record.write(LightParamsDB::cloudTypeID, param.cloud_type_id);
         record.write(LightParamsDB::glow, param.glow);
         record.write(LightParamsDB::water_shallow_alpha, param.water_shallow_alpha);
         record.write(LightParamsDB::water_deep_alpha, param.water_deep_alpha);
         record.write(LightParamsDB::ocean_shallow_alpha, param.ocean_shallow_alpha);
         record.write(LightParamsDB::ocean_deep_alpha, param.ocean_deep_alpha);
-        record.write(LightParamsDB::flags, 0u);
+        record.write(LightParamsDB::flags, param.flags);
 
         auto const color_start = id * modern_color_count - (modern_color_count - 1);
         for (std::size_t band = 0; band < modern_color_count; ++band)
@@ -269,6 +308,13 @@ namespace Noggit::ClientData
         auto const float_start = id * modern_float_count - (modern_float_count - 1);
         for (std::size_t band = 0; band < modern_float_count; ++band)
           write_legacy_float_band(float_band_dbc, static_cast<std::uint32_t>(float_start + band), param.floats[band]);
+      }
+
+      for (auto const& [id, skybox] : skyboxes)
+      {
+        auto record = skybox_dbc.addRecord(id);
+        record.writeString(LightSkyboxDB::filename, skybox.first);
+        record.write(LightSkyboxDB::flags, skybox.second);
       }
 
       std::size_t loaded_lights = 0;
@@ -340,6 +386,7 @@ namespace Noggit::ClientData
       Log << "[ModernDB2][Sky] Loaded Shadowlands CASC DB2 lighting: Light=" << loaded_lights
           << " LightParams=" << params_table.RecordCount()
           << " LightData=" << data_table.RecordCount()
+          << " LightSkybox=" << skyboxes.size()
           << " unresolved-param-refs=" << unresolved_param_refs
           << " repaired-primary-param-refs=" << repaired_primary_param_refs
           << " lights-without-usable-params=" << lights_without_usable_params << std::endl;

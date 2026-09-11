@@ -36,13 +36,45 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   _load_project_component = std::make_unique<Component::LoadProjectComponent>();
 
   setWindowFlags(Qt::Window | Qt::MSWindowsFixedSizeDialogHint);
+  bool const force_project_selector = _noggit_application->GetCommand(2);
+
+  ////////////////////////////
+  // direct config project loading
+  auto const configured_project_path =
+      std::filesystem::path(_noggit_application->getConfiguration()->ApplicationProjectPath);
+
+  if (!force_project_selector
+      && !noggit_app->hasClientData()
+      && std::filesystem::exists(configured_project_path)
+      && std::filesystem::is_directory(configured_project_path))
+  {
+    Log << "Auto loading configured project path : "
+        << configured_project_path.string() << std::endl;
+
+    auto selected_project = _load_project_component->loadProject(
+        this, QString(configured_project_path.string().c_str()));
+
+    if (selected_project)
+    {
+      Noggit::Project::CurrentProject::initialize(selected_project.get());
+
+      _project_selection_page = std::make_unique<Noggit::Ui::Windows::NoggitWindow>(
+          _noggit_application->getConfiguration(),
+          selected_project);
+      _project_selection_page->showMaximized();
+
+      close();
+      return;
+    }
+  }
 
   ////////////////////////////
   // auto load favorite project
   QSettings settings;
   int favorite_proj_idx = settings.value("favorite_project", -1).toInt();
 
-  bool load_favorite = settings.value("auto_load_fav_project", true).toBool();
+  bool load_favorite = !force_project_selector
+      && settings.value("auto_load_fav_project", true).toBool();
 
   // if it has client data, it means it already loaded before and we exited through the menu, skip autoloading favorite
   if (noggit_app->hasClientData())

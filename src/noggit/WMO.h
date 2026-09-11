@@ -355,8 +355,12 @@ public:
   [[nodiscard]]
   Noggit::Rendering::WMORender* renderer();
 
+  [[nodiscard]]
+  bool uses_file_data_ids() const { return _uses_file_data_ids; }
+
 private:
   bool _hidden = false;
+  bool _uses_file_data_ids = false;
 
   Noggit::Rendering::WMORender _renderer;
 };

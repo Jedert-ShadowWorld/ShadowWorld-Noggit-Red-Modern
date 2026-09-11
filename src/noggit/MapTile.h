@@ -167,7 +167,7 @@ public:
   Noggit::Rendering::TileRender* renderer();;
   Noggit::Rendering::FlightBoundsRender* flightBoundsRenderer();;
 
-  const texture_heightmapping_data& GetTextureHeightMappingData(const std::string& name) const;
+  texture_heightmapping_data GetTextureHeightMappingData(const std::string& name) const;
 
   void forceAlphaUpdate();
   bool childrenFinishedLoading();

@@ -83,6 +83,10 @@ static float apply_m2_blend_state(int blend, bool additive_fallback)
     gl.blendFunc(GL_DST_COLOR, GL_SRC_COLOR);
     alpha_test = 1.0f / 255.0f;
     break;
+  case 7:
+    gl.enable(GL_BLEND);
+    gl.blendFunc(GL_ONE_MINUS_SRC_ALPHA, GL_ONE);
+    break;
   default:
     if (additive_fallback)
     {
@@ -103,6 +107,7 @@ ParticleSystem::ParticleSystem(Model* model_
                                , const BlizzardArchive::ClientFile& f
                                , const ModelParticleEmitterDef &mta
                                , int *globals
+                               , const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files
                                , Noggit::NoggitRenderContext context)
   : model (model_)
   , emitter_type(mta.EmitterType)
@@ -110,17 +115,17 @@ ParticleSystem::ParticleSystem(Model* model_
             : mta.EmitterType == 2 ? std::unique_ptr<ParticleEmitter> (std::make_unique<SphereParticleEmitter>())
             : std::unique_ptr<ParticleEmitter> (std::make_unique<PlaneParticleEmitter>())
             )
-  , speed (mta.EmissionSpeed, f, globals)
-  , variation (mta.SpeedVariation, f, globals)
-  , spread (mta.VerticalRange, f, globals)
-  , lat (mta.HorizontalRange, f, globals)
-  , gravity (mta.Gravity, f, globals)
-  , lifespan (mta.Lifespan, f, globals)
-  , rate (mta.EmissionRate, f, globals)
-  , areal (mta.EmissionAreaLength, f, globals)
-  , areaw (mta.EmissionAreaWidth, f, globals)
-  , z_source (mta.zSource, f, globals)
-  , enabled (mta.en, f, globals)
+  , speed (mta.EmissionSpeed, f, globals, animation_files)
+  , variation (mta.SpeedVariation, f, globals, animation_files)
+  , spread (mta.VerticalRange, f, globals, animation_files)
+  , lat (mta.HorizontalRange, f, globals, animation_files)
+  , gravity (mta.Gravity, f, globals, animation_files)
+  , lifespan (mta.Lifespan, f, globals, animation_files)
+  , rate (mta.EmissionRate, f, globals, animation_files)
+  , areal (mta.EmissionAreaLength, f, globals, animation_files)
+  , areaw (mta.EmissionAreaWidth, f, globals, animation_files)
+  , z_source (mta.zSource, f, globals, animation_files)
+  , enabled (mta.en, f, globals, animation_files)
   , tail_length (mta.p.tailLength)
   , render_head ((mta.flags & ParticleFlag_RenderHead) != 0)
   , render_tail ((mta.flags & ParticleFlag_RenderTail) != 0)
@@ -815,14 +820,15 @@ RibbonEmitter::RibbonEmitter(Model* model_
                              , const BlizzardArchive::ClientFile &f
                              , ModelRibbonEmitterDef const& mta
                              , int *globals
+                             , const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files
                              , Noggit::NoggitRenderContext context)
   : model (model_)
-  , color (mta.color, f, globals)
-  , opacity (mta.opacity, f, globals)
-  , above (mta.above, f, globals)
-  , below (mta.below, f, globals)
-  , tex_slot (mta.texSlot, f, globals)
-  , visibility (mta.visibility, f, globals)
+  , color (mta.color, f, globals, animation_files)
+  , opacity (mta.opacity, f, globals, animation_files)
+  , above (mta.above, f, globals, animation_files)
+  , below (mta.below, f, globals, animation_files)
+  , tex_slot (mta.texSlot, f, globals, animation_files)
+  , visibility (mta.visibility, f, globals, animation_files)
   , parent (&model->bones[mta.bone])
   , pos (fixCoordSystem(mta.pos))
   , manim (0)

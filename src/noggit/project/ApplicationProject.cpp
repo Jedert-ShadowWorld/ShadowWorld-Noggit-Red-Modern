@@ -229,7 +229,7 @@ namespace Noggit::Project
     BlizzardDatabaseLib::Structures::Build client_build("3.3.5.12340");
     auto client_archive_version = BlizzardArchive::ClientVersion::WOTLK;
     auto client_archive_locale = BlizzardArchive::Locale::AUTO;
-    if (project->projectVersion == ProjectVersion::SL)
+    if (project->projectVersion == ProjectVersion::SL || project->projectVersion == ProjectVersion::RETAIL)
     {
       client_archive_version = BlizzardArchive::ClientVersion::SL;
       auto detected_build = detectClientBuildVersion(project->ClientPath);
@@ -428,8 +428,10 @@ namespace Noggit::Project
     {
       if (projectVersion == "Wrath Of The Lich King")
         return ProjectVersion::WOTLK;
-      if (projectVersion == "Shadowlands" || projectVersion == "Retail" || projectVersion == "Modern")
+      if (projectVersion == "Shadowlands" || projectVersion == "Modern")
         return ProjectVersion::SL;
+      if (projectVersion == "Retail")
+        return ProjectVersion::RETAIL;
 
       LogError << "Unknown project version '" << projectVersion << "', falling back to Shadowlands compatibility." << std::endl;
       return ProjectVersion::SL;
@@ -441,6 +443,8 @@ namespace Noggit::Project
         return std::string("Wrath Of The Lich King");
       if (projectVersion == ProjectVersion::SL)
         return std::string("Shadowlands");
+      if (projectVersion == ProjectVersion::RETAIL)
+        return std::string("Retail");
 
       LogError << "Unknown project version enum, falling back to Shadowlands." << std::endl;
       return std::string("Shadowlands");

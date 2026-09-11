@@ -1,15 +1,15 @@
 [submodule "src/external/blizzard-database-library"]
 	path = src/external/blizzard-database-library
 	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-Blizzard-Database-Library.git
-	branch = shadowworld-modern
+	branch = shadowworld-modern-retail-preview
 [submodule "src/external/blizzard-archive-library"]
 	path = src/external/blizzard-archive-library
 	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-Blizzard-Archive-Library.git
-	branch = shadowworld-modern
+	branch = shadowworld-modern-retail-preview
 [submodule "cmake"]
 	path = cmake
-	url = https://gitlab.com/T1ti/build-dependencies.git
-	branch = dep-cmake
+	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-Noggit-Red-Modern.git
+	branch = dependency-cmake-noggit
 [submodule "dist/listfile"]
 	path = dist/listfile
 	url = https://gitlab.com/prophecy-rp/build-dependencies.git
@@ -17,7 +17,7 @@
 [submodule "dist/definitions"]
 	path = dist/definitions
 	url = https://github.com/Jedert-ShadowWorld/ShadowWorld-DBD-Definitions.git
-	branch = shadowworld-modern
+	branch = shadowworld-modern-retail-preview
 [submodule "dist/themes"]
 	path = dist/themes
 	url = https://gitlab.com/prophecy-rp/build-dependencies.git

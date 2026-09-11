@@ -57,6 +57,7 @@ enum M2GlobalFlags
   m2_flag_tilt_y = 0x2,
   // m2_flag_unk_0x4 = 0x4,
   m2_flag_use_texture_combiner_combos = 0x8,
+  m2_flag_use_extended_particle_record = 0x200,
   // m2_flag_unk_0x10 = 0x10
   // TODO : MOP +
 };
@@ -300,7 +301,10 @@ private:
 
   void initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header);
   bool isAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header);
-  void initAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header);
+  void initAnimated(
+      const BlizzardArchive::ClientFile& f,
+      ModelHeader& header,
+      std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> const& animation_file_ids);
 
   void animate(glm::mat4x4 const& model_view, int anim_id, int anim_time);
   void calcBones(glm::mat4x4 const& model_view, int anim, int time, int animation_time);

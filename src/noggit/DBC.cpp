@@ -32,24 +32,25 @@ WMOAreaTableDB gWMOAreaTableDB;
 
 void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData)
 {
-  bool const shadowlands = Noggit::Project::CurrentProject::get()->projectVersion
-    == Noggit::Project::ProjectVersion::SL;
+  auto const project_version = Noggit::Project::CurrentProject::get()->projectVersion;
+  bool const modern_db2_project = project_version == Noggit::Project::ProjectVersion::SL
+    || project_version == Noggit::Project::ProjectVersion::RETAIL;
 
-  if (shadowlands)
+  if (modern_db2_project)
   {
-    Log << "Opening Shadowlands client databases from CASC DB2..." << std::endl;
+    Log << "Opening modern client databases from CASC DB2..." << std::endl;
 
     bool const map_db2_ok = Noggit::ClientData::loadShadowlandsMapDB2Bridge(clientData);
     bool const sky_db2_ok = Noggit::ClientData::loadShadowlandsSkyDB2Bridge(clientData);
 
     if (!map_db2_ok)
-      LogError << "[ModernDB2][Map] Shadowlands map DB2 bootstrap is incomplete." << std::endl;
+      LogError << "[ModernDB2][Map] Modern map DB2 bootstrap is incomplete." << std::endl;
     if (!sky_db2_ok)
-      LogError << "[ModernDB2][Sky] Shadowlands sky DB2 bridge did not load usable data." << std::endl;
+      LogError << "[ModernDB2][Sky] Modern sky DB2 bridge did not load usable data." << std::endl;
 
     // Critical rule for modern clients: never continue into the WotLK .dbc
     // bootstrap. All map/environment client data must originate from the active
-    // Shadowlands CASC/DB2 set.
+    // modern CASC/DB2 set.
     return;
   }
 

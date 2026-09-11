@@ -214,7 +214,9 @@ public:
   float tofs;
 
   ParticleSystem(Model*, const BlizzardArchive::ClientFile& f, const ModelParticleEmitterDef &mta,
-                 int *globals, Noggit::NoggitRenderContext context);
+                 int *globals,
+                 const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files,
+                 Noggit::NoggitRenderContext context);
 
   ParticleSystem(ParticleSystem const& other);
   ParticleSystem(ParticleSystem&&);
@@ -325,7 +327,8 @@ class RibbonEmitter
 
 public:
   RibbonEmitter(Model*, const BlizzardArchive::ClientFile &f, ModelRibbonEmitterDef const& mta, int *globals
-                , Noggit::NoggitRenderContext context);
+                 , const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files
+                 , Noggit::NoggitRenderContext context);
 
   RibbonEmitter(RibbonEmitter const& other);
   RibbonEmitter(RibbonEmitter&&);

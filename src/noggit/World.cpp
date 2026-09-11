@@ -27,6 +27,8 @@
 #include <math/bounding_box.hpp>
 
 #include <blizzard-database-library/include/structures/FileStructures.h>
+#include <ClientFile.hpp>
+#include <Listfile.hpp>
 
 #include <external/tracy/Tracy.hpp>
 
@@ -42,8 +44,11 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -51,13 +56,125 @@
 
 namespace
 {
+  constexpr std::size_t WDT_FLAGS_OFFSET = 8 + 4 + 8;
+  constexpr std::size_t WDT_MAIN_TILES_OFFSET = WDT_FLAGS_OFFSET + 0x20 + 8;
+  constexpr std::size_t WDT_MAIN_TILES_SIZE = 8192 * sizeof(int);
+
+  std::optional<std::uint32_t> shadowWorldUIntField(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record
+    , std::string const& field);
+
   std::string shadowWorldMapDirectory(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record)
   {
     auto it = record.Columns.find("Directory");
     if (it == record.Columns.end())
+      it = record.Columns.find("InternalName");
+
+    if (it == record.Columns.end())
       return {};
 
     return it->second.Value;
+  }
+
+  void shadowWorldLogMissingMapDirectoryColumns(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record)
+  {
+    static std::unordered_set<int> logged_records;
+    if (logged_records.size() >= 8 || !logged_records.insert(record.RecordId).second)
+      return;
+
+    std::ostringstream columns;
+    bool first = true;
+    for (auto const& column : record.Columns)
+    {
+      if (!first)
+        columns << ", ";
+      first = false;
+      columns << column.first;
+    }
+
+    LogDebug << "World " << record.RecordId << " available Map fields: " << columns.str() << std::endl;
+  }
+
+  void shadowWorldLogMissingWdtDetails(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record
+    , std::string const& map_name
+    , BlizzardArchive::ClientData* client_data)
+  {
+    static std::unordered_set<int> logged_records;
+    if (logged_records.size() >= 16 || !logged_records.insert(record.RecordId).second)
+      return;
+
+    auto const wdt_fdid = shadowWorldUIntField(record, "WdtFileDataID");
+    LogDebug << "World " << record.RecordId << ": " << map_name
+      << " WdtFileDataID=" << (wdt_fdid ? std::to_string(*wdt_fdid) : std::string("<missing>"))
+      << std::endl;
+
+    std::stringstream ssfilename;
+    ssfilename << "World\\Maps\\" << map_name << "\\" << map_name << ".wdt";
+
+    try
+    {
+      BlizzardArchive::ClientFile path_file(BlizzardArchive::Listfile::FileKey(ssfilename.str()), client_data);
+      LogDebug << "World " << record.RecordId << ": " << map_name
+        << " WDT path probe size=" << path_file.getSize() << std::endl;
+    }
+    catch (std::exception const& e)
+    {
+      LogDebug << "World " << record.RecordId << ": " << map_name
+        << " WDT path probe failed: " << e.what() << std::endl;
+    }
+
+    if (wdt_fdid && *wdt_fdid != 0)
+    {
+      try
+      {
+        BlizzardArchive::ClientFile fdid_file(BlizzardArchive::Listfile::FileKey(*wdt_fdid), client_data);
+        LogDebug << "World " << record.RecordId << ": " << map_name
+          << " WDT FDID probe size=" << fdid_file.getSize() << std::endl;
+      }
+      catch (std::exception const& e)
+      {
+        LogDebug << "World " << record.RecordId << ": " << map_name
+          << " WDT FDID probe failed: " << e.what() << std::endl;
+      }
+    }
+  }
+
+  std::optional<std::uint32_t> shadowWorldUIntField(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record
+    , std::string const& field)
+  {
+    auto it = record.Columns.find(field);
+    if (it == record.Columns.end() || it->second.Value.empty())
+      return std::nullopt;
+
+    try
+    {
+      return static_cast<std::uint32_t>(std::stoul(it->second.Value));
+    }
+    catch (...)
+    {
+      return std::nullopt;
+    }
+  }
+
+  BlizzardArchive::Listfile::FileKey shadowWorldWdtFileKey(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow const& record
+    , std::string const& map_name
+    , BlizzardArchive::ClientData* client_data)
+  {
+    std::stringstream ssfilename;
+    ssfilename << "World\\Maps\\" << map_name << "\\" << map_name << ".wdt";
+
+    BlizzardArchive::Listfile::FileKey key(ssfilename.str());
+    if (client_data->exists(key))
+      return key;
+
+    auto const wdt_fdid = shadowWorldUIntField(record, "WdtFileDataID");
+    if (wdt_fdid && *wdt_fdid != 0)
+    {
+      BlizzardArchive::Listfile::FileKey fdid_key(*wdt_fdid);
+      if (client_data->exists(fdid_key))
+        return fdid_key;
+    }
+
+    return key;
   }
 }
 bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow& record)
@@ -67,29 +184,33 @@ bool World::IsEditableWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow
   if (lMapName.empty())
   {
     LogDebug << "World " << record.RecordId << " has no Directory field!" << std::endl;
+    shadowWorldLogMissingMapDirectoryColumns(record);
     return false;
   }
 
-  std::stringstream ssfilename;
-  ssfilename << "World\\Maps\\" << lMapName << "\\" << lMapName << ".wdt";
-
-  if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists(ssfilename.str()))
+  auto client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+  auto wdt_key = shadowWorldWdtFileKey(record, lMapName, client_data);
+  if (!client_data->exists(wdt_key))
   {
     LogDebug << "World " << record.RecordId << ": " << lMapName << " has no WDT file!" << std::endl;
+    shadowWorldLogMissingWdtDetails(record, lMapName, client_data);
     return false;
   }
 
-  BlizzardArchive::ClientFile mf(ssfilename.str(), Noggit::Application::NoggitApplication::instance()->clientData());
-  if (mf.isEof())
+  BlizzardArchive::ClientFile mf(wdt_key, client_data);
+  if (mf.isEof() || mf.getSize() < WDT_MAIN_TILES_OFFSET + WDT_MAIN_TILES_SIZE)
+  {
+    LogDebug << "World " << record.RecordId << ": " << lMapName << " WDT is too small!" << std::endl;
     return false;
+  }
 
   const char * lPointer = reinterpret_cast<const char*>(mf.getPointer());
-  const int lFlags = *(reinterpret_cast<const int*>(lPointer + 8 + 4 + 8));
+  const int lFlags = *(reinterpret_cast<const int*>(lPointer + WDT_FLAGS_OFFSET));
 
   if (lFlags & FLAG_GLOBAL_OBJECT)
     return true;
 
-  const int * lData = reinterpret_cast<const int*>(lPointer + 8 + 4 + 8 + 0x20 + 8);
+  const int * lData = reinterpret_cast<const int*>(lPointer + WDT_MAIN_TILES_OFFSET);
   for (int i = 0; i < 8192; i += 2)
   {
     if (lData[i] & 1)
@@ -106,18 +227,17 @@ bool World::IsWMOWorld(BlizzardDatabaseLib::Structures::BlizzardDatabaseRow& rec
     if (lMapName.empty())
       return false;
 
-    std::stringstream ssfilename;
-    ssfilename << "World\\Maps\\" << lMapName << "\\" << lMapName << ".wdt";
-
-    if (!Noggit::Application::NoggitApplication::instance()->clientData()->exists(ssfilename.str()))
+    auto client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+    auto wdt_key = shadowWorldWdtFileKey(record, lMapName, client_data);
+    if (!client_data->exists(wdt_key))
       return false;
 
-    BlizzardArchive::ClientFile mf(ssfilename.str(), Noggit::Application::NoggitApplication::instance()->clientData());
-    if (mf.isEof())
+    BlizzardArchive::ClientFile mf(wdt_key, client_data);
+    if (mf.isEof() || mf.getSize() < WDT_FLAGS_OFFSET + sizeof(int))
       return false;
 
     const char* lPointer = reinterpret_cast<const char*>(mf.getPointer());
-    const int lFlags = *(reinterpret_cast<const int*>(lPointer + 8 + 4 + 8));
+    const int lFlags = *(reinterpret_cast<const int*>(lPointer + WDT_FLAGS_OFFSET));
     if (lFlags & 1)
         return true;
 

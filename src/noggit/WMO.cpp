@@ -13,6 +13,7 @@
 #include <noggit/wmo_liquid.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <iomanip>
 #include <map>
 #include <sstream>
@@ -40,6 +41,44 @@ void WMO::finishLoading ()
     error_on_loading();
     return;
   }
+
+  struct RootChunk
+  {
+    std::uint32_t tag;
+    std::size_t payload_offset;
+    std::uint32_t size;
+  };
+
+  std::vector<RootChunk> root_chunks;
+  std::vector<std::uint32_t> modern_doodad_file_ids;
+  for (std::size_t chunk_offset = 0; chunk_offset + 8 <= f.getSize();)
+  {
+    std::uint32_t chunk_tag = 0;
+    std::uint32_t chunk_size = 0;
+    std::memcpy(&chunk_tag, f.getBuffer() + chunk_offset, sizeof(chunk_tag));
+    std::memcpy(&chunk_size, f.getBuffer() + chunk_offset + 4, sizeof(chunk_size));
+
+    auto const payload_offset = chunk_offset + 8;
+    if (chunk_size > f.getSize() - payload_offset)
+      throw std::runtime_error("Invalid WMO chunk size in \"" + _file_key.stringRepr() + "\".");
+
+    root_chunks.push_back({chunk_tag, payload_offset, chunk_size});
+
+    if (chunk_tag == 'MODI' && chunk_size % sizeof(std::uint32_t) == 0)
+    {
+      modern_doodad_file_ids.resize(chunk_size / sizeof(std::uint32_t));
+      std::memcpy(modern_doodad_file_ids.data(), f.getBuffer() + payload_offset, chunk_size);
+    }
+
+    chunk_offset = payload_offset + chunk_size;
+  }
+
+  auto const find_root_chunk = [&root_chunks](std::uint32_t tag) -> RootChunk const*
+  {
+    auto const it = std::find_if(root_chunks.begin(), root_chunks.end(),
+      [tag](RootChunk const& chunk) { return chunk.tag == tag; });
+    return it == root_chunks.end() ? nullptr : &*it;
+  };
 
   uint32_t fourcc;
   uint32_t size;
@@ -91,22 +130,28 @@ void WMO::finishLoading ()
   ambient_light_color.z = static_cast<float>(ambient_color.b) / 255.f;
   ambient_light_color.w = static_cast<float>(ambient_color.a) / 255.f;
 
-  // - MOTX ----------------------------------------------
-
+  // Modern WMOs store FileDataIDs directly in MOMT and omit MOTX.
   f.read (&fourcc, 4);
   f.read (&size, 4);
 
-  assert (fourcc == 'MOTX');
+  bool const uses_file_data_ids = fourcc == 'MOMT';
+  _uses_file_data_ids = uses_file_data_ids;
+  std::vector<char> texbuf;
 
-  std::vector<char> texbuf (size);
-  f.read (texbuf.data(), texbuf.size());
+  if (!uses_file_data_ids)
+  {
+    if (fourcc != 'MOTX' || size > f.getSize() - f.getPos())
+      throw std::runtime_error("Invalid WMO texture-name chunk in \"" + _file_key.stringRepr() + "\".");
 
-  // - MOMT ----------------------------------------------
+    texbuf.resize(size);
+    f.read(texbuf.data(), texbuf.size());
 
-  f.read (&fourcc, 4);
-  f.read (&size, 4);
+    f.read(&fourcc, 4);
+    f.read(&size, 4);
+  }
 
-  assert (fourcc == 'MOMT');
+  if (fourcc != 'MOMT' || size > f.getSize() - f.getPos() || size % sizeof(WMOMaterial) != 0)
+    throw std::runtime_error("Invalid WMO material chunk in \"" + _file_key.stringRepr() + "\".");
 
   std::size_t const num_materials (size / 0x40);
   materials.resize (num_materials);
@@ -115,14 +160,31 @@ void WMO::finishLoading ()
   //std::map<std::uint32_t, std::size_t> texture_offset_to_inmem_index;
   std::map<std::uint32_t, std::uint32_t> texture_offset_to_inmem_index;
 
+  auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+
   auto load_texture
-    ( [&] (std::uint32_t ofs)
+    ( [&] (std::uint32_t texture_ref)
       {
-        char const* texture
-          (texbuf[ofs] ? &texbuf[ofs] : "textures/shanecube.blp");
+        std::string texture = "textures/shanecube.blp";
+        if (uses_file_data_ids)
+        {
+          if (texture_ref != 0)
+          {
+            auto const resolved = client_data->listfile()->getPath(texture_ref);
+            if (!resolved.empty())
+              texture = resolved;
+            else
+              LogError << "Unresolved WMO texture FileDataID " << texture_ref
+                       << " in \"" << _file_key.stringRepr() << "\"." << std::endl;
+          }
+        }
+        else if (texture_ref < texbuf.size() && texbuf[texture_ref])
+        {
+          texture = &texbuf[texture_ref];
+        }
 
         auto const mapping
-          (texture_offset_to_inmem_index.emplace(ofs, static_cast<std::uint32_t>(textures.size())));
+          (texture_offset_to_inmem_index.emplace(texture_ref, static_cast<std::uint32_t>(textures.size())));
 
         if (mapping.second)
         {
@@ -144,6 +206,125 @@ void WMO::finishLoading ()
     {
       materials[i].texture2 = load_texture(materials[i].texture_offset_2);
     }
+  }
+
+  if (uses_file_data_ids)
+  {
+    auto const require_chunk = [&](std::uint32_t tag, char const* name) -> RootChunk const&
+    {
+      auto const* chunk = find_root_chunk(tag);
+      if (!chunk)
+        throw std::runtime_error("Modern WMO is missing " + std::string(name)
+          + " in \"" + _file_key.stringRepr() + "\".");
+      return *chunk;
+    };
+
+    auto const& mogn = require_chunk('MOGN', "MOGN");
+    groupnames = reinterpret_cast<char const*>(f.getBuffer() + mogn.payload_offset);
+
+    auto const& mogi = require_chunk('MOGI', "MOGI");
+    if (mogi.size < static_cast<std::size_t>(nGroups) * 0x20)
+      throw std::runtime_error("Truncated modern WMO MOGI in \"" + _file_key.stringRepr() + "\".");
+    f.seek(mogi.payload_offset);
+    groups.reserve(nGroups);
+    for (unsigned int i = 0; i < nGroups; ++i)
+      groups.emplace_back(this, &f, i, groupnames);
+
+    if (auto const* mosb = find_root_chunk('MOSB'); mosb && mosb->size > 4)
+    {
+      auto const* skybox_name = reinterpret_cast<char const*>(f.getBuffer() + mosb->payload_offset);
+      auto const max_length = static_cast<std::size_t>(mosb->size);
+      auto const* terminator = static_cast<char const*>(std::memchr(skybox_name, '\0', max_length));
+      if (terminator)
+      {
+        auto path = BlizzardArchive::ClientData::normalizeFilenameInternal(
+          std::string(skybox_name, terminator));
+        auto const extension = path.rfind(".mdx");
+        if (extension != std::string::npos)
+          path.replace(extension, 4, ".m2");
+        if (!path.empty() && client_data->exists(path))
+          skybox = scoped_model_reference(path, _context);
+      }
+    }
+
+    auto const& molt = require_chunk('MOLT', "MOLT");
+    if (molt.size < static_cast<std::size_t>(nLights) * 0x30)
+      throw std::runtime_error("Truncated modern WMO MOLT in \"" + _file_key.stringRepr() + "\".");
+    f.seek(molt.payload_offset);
+    lights.reserve(nLights);
+    for (size_t i = 0; i < nLights; ++i)
+    {
+      WMOLight light;
+      light.init(&f);
+      lights.push_back(light);
+    }
+
+    auto const& mods = require_chunk('MODS', "MODS");
+    if (mods.size < static_cast<std::size_t>(nDoodadSets) * 0x20)
+      throw std::runtime_error("Truncated modern WMO MODS in \"" + _file_key.stringRepr() + "\".");
+    f.seek(mods.payload_offset);
+    doodadsets.reserve(nDoodadSets);
+    for (size_t i = 0; i < nDoodadSets; ++i)
+    {
+      WMODoodadSet doodad_set;
+      f.read(&doodad_set, 0x20);
+      doodadsets.push_back(doodad_set);
+    }
+
+    auto const& modd = require_chunk('MODD', "MODD");
+    if (modd.size % 0x28 != 0 || (modd.size && modern_doodad_file_ids.empty()))
+      throw std::runtime_error("Invalid modern WMO MODD/MODI in \"" + _file_key.stringRepr() + "\".");
+    f.seek(modd.payload_offset);
+    modelis.reserve(modd.size / 0x28);
+    for (size_t i = 0; i < modd.size / 0x28; ++i)
+    {
+      struct
+      {
+        uint32_t name_offset : 24;
+        uint32_t flag_AcceptProjTex : 1;
+        uint32_t flag_0x2 : 1;
+        uint32_t flag_0x4 : 1;
+        uint32_t flag_0x8 : 1;
+        uint32_t flags_unused : 4;
+      } entry_header;
+
+      auto const after_entry = f.getPos() + 0x28;
+      f.read(&entry_header, sizeof(entry_header));
+      auto const file_data_id = entry_header.name_offset < modern_doodad_file_ids.size()
+        ? modern_doodad_file_ids[entry_header.name_offset]
+        : 0;
+      auto const path = client_data->listfile()->getPath(file_data_id);
+      BlizzardArchive::Listfile::FileKey doodad_key(
+        path.empty() ? "unknown/" + std::to_string(file_data_id) + ".m2" : path,
+        file_data_id);
+      modelis.emplace_back(doodad_key, &f, _context);
+      model_nearest_light_vector.emplace_back();
+      f.seek(after_entry);
+    }
+
+    auto const& mfog = require_chunk('MFOG', "MFOG");
+    if (mfog.size % 0x30 != 0)
+      throw std::runtime_error("Invalid modern WMO MFOG in \"" + _file_key.stringRepr() + "\".");
+    f.seek(mfog.payload_offset);
+    fogs.reserve(mfog.size / 0x30);
+    for (size_t i = 0; i < mfog.size / 0x30; ++i)
+    {
+      WMOFog fog;
+      fog.init(&f);
+      fogs.push_back(std::move(fog));
+    }
+
+    Log << "[ModernWMO] Resolved root \"" << _file_key.stringRepr()
+        << "\": material textures=" << textures.size()
+        << ", doodad instances=" << modelis.size()
+        << ", MODI entries=" << modern_doodad_file_ids.size() << std::endl;
+
+    for (auto& group : groups)
+      group.load();
+
+    finished = true;
+    _state_changed.notify_all();
+    return;
   }
 
   // - MOGN ----------------------------------------------
@@ -281,25 +462,29 @@ void WMO::finishLoading ()
     doodadsets.push_back (dds);
   }
 
-  // - MODN ----------------------------------------------
-
+  // Modern WMOs omit MODN and store a FileDataID in each MODD entry.
   f.read (&fourcc, 4);
   f.read (&size, 4);
 
-  assert (fourcc == 'MODN');
-
-  if (size)
+  bool const doodads_use_file_data_ids = fourcc == 'MODD';
+  if (!doodads_use_file_data_ids)
   {
-    ddnames = reinterpret_cast<char const*> (f.getPointer ());
+    if (fourcc != 'MODN' || size > f.getSize() - f.getPos())
+      throw std::runtime_error("Invalid WMO doodad-name chunk in \"" + _file_key.stringRepr() + "\".");
+
+    if (size)
+      ddnames = reinterpret_cast<char const*> (f.getPointer ());
     f.seekRelative (size);
+
+    f.read(&fourcc, 4);
+    f.read(&size, 4);
   }
 
-  // - MODD ----------------------------------------------
+  if (fourcc != 'MODD' || size > f.getSize() - f.getPos() || size % 0x28 != 0)
+    throw std::runtime_error("Invalid WMO doodad chunk in \"" + _file_key.stringRepr() + "\".");
 
-  f.read (&fourcc, 4);
-  f.read (&size, 4);
-
-  assert (fourcc == 'MODD');
+  if (doodads_use_file_data_ids && size && modern_doodad_file_ids.empty())
+    throw std::runtime_error("Modern WMO is missing its MODI table in \"" + _file_key.stringRepr() + "\".");
 
   modelis.reserve(size / 0x28);
   for (size_t i (0); i < size / 0x28; ++i)
@@ -317,10 +502,36 @@ void WMO::finishLoading ()
     size_t after_entry (f.getPos() + 0x28);
     f.read (&x, sizeof (x));
 
-    modelis.emplace_back(ddnames + x.name_offset, &f, _context);
+    BlizzardArchive::Listfile::FileKey doodad_key;
+    if (doodads_use_file_data_ids)
+    {
+      auto const file_data_id = x.name_offset < modern_doodad_file_ids.size()
+        ? modern_doodad_file_ids[x.name_offset]
+        : 0;
+      auto const path = client_data->listfile()->getPath(file_data_id);
+      doodad_key = BlizzardArchive::Listfile::FileKey(
+        path.empty() ? "unknown/" + std::to_string(file_data_id) + ".m2" : path,
+        file_data_id);
+    }
+    else
+    {
+      if (!ddnames)
+        throw std::runtime_error("Missing WMO doodad names in \"" + _file_key.stringRepr() + "\".");
+      doodad_key = BlizzardArchive::Listfile::FileKey(ddnames + x.name_offset);
+    }
+
+    modelis.emplace_back(doodad_key, &f, _context);
     model_nearest_light_vector.emplace_back();
 
     f.seek (after_entry);
+  }
+
+  if (uses_file_data_ids || doodads_use_file_data_ids)
+  {
+    Log << "[ModernWMO] Resolved root \"" << _file_key.stringRepr()
+        << "\": material textures=" << textures.size()
+        << ", doodad instances=" << modelis.size()
+        << ", MODI entries=" << modern_doodad_file_ids.size() << std::endl;
   }
 
   // - MFOG ----------------------------------------------
@@ -637,6 +848,258 @@ void WMOGroup::load()
 
   BoundingBoxMin = ::glm::vec3 (header.box1[0], header.box1[2], -header.box1[1]);
   BoundingBoxMax = ::glm::vec3 (header.box2[0], header.box2[2], -header.box2[1]);
+
+  struct GroupChunk
+  {
+    std::uint32_t tag;
+    std::size_t payload_offset;
+    std::uint32_t size;
+  };
+
+  std::vector<GroupChunk> group_chunks;
+  for (std::size_t chunk_offset = f.getPos(); chunk_offset + 8 <= f.getSize();)
+  {
+    std::uint32_t chunk_tag = 0;
+    std::uint32_t chunk_size = 0;
+    std::memcpy(&chunk_tag, f.getBuffer() + chunk_offset, sizeof(chunk_tag));
+    std::memcpy(&chunk_size, f.getBuffer() + chunk_offset + 4, sizeof(chunk_size));
+    auto const payload_offset = chunk_offset + 8;
+    if (chunk_size > f.getSize() - payload_offset)
+      throw std::runtime_error("Invalid WMO group chunk size in \"" + fname + "\".");
+    group_chunks.push_back({chunk_tag, payload_offset, chunk_size});
+    chunk_offset = payload_offset + chunk_size;
+  }
+
+  auto const find_group_chunks = [&group_chunks](std::uint32_t tag)
+  {
+    std::vector<GroupChunk const*> matches;
+    for (auto const& chunk : group_chunks)
+      if (chunk.tag == tag)
+        matches.push_back(&chunk);
+    return matches;
+  };
+
+  bool const modern_chunk_layout = wmo->uses_file_data_ids()
+    || !find_group_chunks('MOBS').empty()
+    || !find_group_chunks('MOPB').empty();
+
+  if (modern_chunk_layout)
+  {
+    auto const require_chunk = [&](std::uint32_t tag, char const* name) -> GroupChunk const&
+    {
+      auto const matches = find_group_chunks(tag);
+      if (matches.empty())
+        throw std::runtime_error("Modern WMO group is missing " + std::string(name)
+          + " in \"" + fname + "\".");
+      return *matches.front();
+    };
+
+    auto const& movi = require_chunk('MOVI', "MOVI");
+    if (movi.size % sizeof(std::uint16_t) != 0)
+      throw std::runtime_error("Invalid modern WMO MOVI in \"" + fname + "\".");
+    _indices.resize(movi.size / sizeof(std::uint16_t));
+    f.seek(movi.payload_offset);
+    f.read(_indices.data(), movi.size);
+
+    auto const& movt = require_chunk('MOVT', "MOVT");
+    if (movt.size % sizeof(glm::vec3) != 0)
+      throw std::runtime_error("Invalid modern WMO MOVT in \"" + fname + "\".");
+    auto const* vertices = reinterpret_cast<glm::vec3 const*>(f.getBuffer() + movt.payload_offset);
+    _vertices.resize(movt.size / sizeof(glm::vec3));
+    VertexBoxMin = glm::vec3(std::numeric_limits<float>::max());
+    VertexBoxMax = glm::vec3(std::numeric_limits<float>::lowest());
+    for (std::size_t i = 0; i < _vertices.size(); ++i)
+    {
+      _vertices[i] = glm::vec3(vertices[i].x, vertices[i].z, -vertices[i].y);
+      VertexBoxMin = glm::min(VertexBoxMin, _vertices[i]);
+      VertexBoxMax = glm::max(VertexBoxMax, _vertices[i]);
+    }
+    center = (VertexBoxMax + VertexBoxMin) * 0.5f;
+    rad = glm::distance(center, VertexBoxMax);
+
+    auto const& monr = require_chunk('MONR', "MONR");
+    if (monr.size % sizeof(glm::vec3) != 0)
+      throw std::runtime_error("Invalid modern WMO MONR in \"" + fname + "\".");
+    _normals.resize(monr.size / sizeof(glm::vec3));
+    f.seek(monr.payload_offset);
+    f.read(_normals.data(), monr.size);
+    for (auto& normal : _normals)
+      normal = {normal.x, normal.z, -normal.y};
+
+    auto const motv_chunks = find_group_chunks('MOTV');
+    if (motv_chunks.empty())
+    {
+      Log << "[ModernWMOGroup] No MOTV chunk in \"" << fname
+          << "\"; using zero texture coordinates for " << _vertices.size()
+          << " vertices." << std::endl;
+      _texcoords.assign(_vertices.size(), glm::vec2(0.f));
+    }
+    else
+    {
+      auto const primary_motv_bytes = motv_chunks.front()->size
+        - (motv_chunks.front()->size % sizeof(glm::vec2));
+      if (primary_motv_bytes == 0)
+        throw std::runtime_error("Invalid modern WMO MOTV in \"" + fname + "\".");
+      if (primary_motv_bytes != motv_chunks.front()->size)
+        Log << "[ModernWMOGroup] Ignoring "
+            << (motv_chunks.front()->size - primary_motv_bytes)
+            << " trailing MOTV padding bytes in \"" << fname << "\"." << std::endl;
+      _texcoords.resize(primary_motv_bytes / sizeof(glm::vec2));
+      f.seek(motv_chunks.front()->payload_offset);
+      f.read(_texcoords.data(), primary_motv_bytes);
+      if (motv_chunks.size() > 1)
+      {
+        auto const secondary_motv_bytes = motv_chunks[1]->size
+          - (motv_chunks[1]->size % sizeof(glm::vec2));
+        if (secondary_motv_bytes == 0)
+          throw std::runtime_error("Invalid modern WMO secondary MOTV in \"" + fname + "\".");
+        if (secondary_motv_bytes != motv_chunks[1]->size)
+          Log << "[ModernWMOGroup] Ignoring "
+              << (motv_chunks[1]->size - secondary_motv_bytes)
+              << " trailing secondary MOTV padding bytes in \"" << fname << "\"." << std::endl;
+        _texcoords_2.resize(secondary_motv_bytes / sizeof(glm::vec2));
+        f.seek(motv_chunks[1]->payload_offset);
+        f.read(_texcoords_2.data(), secondary_motv_bytes);
+      }
+    }
+
+    auto const moba_chunks = find_group_chunks('MOBA');
+    if (moba_chunks.empty())
+    {
+      Log << "[ModernWMOGroup] No MOBA chunk in \"" << fname
+          << "\"; treating the group as non-rendered geometry." << std::endl;
+    }
+    else
+    {
+      auto const& moba = *moba_chunks.front();
+      if (moba.size % sizeof(wmo_batch) != 0)
+        throw std::runtime_error("Invalid modern WMO MOBA in \"" + fname + "\".");
+      _batches.resize(moba.size / sizeof(wmo_batch));
+      f.seek(moba.payload_offset);
+      f.read(_batches.data(), moba.size);
+    }
+
+    if (_normals.size() != _vertices.size())
+    {
+      LogError << "[ModernWMOGroup] MONR vertex count mismatch in \"" << fname
+               << "\": vertices=" << _vertices.size() << " normals=" << _normals.size()
+               << ". Padding/truncating normals." << std::endl;
+      _normals.resize(_vertices.size(), glm::vec3(0.f, 1.f, 0.f));
+    }
+    if (_texcoords.size() != _vertices.size())
+    {
+      LogError << "[ModernWMOGroup] MOTV vertex count mismatch in \"" << fname
+               << "\": vertices=" << _vertices.size() << " texcoords=" << _texcoords.size()
+               << ". Padding/truncating texture coordinates." << std::endl;
+      _texcoords.resize(_vertices.size(), glm::vec2(0.f));
+    }
+
+    auto const invalid_index = std::find_if(_indices.begin(), _indices.end(), [this](std::uint16_t index)
+    {
+      return index >= _vertices.size();
+    });
+    if (invalid_index != _indices.end())
+      throw std::runtime_error("Modern WMO MOVI references a missing vertex in \"" + fname + "\".");
+
+    auto const old_batch_count = _batches.size();
+    _batches.erase(std::remove_if(_batches.begin(), _batches.end(), [this](wmo_batch const& batch)
+    {
+      auto const index_start = static_cast<std::size_t>(batch.index_start);
+      auto const index_count = static_cast<std::size_t>(batch.index_count);
+      return index_start > _indices.size()
+        || index_count > _indices.size() - index_start
+        || batch.vertex_start >= _vertices.size()
+        || batch.vertex_end >= _vertices.size()
+        || batch.vertex_end < batch.vertex_start;
+    }), _batches.end());
+    if (_batches.size() != old_batch_count)
+      LogError << "[ModernWMOGroup] Dropped " << (old_batch_count - _batches.size())
+               << " invalid render batches from \"" << fname << "\"." << std::endl;
+
+    _renderer.initRenderBatches();
+
+    auto const modr_chunks = find_group_chunks('MODR');
+    if (!modr_chunks.empty())
+    {
+      auto const& modr = *modr_chunks.front();
+      if (modr.size % sizeof(std::int16_t) != 0)
+        throw std::runtime_error("Invalid modern WMO MODR in \"" + fname + "\".");
+      _doodad_ref.resize(modr.size / sizeof(std::int16_t));
+      f.seek(modr.payload_offset);
+      f.read(_doodad_ref.data(), modr.size);
+    }
+
+    auto const mocv_chunks = find_group_chunks('MOCV');
+    if (!mocv_chunks.empty())
+    {
+      f.seek(mocv_chunks.front()->payload_offset);
+      load_mocv(f, mocv_chunks.front()->size);
+    }
+    if (mocv_chunks.size() > 1)
+    {
+      auto const& blend_colors = *mocv_chunks[1];
+      if (blend_colors.size % sizeof(CImVector) != 0)
+        throw std::runtime_error("Invalid modern WMO secondary MOCV in \"" + fname + "\".");
+      auto const* colors = reinterpret_cast<CImVector const*>(f.getBuffer() + blend_colors.payload_offset);
+      auto const color_count = blend_colors.size / sizeof(CImVector);
+      if (_vertex_colors.empty())
+        _vertex_colors.resize(color_count, glm::vec4(0.f));
+      auto const count = std::min(_vertex_colors.size(), color_count);
+      for (std::size_t i = 0; i < count; ++i)
+        _vertex_colors[i].w = static_cast<float>(colors[i].a) / 255.f;
+    }
+
+    auto const mliq_chunks = find_group_chunks('MLIQ');
+    if (!mliq_chunks.empty() && mliq_chunks.front()->size >= 0x1E)
+    {
+      auto const& mliq = *mliq_chunks.front();
+      f.seek(mliq.payload_offset);
+      WMOLiquidHeader liquid_header{};
+      f.read(&liquid_header, 0x1E);
+
+      bool valid_liquid = liquid_header.A > 0 && liquid_header.B > 0;
+      std::size_t vertex_count = 0;
+      std::size_t tile_count = 0;
+      if (valid_liquid)
+      {
+        auto const width = static_cast<std::size_t>(liquid_header.A);
+        auto const height = static_cast<std::size_t>(liquid_header.B);
+        valid_liquid = width <= 512 && height <= 512
+          && width <= (std::numeric_limits<std::size_t>::max() / height);
+        if (valid_liquid)
+        {
+          tile_count = width * height;
+          vertex_count = (width + 1) * (height + 1);
+          auto const required_size = std::size_t{0x1E}
+            + vertex_count * sizeof(WmoLiquidVertex)
+            + tile_count * sizeof(SMOLTile);
+          // Liquid rendering uses uint16 indices and emits four vertices per visible tile.
+          valid_liquid = tile_count <= (std::numeric_limits<std::uint16_t>::max() / 4)
+            && required_size <= mliq.size;
+        }
+      }
+
+      if (valid_liquid)
+      {
+        lq = std::make_unique<wmo_liquid>(&f, liquid_header, header.group_liquid,
+          static_cast<bool>(wmo->flags.use_liquid_type_dbc_id),
+          static_cast<bool>(header.flags.ocean));
+      }
+      else
+      {
+        LogError << "[ModernWMOGroup] Skipping invalid MLIQ in \"" << fname
+                 << "\": size=" << mliq.size << " dimensions=" << liquid_header.A
+                 << "x" << liquid_header.B << "." << std::endl;
+      }
+    }
+
+    Log << "[ModernWMOGroup] Loaded \"" << fname << "\": vertices="
+        << _vertices.size() << ", indices=" << _indices.size()
+        << ", batches=" << _batches.size() << ", chunks=" << group_chunks.size()
+        << std::endl;
+  }
+  else
+  {
 
   // - MOPY ----------------------------------------------
 
@@ -993,6 +1456,7 @@ void WMOGroup::load()
     }
 
   }
+  }
 
   //dl_light = 0;
   // "real" lighting?
@@ -1036,6 +1500,11 @@ void WMOGroup::load()
 
 void WMOGroup::load_mocv(BlizzardArchive::ClientFile& f, uint32_t size)
 {
+  if (size % sizeof(uint32_t) != 0)
+  {
+    LogError << "Invalid WMO MOCV size " << size << ". Ignoring trailing bytes." << std::endl;
+  }
+
   uint32_t const* colors = reinterpret_cast<uint32_t const*> (f.getPointer());
   _vertex_colors.resize(size / sizeof(uint32_t));
 
@@ -1048,7 +1517,7 @@ void WMOGroup::load_mocv(BlizzardArchive::ClientFile& f, uint32_t size)
   {
     int interior_batchs_start = 0;
 
-    if (header.transparency_batches_count > 0)
+    if (header.transparency_batches_count > 0 && header.transparency_batches_count <= _batches.size())
     {
       interior_batchs_start = _batches[header.transparency_batches_count - 1].vertex_end + 1;
     }
@@ -1071,7 +1540,7 @@ void WMOGroup::fix_vertex_color_alpha()
 {
   int interior_batchs_start = 0;
 
-  if (header.transparency_batches_count > 0)
+  if (header.transparency_batches_count > 0 && header.transparency_batches_count <= _batches.size())
   {
     interior_batchs_start = _batches[header.transparency_batches_count - 1].vertex_end + 1;
   }

@@ -79,6 +79,12 @@ void main()
           fog_mode = 4;
           break;
       }
+      case 7: // InvSrcAlphaAdd
+      {
+          alpha_test = -1.0;
+          fog_mode = 2;
+          break;
+      }
   }
 
   vec4 color = vec4(0.0);

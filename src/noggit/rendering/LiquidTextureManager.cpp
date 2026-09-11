@@ -21,6 +21,7 @@ void LiquidTextureManager::upload()
   if (_uploaded)
     return;
 
+  unsigned skipped_invalid_profiles = 0;
   for (int i = 0; i < gLiquidTypeDB.getRecordCount(); ++i)
   {
     const DBCFile::Record record = gLiquidTypeDB.getRecord(i);
@@ -44,6 +45,11 @@ void LiquidTextureManager::upload()
       try
       {
         std::string db_string_template = record.getString(LiquidTypeDB::TextureFilenames);
+        if (db_string_template.length() <= 6)
+        {
+          ++skipped_invalid_profiles;
+          continue;
+        }
         filename = db_string_template.substr(0, db_string_template.length() - 6);
       }
       catch (...)
@@ -121,6 +127,13 @@ void LiquidTextureManager::upload()
     gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     _texture_frames_map[liquid_type_id] = std::make_tuple(array, anim, type, n_frames);
+  }
+
+  if (skipped_invalid_profiles)
+  {
+    LogDebug << "[ModernADT][WaterRender] Skipped " << skipped_invalid_profiles
+             << " LiquidType profile(s) with no usable texture filename."
+             << std::endl;
   }
 
   // Modern clients do not expose the legacy LiquidType.dbc profiles Noggit's

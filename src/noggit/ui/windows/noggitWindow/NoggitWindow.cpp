@@ -72,7 +72,9 @@ namespace Noggit::Ui::Windows
 
     Log << "Project version : " << Noggit::Project::ClientVersionFactory::MapToStringVersion(project->projectVersion).c_str() << std::endl;
 
-    if (project->projectVersion == Project::ProjectVersion::WOTLK || project->projectVersion == Project::ProjectVersion::SL)
+    if (project->projectVersion == Project::ProjectVersion::WOTLK
+        || project->projectVersion == Project::ProjectVersion::SL
+        || project->projectVersion == Project::ProjectVersion::RETAIL)
     {
       OpenDBs(project->ClientData);
     }
@@ -399,14 +401,17 @@ namespace Noggit::Ui::Windows
         QComboBox* _combo_exp_search = new QComboBox(this);
         _combo_exp_search->addItem(tr("All"));
         _combo_exp_search->addItem(QIcon(":/icon-classic"), tr("Classic"));
-        _combo_exp_search->addItem(QIcon(":/icon-burning"), tr("Burning Cursade"));
+        _combo_exp_search->addItem(QIcon(":/icon-burning"), tr("Burning Crusade"));
         _combo_exp_search->addItem(QIcon(":/icon-wrath"), tr("Wrath of the Lich King"));
-        _combo_exp_search->addItem(QIcon(":/icon-cata"), tr("Cataclism"));
+        _combo_exp_search->addItem(QIcon(":/icon-cata"), tr("Cataclysm"));
         _combo_exp_search->addItem(QIcon(":/icon-panda"), tr("Mist of Pandaria"));
         _combo_exp_search->addItem(QIcon(":/icon-warlords"), tr("Warlords of Draenor"));
         _combo_exp_search->addItem(QIcon(":/icon-legion"), tr("Legion"));
         _combo_exp_search->addItem(QIcon(":/icon-battle"), tr("Battle for Azeroth"));
         _combo_exp_search->addItem(QIcon(":/icon-shadow"), tr("Shadowlands"));
+        _combo_exp_search->addItem(QIcon(":/icon-legion"), tr("Dragonflight"));
+        _combo_exp_search->addItem(QIcon(":/icon-battle"), tr("The War Within"));
+        _combo_exp_search->addItem(QIcon(":/icon-shadow"), tr("Midnight"));
         _combo_exp_search->setCurrentIndex(0);
 
         QCheckBox* _wmo_maps_search = new QCheckBox("Display WMO maps (No terrain)", this);

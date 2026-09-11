@@ -165,13 +165,14 @@ MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> pro
   // Fill selector combo
   const auto& table = std::string("Map");
 
-  auto mapTable = ClientDatabase::getTable(table);
-  // auto& mapTable = Noggit::Project::CurrentProject::get()->ClientDatabase->LoadTable(table, readFileAsIMemStream);
-
-  int count = 0;
-  auto iterator = mapTable.Records();
-  while (iterator.HasRecords())
-  {      BlizzardDatabaseLib::Structures::BlizzardDatabaseRow record;
+  try
+  {
+    auto mapTable = ClientDatabase::getTable(table);
+    int count = 0;
+    auto iterator = mapTable.Records();
+    while (iterator.HasRecords())
+    {
+      BlizzardDatabaseLib::Structures::BlizzardDatabaseRow record;
       try
       {
         record = iterator.Next();
@@ -199,6 +200,11 @@ MapCreationWizard::MapCreationWizard(std::shared_ptr<Project::NoggitProject> pro
       _corpse_map_id->setItemData(count + 1, QVariant(map_id));
 
       count++;
+    }
+  }
+  catch (std::exception const& e)
+  {
+    LogError << "Could not populate map wizard corpse-map selector: " << e.what() << std::endl;
   }
 
   auto add_btn = new QPushButton("New",this);
@@ -430,14 +436,18 @@ void MapCreationWizard::createMapSettingsTab()
 
     _expansion_id = new QComboBox(_map_settings);
 
-    _expansion_id->addItem("Classic");
-    _expansion_id->setItemData(0, QVariant(0));
-
-    _expansion_id->addItem("Burning Crusade");
-    _expansion_id->setItemData(1, QVariant(1));
-
-    _expansion_id->addItem("Wrath of the Lich King");
-    _expansion_id->setItemData(2, QVariant(2));
+    _expansion_id->addItem("Classic", QVariant(0));
+    _expansion_id->addItem("Burning Crusade", QVariant(1));
+    _expansion_id->addItem("Wrath of the Lich King", QVariant(2));
+    _expansion_id->addItem("Cataclysm", QVariant(3));
+    _expansion_id->addItem("Mist of Pandaria", QVariant(4));
+    _expansion_id->addItem("Warlords of Draenor", QVariant(5));
+    _expansion_id->addItem("Legion", QVariant(6));
+    _expansion_id->addItem("Battle for Azeroth", QVariant(7));
+    _expansion_id->addItem("Shadowlands", QVariant(8));
+    _expansion_id->addItem(QIcon(":/icon-legion"), "Dragonflight", QVariant(9));
+    _expansion_id->addItem(QIcon(":/icon-battle"), "The War Within", QVariant(10));
+    _expansion_id->addItem(QIcon(":/icon-shadow"), "Midnight", QVariant(11));
 
     map_settings_layout->addRow("Expansion:", _expansion_id);
 
@@ -849,15 +859,14 @@ void MapCreationWizard::selectMap(int map_id)
 
   _max_players->setValue(std::atoi(maxPlayers.c_str()));
 
-  auto difficulty_table = ClientDatabase::getTable("MapDifficulty");
-
-  auto iterator = difficulty_table.Records();
-
   QSignalBlocker const difficulty_type_blocker(_difficulty_type);
   _difficulty_type->clear();
-
-  while (iterator.HasRecords())
+  try
   {
+    auto difficulty_table = ClientDatabase::getTable("MapDifficulty");
+    auto iterator = difficulty_table.Records();
+    while (iterator.HasRecords())
+    {
       auto record = iterator.Next();
 
       // auto difficulty_id = std::atoi(record.Columns["ID"].Value.c_str());
@@ -872,6 +881,11 @@ void MapCreationWizard::selectMap(int map_id)
           std::string diff_text = "Difficulty " + difficulty_value;
           _difficulty_type->insertItem(difficulty_type, diff_text.c_str(), QVariant(record_id));
       }
+    }
+  }
+  catch (std::exception const& e)
+  {
+    LogError << "Could not populate map difficulty selector: " << e.what() << std::endl;
   }
   _difficulty_type->setCurrentIndex(0);
   selectMapDifficulty();
@@ -888,20 +902,26 @@ void MapCreationWizard::selectMapDifficulty()
     if (!selected_difficulty_id)
         return;
 
-    auto difficulty_table = ClientDatabase::getTable("MapDifficulty");
-    auto rec_opt = difficulty_table.RecordById(selected_difficulty_id);
-    if (!rec_opt)
-      return;
-    auto& record = *rec_opt;
+    try
+    {
+      auto difficulty_table = ClientDatabase::getTable("MapDifficulty");
+      auto rec_opt = difficulty_table.RecordById(selected_difficulty_id);
+      if (!rec_opt)
+        return;
+      auto& record = *rec_opt;
 
-    //_difficulty_type;
-    _difficulty_req_message->fill(record, "Message_lang");
-    
-    auto raid_duration = shadowWorldWizardIntValueOr(record, "RaidDuration", 0);
-    _difficulty_raid_duration->setValue(raid_duration / 60 / 60 / 24); // convert from seconds to days
+      _difficulty_req_message->fill(record, "Message_lang");
 
-    _difficulty_max_players->setValue(shadowWorldWizardIntValueOr(record, "MaxPlayers", 0));
-    _difficulty_string->setText(QString::fromStdString(shadowWorldWizardTextValue(record, {"Difficultystring", "DifficultyString"})));
+      auto raid_duration = shadowWorldWizardIntValueOr(record, "RaidDuration", 0);
+      _difficulty_raid_duration->setValue(raid_duration / 60 / 60 / 24); // convert from seconds to days
+
+      _difficulty_max_players->setValue(shadowWorldWizardIntValueOr(record, "MaxPlayers", 0));
+      _difficulty_string->setText(QString::fromStdString(shadowWorldWizardTextValue(record, {"Difficultystring", "DifficultyString"})));
+    }
+    catch (std::exception const& e)
+    {
+      LogError << "Could not read selected map difficulty: " << e.what() << std::endl;
+    }
 }
 
 void MapCreationWizard::wheelEvent(QWheelEvent* event)

@@ -504,6 +504,15 @@ ENDIF()
 
 includePlatform("pack")
 
+option(NOGGIT_ADDRESS_SANITIZER "Instrument Noggit with MSVC AddressSanitizer" OFF)
+if(MSVC AND NOGGIT_ADDRESS_SANITIZER)
+  target_compile_definitions(noggit PRIVATE
+    _DISABLE_VECTOR_ANNOTATION
+    _DISABLE_STRING_ANNOTATION)
+  target_compile_options(noggit PRIVATE /fsanitize=address /Zi /Oy-)
+  target_link_options(noggit PRIVATE /DEBUG /INCREMENTAL:NO)
+endif()
+
 # Disable warnings
 if(WIN32)
   target_compile_options(lodepng PRIVATE /wd4334 /wd4267)

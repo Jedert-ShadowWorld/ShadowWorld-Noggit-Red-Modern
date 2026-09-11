@@ -3,10 +3,14 @@
 #pragma once
 
 #include <cassert>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <stdexcept>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #include <blizzard-archive-library/include/ClientData.hpp>
 
 class DBCFile
@@ -54,8 +58,10 @@ public:
     void write(size_t field, T val)
     {
       static_assert(sizeof(T) == 4, "This function only writes int/uint/float values.");
-      assert(field < file.fieldCount);
-      *reinterpret_cast<T*>(offset + field * 4) = val;
+      if (field >= file.fieldCount)
+        throw std::out_of_range("DBC field write out of range");
+      std::memcpy(offset + field * 4, &val, sizeof(T));
+      file.invalidateLookupCaches();
     }
 
     void writeString(size_t field, const std::string& val);
@@ -117,6 +123,10 @@ public:
 private:
   DBCFile() = default;
 
+  size_t findRecordIndex(unsigned int id, size_t field);
+  bool markMissingId(unsigned int id, size_t field);
+  void invalidateLookupCaches();
+
   std::string filename;
   std::uint32_t recordSize = 0;
   std::uint32_t recordCount = 0;
@@ -124,4 +134,7 @@ private:
   std::uint32_t stringSize = 0;
   std::vector<unsigned char> data;
   std::vector<char> stringTable;
+  std::shared_ptr<std::mutex> _lookupMutex = std::make_shared<std::mutex>();
+  std::unordered_map<size_t, std::unordered_map<unsigned int, size_t>> _recordIndices;
+  std::unordered_map<size_t, std::unordered_set<unsigned int>> _missingIdWarnings;
 };

@@ -108,15 +108,7 @@ namespace Noggit::Project
         if (project_client_configuration.contains("ClientVersion"))
         {
           auto client_version = project_client_configuration["ClientVersion"].toString().toStdString();
-          auto client_version_enum = Noggit::Project::ProjectVersion::WOTLK;
-
-          if (client_version == std::string("Shadowlands"))
-            client_version_enum = Noggit::Project::ProjectVersion::SL;
-
-          if (client_version == std::string("Wrath Of The Lich King"))
-            client_version_enum = Noggit::Project::ProjectVersion::WOTLK;
-
-          project.projectVersion = client_version_enum;
+          project.projectVersion = Noggit::Project::ClientVersionFactory::mapToEnumVersion(client_version);
         }
       }
       else

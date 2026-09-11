@@ -92,9 +92,10 @@ namespace Noggit::Rendering
     GLuint const& _render_batch_mapping_buffer = _buffers[6];
     GLuint const& _render_batch_tex_buffer = _buffers[7];
 
-    GLuint _render_batch_tex;
+    GLuint _render_batch_tex = 0;
 
     bool _uploaded = false;
+    bool _upload_attempted = false;
     bool _vao_is_setup = false;
 
   };

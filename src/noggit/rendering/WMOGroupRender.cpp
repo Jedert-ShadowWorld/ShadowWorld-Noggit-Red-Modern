@@ -24,20 +24,36 @@ WMOGroupRender::WMOGroupRender(WMOGroup* wmo_group)
 
 void WMOGroupRender::upload()
 {
+  auto const& materials = _wmo_group->wmo->materials;
+  auto const& textures = _wmo_group->wmo->textures;
+  if (materials.empty() || textures.empty())
+  {
+    LogError << "Skipping WMO group upload with no usable materials or textures." << std::endl;
+    return;
+  }
+
   // render batches
 
   bool texture_not_uploaded = false;
+  bool const modern_wmo = _wmo_group->wmo->uses_file_data_ids();
 
   std::size_t batch_counter = 0;
   for (auto& batch : _wmo_group->_batches)
   {
     std::uint16_t material_to_use = batch.texture;
-    if (batch.flags == 2)
+    if (modern_wmo && (batch.flags & 2))
         material_to_use = batch.unused[5];
 
-    WMOMaterial const& mat(_wmo_group->wmo->materials.at(material_to_use));
+    if (material_to_use >= materials.size())
+    {
+      LogError << "Invalid WMO material index " << material_to_use
+               << "; using material 0." << std::endl;
+      material_to_use = 0;
+    }
+    WMOMaterial const& mat(materials[material_to_use]);
 
-    auto& tex1 = _wmo_group->wmo->textures.at(mat.texture1);
+    auto const texture1 = mat.texture1 < textures.size() ? mat.texture1 : 0;
+    auto& tex1 = textures[texture1];
 
     tex1->wait_until_loaded();
     tex1->upload();
@@ -52,7 +68,8 @@ void WMOGroupRender::upload()
 
     if (use_tex2)
     {
-      auto& tex2 = _wmo_group->wmo->textures.at(mat.texture2);
+      auto const texture2 = mat.texture2 < textures.size() ? mat.texture2 : 0;
+      auto& tex2 = textures[texture2];
       tex2->wait_until_loaded();
       tex2->upload();
 
@@ -76,16 +93,16 @@ void WMOGroupRender::upload()
   _draw_calls.clear();
   WMOCombinedDrawCall* draw_call = nullptr;
   std::vector<WMORenderBatch*> _used_batches;
-  bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
-
   batch_counter = 0;
   for (auto& batch : _wmo_group->_batches)
   {
     std::uint16_t material_to_use = batch.texture;
-    if (modern_features && batch.flags & 2)
+    if (modern_wmo && (batch.flags & 2))
         material_to_use = batch.unused[5];
 
-    WMOMaterial& mat(_wmo_group->wmo->materials.at(material_to_use));
+    if (material_to_use >= materials.size())
+      material_to_use = 0;
+    WMOMaterial const& mat(materials[material_to_use]);
 
     bool backface_cull = !mat.flags.unculled;
     bool use_tex2 = mat.shader == 6 || mat.shader == 5 || mat.shader == 3 || mat.shader == 21 || mat.shader == 23;
@@ -248,12 +265,20 @@ void WMOGroupRender::upload()
 
 void WMOGroupRender::unload()
 {
+  if (!_uploaded)
+  {
+    _upload_attempted = false;
+    return;
+  }
+
   _vertex_array.unload();
   _buffers.unload();
 
   gl.deleteTextures(1, &_render_batch_tex);
+  _render_batch_tex = 0;
 
   _uploaded = false;
+  _upload_attempted = false;
   _vao_is_setup = false;
 }
 
@@ -296,6 +321,10 @@ void WMOGroupRender::draw(OpenGL::Scoped::use_program& wmo_shader
   if (!_uploaded)
   [[unlikely]]
   {
+    if (_upload_attempted)
+      return;
+
+    _upload_attempted = true;
     upload();
 
     if (!_uploaded)
@@ -357,16 +386,16 @@ void WMOGroupRender::initRenderBatches()
 
   _render_batches.resize(_wmo_group->_batches.size());
 
-  QSettings settings;
-  bool modern_features = settings.value("modern_features", false).toBool();
+  bool const modern_wmo = _wmo_group->wmo->uses_file_data_ids();
 
   std::size_t batch_counter = 0;
   for (auto& batch : _wmo_group->_batches)
   {
     // some custom models have bugged batch.vertex_end as 0, avoid crash
-    if (batch.vertex_end >= batch.vertex_start)
+    if (batch.vertex_end >= batch.vertex_start && batch.vertex_start < _render_batch_mapping.size())
     {
-        for (std::size_t i = 0; i < (batch.vertex_end - batch.vertex_start + 1); ++i)
+        auto const vertex_end = std::min<std::size_t>(batch.vertex_end, _render_batch_mapping.size() - 1);
+        for (std::size_t i = 0; i < (vertex_end - batch.vertex_start + 1); ++i)
         {
           _render_batch_mapping[batch.vertex_start + i] = static_cast<unsigned>(batch_counter + 1);
         }
@@ -386,10 +415,21 @@ void WMOGroupRender::initRenderBatches()
     }
 
     std::uint16_t material_to_use = batch.texture;
-    if (modern_features && batch.flags == 2)
+    if (modern_wmo && (batch.flags & 2))
         material_to_use = batch.unused[5];
 
-    WMOMaterial const& mat (_wmo_group->wmo->materials.at (material_to_use));
+    if (_wmo_group->wmo->materials.empty())
+    {
+      LogError << "Skipping WMO render-batch initialization with no materials." << std::endl;
+      return;
+    }
+    if (material_to_use >= _wmo_group->wmo->materials.size())
+    {
+      LogError << "Invalid WMO material index " << material_to_use
+               << " during batch initialization; using material 0." << std::endl;
+      material_to_use = 0;
+    }
+    WMOMaterial const& mat (_wmo_group->wmo->materials[material_to_use]);
 
     if (mat.flags.unlit)
     {

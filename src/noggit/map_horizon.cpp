@@ -13,6 +13,7 @@
 #include <opengl/context.inl>
 #include <noggit/Misc.h>
 
+#include <algorithm>
 #include <bitset>
 #include <exception>
 #include <sstream>
@@ -73,9 +74,9 @@ static inline uint32_t color_for_height (int16_t height)
   {
     return color (0, 0, 255 + std::max (height / 2.0, -255.0));
   }
-  else if (height >= colors[num_colors - 1]._stop)
+  else if (height >= colors[num_colors - 1]._start)
   {
-    return colors[num_colors]._color;
+    return colors[num_colors - 1]._color;
   }
 
   float t (1.0);
@@ -91,7 +92,9 @@ static inline uint32_t color_for_height (int16_t height)
     }
   }
 
-  return lerp_color(colors[correct_color]._color, colors[correct_color + 1]._color, t);
+  return lerp_color(colors[correct_color]._color,
+                    colors[std::min(correct_color + 1, num_colors - 1)]._color,
+                    std::clamp(t, 0.0f, 1.0f));
 }
 namespace Noggit
 {

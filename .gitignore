@@ -5,5 +5,7 @@
 /.vs
 /CMakePresets.json
 /CMakeUserPresets.json
-# Local/Codex backup files
+# Local build and backup files
 *.bak
+/build_*.log
+/shadowworld-modern.diff

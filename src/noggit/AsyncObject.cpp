@@ -176,7 +176,7 @@ namespace
           continue;
         }
 
-        BlizzardArchive::Listfile::FileKey key(path);
+        BlizzardArchive::Listfile::FileKey key(path, placement.nameID);
         tile->add_model(world->add_model_instance(
           ModelInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
         ++loaded_m2;
@@ -200,7 +200,7 @@ namespace
         if (placement.scale == 0)
           placement.scale = 1024;
 
-        BlizzardArchive::Listfile::FileKey key(path);
+        BlizzardArchive::Listfile::FileKey key(path, placement.nameID);
         tile->add_model(world->add_wmo_instance(
           WMOInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
         ++loaded_wmo;

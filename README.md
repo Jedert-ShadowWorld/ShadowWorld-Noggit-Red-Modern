@@ -56,6 +56,11 @@ readers/writers in mind rather than a single "modern support" checkbox.
 -   Client build detection using `.build.info` has been added.
 -   Shadowlands **9.2.7** client data can be opened far enough for
     current development/testing.
+-   Retail **12.1** client storage can be opened directly through CASC.
+-   Retail maps can be discovered, selected and entered for read-only
+    rendering tests.
+-   The project list can be forced at startup with
+    `noggit.exe --project-selector`.
 -   Modern `Map.db2` definitions and layouts have been added.
 -   WDC4 format detection has been added to the database library.
 -   WDC4 data is currently routed through the WDC5 reader where
@@ -78,8 +83,12 @@ readers/writers in mind rather than a single "modern support" checkbox.
 -   Modern `Map.db2` reading.
 -   Modern map discovery/listing.
 -   Modern ADT loading.
+-   Retail 12.1 ADT, M2 and WMO loading.
+-   Modern sky, light, particle and material rendering.
 
-Modern ADT loading is **not yet fully working**.
+Modern loading and rendering are **not yet fully working**. Known visual
+issues include incorrect black or over-bright M2/WMO material passes,
+incorrect tree materials and incomplete modern light effects.
 
 The current development state includes additional diagnostics
 specifically to determine where loading fails when entering/opening a
@@ -90,23 +99,19 @@ latest ADT-loading changes.
 
 ### Not Yet Implemented
 
--   Complete Shadowlands 9.2.7 ADT loading.
 -   Native modern ADT editing.
 -   Native modern ADT saving/writing.
 -   Creation of all required modern map database files for newly created
     maps.
 -   Complete modern map creation workflow.
--   Native 12.x ADT support.
--   Native 12.x WMO loading/placement support.
 -   Complete modern WMO support.
 -   General multi-version export support.
 
 ## Version Direction
 
-The current first target is **World of Warcraft 9.2.7 / Shadowlands**.
-
-9.2.7 is being used as the first modern format target while the modern
-project, CASC, DB2 and ADT infrastructure is developed.
+The modern reader keeps **World of Warcraft 9.2.7 / Shadowlands** support
+while adding a version-aware path for **Retail 12.x** data. WotLK remains
+the existing editing and saving foundation.
 
 Some included DBD definitions already contain `Map.db2` layouts for
 later WoW versions, including 12.x builds. This does **not** mean Noggit
@@ -165,7 +170,8 @@ These repositories are included as Git submodules.
 Clone recursively:
 
 ``` bash
-git clone --recursive <repository-url>
+git clone --recursive --branch shadowworld-modern-retail-preview \
+  https://github.com/Jedert-ShadowWorld/ShadowWorld-Noggit-Red-Modern.git
 ```
 
 For an existing clone:
@@ -173,6 +179,18 @@ For an existing clone:
 ``` bash
 git submodule update --init --recursive
 ```
+
+Example Windows build with Visual Studio 2022 and Qt 5.15:
+
+``` powershell
+cmake -S . -B build -A x64 -DQt5_DIR="<Qt-install>/lib/cmake/Qt5"
+cmake --build build --config Release --target noggit -j 8
+```
+
+The executable is written to `build/bin/Release`. Run
+`noggit.exe --project-selector` to always open the project selection
+window instead of automatically loading the configured or favorite
+project.
 
 ## Development Philosophy
 

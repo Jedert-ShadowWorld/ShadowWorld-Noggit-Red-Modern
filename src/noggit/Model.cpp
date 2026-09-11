@@ -9,12 +9,92 @@
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/scoped_blp_texture_reference.hpp>
 #include <noggit/TextureManager.h> // TextureManager, Texture
+#include <Listfile.hpp>
 
 #include <cassert>
+#include <cstring>
 #include <glm/gtx/euler_angles.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <map>
 #include <string>
+#include <vector>
+
+namespace
+{
+  bool has_fourcc(char const* data, std::size_t size, char const (&tag)[5])
+  {
+    return size >= 4 && std::memcmp(data, tag, 4) == 0;
+  }
+
+  bool unwrap_md21_container(BlizzardArchive::ClientFile& file,
+                             std::string const& name,
+                             std::vector<std::uint32_t>& texture_file_ids,
+                             std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t>& animation_file_ids)
+  {
+    auto const* buffer = file.getBuffer();
+    auto const size = file.getSize();
+    if (!has_fourcc(buffer, size, "MD21"))
+      return true;
+
+    std::uint32_t payload_size = 0;
+    std::memcpy(&payload_size, buffer + 4, sizeof(payload_size));
+
+    constexpr std::size_t payload_offset = 8;
+    if (payload_size > size - payload_offset
+        || !has_fourcc(buffer + payload_offset, payload_size, "MD20"))
+    {
+      LogError << "Error loading file \"" << name
+               << "\". Invalid MD21 model payload (container bytes=" << size
+               << ", declared payload bytes=" << payload_size << ")." << std::endl;
+      return false;
+    }
+
+    std::size_t chunk_offset = payload_offset + payload_size;
+    while (chunk_offset + 8 <= size)
+    {
+      std::uint32_t chunk_size = 0;
+      std::memcpy(&chunk_size, buffer + chunk_offset + 4, sizeof(chunk_size));
+
+      auto const chunk_payload = chunk_offset + 8;
+      if (chunk_size > size - chunk_payload)
+        break;
+
+      if (std::memcmp(buffer + chunk_offset, "TXID", 4) == 0)
+      {
+        auto const texture_count = chunk_size / sizeof(std::uint32_t);
+        texture_file_ids.resize(texture_count);
+        std::memcpy(texture_file_ids.data(), buffer + chunk_payload,
+                    texture_count * sizeof(std::uint32_t));
+      }
+      else if (std::memcmp(buffer + chunk_offset, "AFID", 4) == 0
+               && chunk_size % 8 == 0)
+      {
+        for (std::size_t offset = 0; offset < chunk_size; offset += 8)
+        {
+          std::uint16_t anim_id = 0;
+          std::uint16_t sub_anim_id = 0;
+          std::uint32_t file_data_id = 0;
+          std::memcpy(&anim_id, buffer + chunk_payload + offset, sizeof(anim_id));
+          std::memcpy(&sub_anim_id, buffer + chunk_payload + offset + 2, sizeof(sub_anim_id));
+          std::memcpy(&file_data_id, buffer + chunk_payload + offset + 4, sizeof(file_data_id));
+          if (file_data_id != 0)
+            animation_file_ids[{anim_id, sub_anim_id}] = file_data_id;
+        }
+      }
+
+      chunk_offset = chunk_payload + chunk_size;
+    }
+
+    std::vector<char> payload(buffer + payload_offset, buffer + payload_offset + payload_size);
+    file.setBuffer(payload);
+    file.seek(0);
+    Log << "[ModernM2] Unwrapped MD21 container for \"" << name
+        << "\"; MD20 payload bytes=" << payload_size
+        << ", TXID textures=" << texture_file_ids.size()
+        << ", AFID animations=" << animation_file_ids.size() << std::endl;
+    return true;
+  }
+}
 
 Model::Model(const std::string& filename, Noggit::NoggitRenderContext context)
   : AsyncObject(filename)
@@ -26,12 +106,21 @@ Model::Model(const std::string& filename, Noggit::NoggitRenderContext context)
 
 void Model::finishLoading()
 {
-  BlizzardArchive::ClientFile f(_file_key.filepath(), Noggit::Application::NoggitApplication::instance()->clientData());
+  BlizzardArchive::ClientFile f(_file_key, Noggit::Application::NoggitApplication::instance()->clientData());
+  std::vector<std::uint32_t> modern_texture_file_ids;
+  std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> modern_animation_file_ids;
 
-  if (f.isEof() || f.getSize() < sizeof(ModelHeader))
+  if (f.isEof() || f.getSize() < 8)
   {
     // LogError << "Error loading file \"" << _file_key.stringRepr() << "\". Aborting to load model." << std::endl;
     // finished = true;
+    throw std::runtime_error("Error loading file \"" + _file_key.stringRepr() + "\". Aborting to load model.");
+  }
+
+  if (!unwrap_md21_container(f, _file_key.stringRepr(), modern_texture_file_ids,
+                             modern_animation_file_ids)
+      || f.getSize() < sizeof(ModelHeader))
+  {
     throw std::runtime_error("Error loading file \"" + _file_key.stringRepr() + "\". Aborting to load model.");
   }
 
@@ -54,7 +143,9 @@ void Model::finishLoading()
       valid_version = true;
     break;
   case Noggit::Project::ProjectVersion::SL:
-    if (packed_version == m2_version_legion_bfa_sl)
+  case Noggit::Project::ProjectVersion::RETAIL:
+    if (packed_version == m2_version_legion_bfa_sl
+        || packed_version == m2_version_legion_bfa_274)
       valid_version = true;
     break;
   default:
@@ -103,9 +194,34 @@ void Model::finishLoading()
   //! \todo  This takes a biiiiiit long. Have a look at this.
   initCommon(f, header);
 
+  if (!modern_texture_file_ids.empty())
+  {
+    auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+    auto const texture_count = std::min(_textureFilenames.size(), modern_texture_file_ids.size());
+    std::size_t resolved_textures = 0;
+
+    for (std::size_t i = 0; i < texture_count; ++i)
+    {
+      if (modern_texture_file_ids[i] == 0)
+        continue;
+
+      auto const texture_path = client_data->listfile()->getPath(modern_texture_file_ids[i]);
+      if (!texture_path.empty())
+      {
+        _textureFilenames[i] = texture_path;
+        _specialTextures[i] = -1;
+        ++resolved_textures;
+      }
+    }
+
+    Log << "[ModernM2] Resolved " << resolved_textures << "/"
+        << modern_texture_file_ids.size() << " TXID textures for \""
+        << _file_key.stringRepr() << "\"." << std::endl;
+  }
+
   if (animated)
   {
-    initAnimated(f, header);
+    initAnimated(f, header, modern_animation_file_ids);
 
     mesh_bounds_ratio = calcMeshBoundsRatio();
   }
@@ -334,6 +450,10 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
 
   for (size_t i = 0; i < header.nTextures; ++i)
   {
+    // Modern TXID-backed textures have no inline name. They are ordinary
+    // textures once their FileDataID is resolved after the MD20 payload load.
+    _specialTextures[i] = -1;
+
     if (texdef[i].type == 0)
     {
       if (texdef[i].nameLen == 0)
@@ -342,7 +462,6 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
         continue;
       }
 
-      _specialTextures[i] = -1;
       const char* blp_ptr = f.getBuffer() + texdef[i].nameOfs;
       // some tools export the size without accounting for the \0
       bool invalid_size = *(blp_ptr + texdef[i].nameLen-1) != '\0';
@@ -408,13 +527,48 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
       return;
     }
 
+    if (g.getSize() < sizeof(ModelView))
+    {
+      LogError << "skinfile header is truncated " << lodname << std::endl;
+      _skin_load_failed = true;
+      g.close();
+      return;
+    }
+
     auto view = reinterpret_cast<ModelView const*>(g.getBuffer());
+    auto const skin_size = g.getSize();
+    auto valid_skin_array = [skin_size](std::size_t offset, std::size_t count, std::size_t element_size)
+    {
+      return offset <= skin_size
+          && element_size != 0
+          && count <= (skin_size - offset) / element_size;
+    };
+
+    if (!valid_skin_array(view->ofs_index, view->n_index, sizeof(uint16_t))
+        || !valid_skin_array(view->ofs_triangle, view->n_triangle, sizeof(uint16_t))
+        || !valid_skin_array(view->ofs_submesh, view->n_submesh, sizeof(ModelGeoset))
+        || !valid_skin_array(view->ofs_texture_unit, view->n_texture_unit, sizeof(ModelTexUnit)))
+    {
+      LogError << "skinfile contains an invalid array range " << lodname << std::endl;
+      _skin_load_failed = true;
+      g.close();
+      return;
+    }
+
     auto indexLookup = reinterpret_cast<uint16_t const*>(g.getBuffer() + view->ofs_index);
     auto triangles = reinterpret_cast<uint16_t const*>(g.getBuffer() + view->ofs_triangle);
 
     _indices.resize (view->n_triangle);
 
     for (size_t i (0); i < _indices.size(); ++i) {
+      if (triangles[i] >= view->n_index)
+      {
+        LogError << "skinfile contains an invalid triangle index " << lodname << std::endl;
+        _indices.clear();
+        _skin_load_failed = true;
+        g.close();
+        return;
+      }
       _indices[i] = indexLookup[triangles[i]];
     }
 
@@ -467,30 +621,48 @@ FakeGeometry::FakeGeometry(Model* m)
 }
 
 
-void Model::initAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header)
+void Model::initAnimated(
+    const BlizzardArchive::ClientFile& f,
+    ModelHeader& header,
+    std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> const& animation_file_ids)
 {
   std::vector<std::unique_ptr<BlizzardArchive::ClientFile>> animation_files;
 
   if (header.nAnimations > 0) 
   {
     std::vector<ModelAnimation> animations(header.nAnimations);
+    animation_files.resize(header.nAnimations);
 
     memcpy(animations.data(), f.getBuffer() + header.ofsAnimations, header.nAnimations * sizeof(ModelAnimation));
 
-    for (auto& anim : animations)
+    auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+    for (std::size_t animation_index = 0; animation_index < animations.size(); ++animation_index)
     {
+      auto& anim = animations[animation_index];
       anim.length = std::max(anim.length, 1U);
 
       _animation_length[anim.animID] += anim.length;
       _animations_seq_per_id[anim.animID][anim.subAnimID] = anim;
 
-      std::string lodname = _file_key.filepath().substr(0, _file_key.filepath().length() - 3);
-      std::stringstream tempname;
-      tempname << lodname << anim.animID << "-" << anim.subAnimID << ".anim";
-      if (Noggit::Application::NoggitApplication::instance()->clientData()->exists(tempname.str()))
+      auto const modern_file = animation_file_ids.find({anim.animID, anim.subAnimID});
+      if (modern_file != animation_file_ids.end())
       {
-        animation_files.push_back(std::make_unique<BlizzardArchive::ClientFile>(tempname.str(),
-            Noggit::Application::NoggitApplication::instance()->clientData()));
+        BlizzardArchive::Listfile::FileKey key(modern_file->second);
+        auto external_file = std::make_unique<BlizzardArchive::ClientFile>(key, client_data);
+        if (!external_file->isEof())
+          animation_files[animation_index] = std::move(external_file);
+      }
+
+      if (!animation_files[animation_index])
+      {
+        std::string lodname = _file_key.filepath().substr(0, _file_key.filepath().length() - 3);
+        std::stringstream tempname;
+        tempname << lodname << anim.animID << "-" << anim.subAnimID << ".anim";
+        if (client_data->exists(tempname.str()))
+        {
+          animation_files[animation_index] =
+            std::make_unique<BlizzardArchive::ClientFile>(tempname.str(), client_data);
+        }
       }
     }
   }
@@ -520,12 +692,32 @@ void Model::initAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& head
   if (header.nParticleEmitters)
   {
     _particles.reserve(header.nParticleEmitters);
-    ModelParticleEmitterDef const* pdefs = reinterpret_cast<ModelParticleEmitterDef const*>(f.getBuffer() + header.ofsParticleEmitters);
-    for (size_t i = 0; i<header.nParticleEmitters; ++i) 
+    std::uint32_t packed_version = 0;
+    std::memcpy(&packed_version, header.version, sizeof(packed_version));
+
+    // Version 272+ stores a 16-byte extension after every base particle
+    // emitter. The 0x200 header flag enables the same record layout on older
+    // versions. The extension is not consumed yet, but it is part of the
+    // on-disk stride and must be skipped before reading the next emitter.
+    std::size_t const particle_stride = sizeof(ModelParticleEmitterDef)
+      + ((packed_version > 271 || (header.Flags & m2_flag_use_extended_particle_record)) ? 16 : 0);
+    auto const particle_offset = static_cast<std::size_t>(header.ofsParticleEmitters);
+    auto const particle_count = static_cast<std::size_t>(header.nParticleEmitters);
+    if (particle_offset > f.getSize()
+        || particle_count > (f.getSize() - particle_offset) / particle_stride)
+    {
+      throw std::runtime_error("Invalid M2 particle emitter array in \"" +
+                               _file_key.stringRepr() + "\".");
+    }
+
+    auto const* particle_data = f.getBuffer() + particle_offset;
+    for (std::size_t i = 0; i < particle_count; ++i)
     {
       try
       {
-        _particles.emplace_back(this, f, pdefs[i], _global_sequences.data(), _context);
+        auto const& particle = *reinterpret_cast<ModelParticleEmitterDef const*>(
+          particle_data + i * particle_stride);
+        _particles.emplace_back(this, f, particle, _global_sequences.data(), animation_files, _context);
       }
       catch (std::logic_error error)
       {
@@ -542,7 +734,7 @@ void Model::initAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& head
     _ribbons.reserve(header.nRibbonEmitters);
     ModelRibbonEmitterDef const* rdefs = reinterpret_cast<ModelRibbonEmitterDef const*>(f.getBuffer() + header.ofsRibbonEmitters);
     for (size_t i = 0; i<header.nRibbonEmitters; ++i) {
-      _ribbons.emplace_back(this, f, rdefs[i], _global_sequences.data(), _context);
+      _ribbons.emplace_back(this, f, rdefs[i], _global_sequences.data(), animation_files, _context);
     }
   }
   

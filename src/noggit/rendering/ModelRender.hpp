@@ -31,7 +31,8 @@ namespace Noggit::Rendering
     No_Add_Alpha,
     Add,
     Mod,
-    Mod2x
+    Mod2x,
+    InvSrcAlphaAdd
   };
 
   enum class ModelPixelShader : uint16_t

@@ -60,6 +60,8 @@ void DBCFile::open(std::shared_ptr<BlizzardArchive::ClientData> clientData)
   stringTable.resize(stringSize);
   f.read(stringTable.data(), stringTable.size());
 
+  invalidateLookupCaches();
+
   f.close();
 }
 
@@ -100,6 +102,7 @@ void DBCFile::overwriteWith(DBCFile const& file)
   stringSize = file.stringSize;
   data = file.data;
   stringTable = file.stringTable;
+  invalidateLookupCaches();
 }
 
 DBCFile DBCFile::createNew(std::string filename, std::uint32_t fieldCount, std::uint32_t recordSize)
@@ -149,37 +152,69 @@ size_t DBCFile::getRecordSize() const
 
 DBCFile::Record DBCFile::getByID(unsigned int id, size_t field)
 {
-  for (Iterator i = begin(); i != end(); ++i)
-  {
-    if (i->getUInt(field) == id)
-      return (*i);
-  }
-  LogDebug << "Tried to get a not existing row in " << filename << " (ID = " << id << ")!" << std::endl;
+  const size_t record_index = findRecordIndex(id, field);
+  if (record_index != recordCount)
+    return getRecord(record_index);
+
+  if (markMissingId(id, field))
+    LogDebug << "Tried to get a not existing row in " << filename << " (ID = " << id << ")!" << std::endl;
   throw NotFound();
 }
 
 bool DBCFile::CheckIfIdExists(unsigned int id, size_t field)
 {
-  for (Iterator i = begin(); i != end(); ++i)
-  {
-    if (i->getUInt(field) == id)
-      return (true);
-  }
-  return (false);
+  if (field >= fieldCount || recordCount == 0 || recordSize == 0)
+    return false;
+
+  return findRecordIndex(id, field) != recordCount;
 }
 
 int DBCFile::getRecordRowId(unsigned int id, size_t field)
 {
-  int row_id = 0;
-  for (Iterator i = begin(); i != end(); ++i)
-  {
-    if (i->getUInt(field) == id)
-      return row_id;
+  const size_t record_index = findRecordIndex(id, field);
+  if (record_index != recordCount)
+    return static_cast<int>(record_index);
 
-    row_id++;
-  }
-  LogError << "Tried to get a not existing row in " << filename << " (ID = " << id << ")!" << std::endl;
+  if (markMissingId(id, field))
+    LogError << "Tried to get a not existing row in " << filename << " (ID = " << id << ")!" << std::endl;
   throw NotFound();
+}
+
+size_t DBCFile::findRecordIndex(unsigned int id, size_t field)
+{
+  if (field >= fieldCount)
+    return recordCount;
+
+  const std::lock_guard<std::mutex> lock(*_lookupMutex);
+  auto index_it = _recordIndices.find(field);
+  if (index_it == _recordIndices.end())
+  {
+    std::unordered_map<unsigned int, size_t> index;
+    index.reserve(recordCount);
+    for (size_t row = 0; row < recordCount; ++row)
+    {
+      unsigned int record_id = 0;
+      std::memcpy(&record_id, data.data() + row * recordSize + field * sizeof(record_id), sizeof(record_id));
+      index.emplace(record_id, row);
+    }
+    index_it = _recordIndices.emplace(field, std::move(index)).first;
+  }
+
+  const auto record_it = index_it->second.find(id);
+  return record_it == index_it->second.end() ? recordCount : record_it->second;
+}
+
+bool DBCFile::markMissingId(unsigned int id, size_t field)
+{
+  const std::lock_guard<std::mutex> lock(*_lookupMutex);
+  return _missingIdWarnings[field].insert(id).second;
+}
+
+void DBCFile::invalidateLookupCaches()
+{
+  const std::lock_guard<std::mutex> lock(*_lookupMutex);
+  _recordIndices.clear();
+  _missingIdWarnings.clear();
 }
 
 DBCFile::Record DBCFile::addRecord(size_t id, size_t id_field)
@@ -195,9 +230,11 @@ DBCFile::Record DBCFile::addRecord(size_t id, size_t id_field)
 
   size_t old_size = data.size();
   data.resize(old_size + recordSize);
-  *reinterpret_cast<unsigned int*>(data.data() + old_size + id_field * sizeof(std::uint32_t)) = static_cast<unsigned int>(id);
+  auto const record_id = static_cast<unsigned int>(id);
+  std::memcpy(data.data() + old_size + id_field * sizeof(std::uint32_t), &record_id, sizeof(record_id));
 
   recordCount++;
+  invalidateLookupCaches();
 
   return Record(*this, data.data() + old_size);
 }
@@ -235,7 +272,9 @@ DBCFile::Record DBCFile::addRecordCopy(size_t id, size_t id_from, size_t id_fiel
 
   Record record_from = getRecord(from_idx);
   std::copy(data.data() + from_idx * recordSize, data.data() + from_idx * recordSize + recordSize, data.data() + old_size);
-  *reinterpret_cast<unsigned int*>(data.data() + old_size + id_field * sizeof(std::uint32_t)) = static_cast<unsigned int>(id);
+  auto const record_id = static_cast<unsigned int>(id);
+  std::memcpy(data.data() + old_size + id_field * sizeof(std::uint32_t), &record_id, sizeof(record_id));
+  invalidateLookupCaches();
 
   return Record(*this, data.data() + old_size);
 }
@@ -279,6 +318,7 @@ void DBCFile::removeRecord(size_t id, size_t id_field)
       data.resize(initial_size - recordSize);
 
       recordCount--;
+      invalidateLookupCaches();
       return;
     }
 
@@ -351,34 +391,41 @@ const char* DBCFile::Record::getLocalizedString(size_t field, int locale) const
 
 void DBCFile::Record::writeString(size_t field, const std::string& val)
 {
-  assert(field < file.fieldCount);
+  if (field >= file.fieldCount)
+    throw std::out_of_range("DBC string field write out of range");
 
   if (!val.size())
   {
-    *reinterpret_cast<unsigned int*>(offset + field * 4) = 0;
+    unsigned int const empty_offset = 0;
+    std::memcpy(offset + field * 4, &empty_offset, sizeof(empty_offset));
+    file.invalidateLookupCaches();
     return;
   }
 
   size_t old_size = file.stringTable.size();
-  *reinterpret_cast<unsigned int*>(offset + field * 4) = static_cast<unsigned int>(file.stringTable.size());
+  auto const string_offset = static_cast<unsigned int>(file.stringTable.size());
+  std::memcpy(offset + field * 4, &string_offset, sizeof(string_offset));
   file.stringTable.resize(old_size + val.size() + 1);
   std::copy(val.c_str(), val.c_str() + val.size() + 1, file.stringTable.data() + old_size);
   file.stringSize += static_cast<std::uint32_t>(val.size() + 1);
+  file.invalidateLookupCaches();
 }
 
 void DBCFile::Record::writeLocalizedString(size_t field, const std::string& val, unsigned int locale)
 {
-  assert(field < file.fieldCount);
-  assert(locale < 16);
+  if (locale >= 16 || field + locale >= file.fieldCount)
+    throw std::out_of_range("DBC localized string field write out of range");
 
   if (!val.size())
   {
-    *reinterpret_cast<unsigned int*>(offset + ((field + locale) * 4)) = 0;
+    unsigned int const empty_offset = 0;
+    std::memcpy(offset + ((field + locale) * 4), &empty_offset, sizeof(empty_offset));
     return;
   }
 
   size_t old_size = file.stringTable.size();
-  *reinterpret_cast<unsigned int*>(offset + ((field + locale) * 4)) = static_cast<unsigned int>(file.stringTable.size());
+  auto const string_offset = static_cast<unsigned int>(file.stringTable.size());
+  std::memcpy(offset + ((field + locale) * 4), &string_offset, sizeof(string_offset));
   file.stringTable.resize(old_size + val.size() + 1);
   std::copy(val.c_str(), val.c_str() + val.size() + 1, file.stringTable.data() + old_size);
   file.stringSize += static_cast<std::uint32_t>(val.size() + 1);

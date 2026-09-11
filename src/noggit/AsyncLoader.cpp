@@ -53,7 +53,9 @@ namespace
   bool is_shadowlands_root_adt(std::string const& path)
   {
     auto* project = Noggit::Project::CurrentProject::get();
-    return project->projectVersion == Noggit::Project::ProjectVersion::SL
+    return project
+      && (project->projectVersion == Noggit::Project::ProjectVersion::SL
+          || project->projectVersion == Noggit::Project::ProjectVersion::RETAIL)
       && is_root_adt_path(path);
   }
 

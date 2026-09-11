@@ -18,7 +18,8 @@ QCommandLineParser* ProcessCommandLine()
     parser->addVersionOption();
     parser->addOptions({
         {"disable-update", QApplication::translate("main", "Disable the check for update.")},
-        {"force-changelog", QApplication::translate("main", "Force displaying the changelog popup.")}
+        {"force-changelog", QApplication::translate("main", "Force displaying the changelog popup.")},
+        {"project-selector", QApplication::translate("main", "Always display the project selection window.")}
         });
 
     return parser;
@@ -43,6 +44,7 @@ int main(int argc, char *argv[])
   std::vector<bool> Command;
   Command.push_back(parser->isSet("disable-update"));
   Command.push_back(parser->isSet("force-changelog"));
+  Command.push_back(parser->isSet("project-selector"));
 
   auto noggit = Noggit::Application::NoggitApplication::instance();
   bool initialized = noggit->initalize(argc, argv, Command);

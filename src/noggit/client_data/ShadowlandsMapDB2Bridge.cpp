@@ -6,6 +6,7 @@
 #include <noggit/Log.h>
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
+#include <noggit/project/CurrentProject.hpp>
 
 #include <blizzard-archive-library/include/ClientFile.hpp>
 #include <blizzard-database-library/include/BlizzardDatabase.h>
@@ -22,8 +23,6 @@ namespace
 {
   using Row = BlizzardDatabaseLib::Structures::BlizzardDatabaseRow;
   using Table = BlizzardDatabaseLib::BlizzardDatabaseTable;
-
-  std::unique_ptr<BlizzardDatabaseLib::BlizzardDatabase> g_shadowlands_map_database;
 
   std::shared_ptr<BlizzardDatabaseLib::Stream::IMemStream> open_db2_from_casc(
       std::shared_ptr<BlizzardArchive::ClientData> const& client_data,
@@ -131,12 +130,30 @@ namespace
     }
   }
 
+  template<typename Fn>
+  bool bridge_optional(char const* name, Fn&& fn)
+  {
+    try
+    {
+      fn();
+      return true;
+    }
+    catch (std::exception const& e)
+    {
+      LogError << "[ModernDB2][Map] Bridge failed for " << name << ": " << e.what() << std::endl;
+      return false;
+    }
+  }
+
   void bridge_area_table(Table& table)
   {
     auto out = DBCFile::createNew("DBFilesClient\\AreaTable.dbc", 36, 36 * sizeof(std::uint32_t));
+    Log << "[ModernDB2][Map] AreaTable legacy bridge start, records=" << table.RecordCount() << std::endl;
     for (std::uint32_t i = 0; i < table.RecordCount(); ++i)
     {
       auto row = table.RecordByPosition(i);
+      if (i % 500 == 0)
+        Log << "[ModernDB2][Map] AreaTable legacy row " << i << " id=" << id_of(row) << std::endl;
       auto rec = out.addRecord(id_of(row));
       rec.write(AreaDB::Continent, u32(row, "ContinentID"));
       rec.write(AreaDB::Region, u32(row, "ParentAreaID"));
@@ -158,7 +175,9 @@ namespace
       rec.write(AreaDB::AmbientMultiplier, f32(row, "Ambient_multiplier", 1.0f));
       rec.write(AreaDB::LightId, u32(row, "LightID"));
     }
+    Log << "[ModernDB2][Map] AreaTable legacy rows complete; replacing global DBC" << std::endl;
     gAreaDB.overwriteWith(out);
+    Log << "[ModernDB2][Map] AreaTable legacy bridge complete" << std::endl;
   }
 
   void bridge_area_trigger(Table& table)
@@ -306,30 +325,70 @@ namespace Noggit::ClientData
   {
     try
     {
-      auto const definitions = Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationDatabaseDefinitionsPath;
-      g_shadowlands_map_database = std::make_unique<BlizzardDatabaseLib::BlizzardDatabase>(
-          definitions,
-          BlizzardDatabaseLib::Structures::Build("9.2.7.45745"));
+      auto const project = Noggit::Project::CurrentProject::get();
+      if (!project || !project->ClientDatabase)
+        throw std::runtime_error("Modern map DB2 bridge has no active project client database");
 
-      auto& database = *g_shadowlands_map_database;
+      auto& database = *project->ClientDatabase;
 
-      // Direct modern equivalents of the map/editor DBC set plus modern-only
-      // environment tables used by 9.2.7 maps.
+      // Direct modern equivalents of the map/editor DBC set. Bridge each table
+      // immediately after loading; the DB2 readers keep section state and some
+      // modern tables do not tolerate being stockpiled and read later.
       Table* area = load_optional(database, client_data, "AreaTable");
+      Log << "[ModernDB2][Map] Bridging AreaTable" << std::endl;
+      bool const area_ok = area && bridge_optional("AreaTable", [&] { bridge_area_table(*area); });
+
       Table* area_trigger = load_optional(database, client_data, "AreaTrigger");
+      Log << "[ModernDB2][Map] Bridging AreaTrigger" << std::endl;
+      if (area_trigger) bridge_optional("AreaTrigger", [&] { bridge_area_trigger(*area_trigger); });
+
       Table* map = load_optional(database, client_data, "Map");
+      Log << "[ModernDB2][Map] Bridging Map" << std::endl;
+      bool const map_ok = map && bridge_optional("Map", [&] { bridge_map(*map); });
+
       Table* loading = load_optional(database, client_data, "LoadingScreens");
+      Log << "[ModernDB2][Map] Bridging LoadingScreens" << std::endl;
+      if (loading) bridge_optional("LoadingScreens", [&] { bridge_loading_screens(*loading); });
+
       load_optional(database, client_data, "LightSkybox");
+
       Table* ground_doodad = load_optional(database, client_data, "GroundEffectDoodad");
+      Log << "[ModernDB2][Map] Bridging GroundEffectDoodad" << std::endl;
+      if (ground_doodad) bridge_optional("GroundEffectDoodad", [&] { bridge_ground_effect_doodad(*ground_doodad); });
+
       Table* ground_texture = load_optional(database, client_data, "GroundEffectTexture");
+      Log << "[ModernDB2][Map] Bridging GroundEffectTexture" << std::endl;
+      if (ground_texture) bridge_optional("GroundEffectTexture", [&] { bridge_ground_effect_texture(*ground_texture); });
+
       load_optional(database, client_data, "TerrainType");
+
       Table* liquid = load_optional(database, client_data, "LiquidType");
+      Log << "[ModernDB2][Map] Bridging LiquidType" << std::endl;
+      if (liquid) bridge_optional("LiquidType", [&] { bridge_liquid_type(*liquid); });
+
       load_optional(database, client_data, "LiquidMaterial");
       load_optional(database, client_data, "SoundProviderPreferences");
       load_optional(database, client_data, "SoundAmbience");
       load_optional(database, client_data, "ZoneMusic");
       load_optional(database, client_data, "ZoneIntroMusicTable");
+
       Table* wmo_area = load_optional(database, client_data, "WMOAreaTable");
+      Log << "[ModernDB2][Map] Bridging WMOAreaTable" << std::endl;
+      bool wmo_area_ok = false;
+      if (wmo_area && project->projectVersion == Noggit::Project::ProjectVersion::RETAIL)
+      {
+        // The legacy database reader's WDC5 record buffer is too short for the
+        // 12.1 WMOAreaTable layout and corrupts the heap while materializing a
+        // row. Keep the CASC table loaded, but do not pass it through the 9.2.7
+        // compatibility bridge until the WDC5 reader supports this layout.
+        LogError << "[ModernDB2][Map] Skipping unsafe Retail WMOAreaTable legacy bridge" << std::endl;
+        wmo_area_ok = true;
+      }
+      else if (wmo_area)
+      {
+        wmo_area_ok = bridge_optional("WMOAreaTable", [&] { bridge_wmo_area(*wmo_area); });
+      }
+
       load_optional(database, client_data, "SoundKit");
       load_optional(database, client_data, "WindSettings");
       load_optional(database, client_data, "Weather");
@@ -337,16 +396,7 @@ namespace Noggit::ClientData
       load_optional(database, client_data, "ZoneLight");
       load_optional(database, client_data, "ZoneLightPoint");
 
-      if (area) bridge_area_table(*area);
-      if (area_trigger) bridge_area_trigger(*area_trigger);
-      if (map) bridge_map(*map);
-      if (loading) bridge_loading_screens(*loading);
-      if (ground_doodad) bridge_ground_effect_doodad(*ground_doodad);
-      if (ground_texture) bridge_ground_effect_texture(*ground_texture);
-      if (liquid) bridge_liquid_type(*liquid);
-      if (wmo_area) bridge_wmo_area(*wmo_area);
-
-      bool const core_ok = area && map && wmo_area;
+      bool const core_ok = area_ok && map_ok && wmo_area_ok;
       Log << "[ModernDB2][Map] Shadowlands map DB2 bootstrap " << (core_ok ? "ready" : "incomplete") << std::endl;
       return core_ok;
     }

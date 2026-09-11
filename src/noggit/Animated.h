@@ -11,6 +11,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/ext/quaternion_common.hpp>
 #include <ClientFile.hpp>
+#include <algorithm>
 
 namespace Animation
 {
@@ -190,8 +191,6 @@ namespace Animation
              , const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files
              = std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>())
     {
-      assert(animationBlock.nTimes == animationBlock.nKeys);
-
       _interpolationType = animationBlock.type;
 
       _globalSequences = globalSequences;
@@ -201,14 +200,39 @@ namespace Animation
         assert(_globalSequences && "Animation said to have global sequence, but pointer to global sequence data is nullptr");
       }
 
+      auto contains = [](BlizzardArchive::ClientFile const& source,
+                         std::size_t offset,
+                         std::size_t count,
+                         std::size_t element_size)
+      {
+        auto const size = source.getSize();
+        return element_size != 0
+            && offset <= size
+            && count <= (size - offset) / element_size;
+      };
+
+      if (!contains(file, animationBlock.ofsTimes, animationBlock.nTimes,
+                    sizeof(AnimationBlockHeader))
+          || !contains(file, animationBlock.ofsKeys, animationBlock.nKeys,
+                       sizeof(AnimationBlockHeader)))
+      {
+        return;
+      }
+
       const AnimationBlockHeader* timestampHeaders = file.get<AnimationBlockHeader>(animationBlock.ofsTimes);
       const AnimationBlockHeader* keyHeaders = file.get<AnimationBlockHeader>(animationBlock.ofsKeys);
 
       for (std::uint32_t j = 0; j < animationBlock.nTimes; ++j)
       {
-        const TimestampType* timestamps = j < animation_files.size() && animation_files[j] ?
-          animation_files[j]->get<TimestampType>(timestampHeaders[j].ofsEntries) :
-          file.get<TimestampType>(timestampHeaders[j].ofsEntries);
+        BlizzardArchive::ClientFile const& source =
+          j < animation_files.size() && animation_files[j] ? *animation_files[j] : file;
+        if (!contains(source, timestampHeaders[j].ofsEntries,
+                      timestampHeaders[j].nEntries, sizeof(TimestampType)))
+        {
+          continue;
+        }
+
+        const TimestampType* timestamps = source.get<TimestampType>(timestampHeaders[j].ofsEntries);
 
         for (std::uint32_t i = 0; i < timestampHeaders[j].nEntries; ++i)
         {
@@ -218,9 +242,20 @@ namespace Animation
 
       for (std::uint32_t j = 0; j < animationBlock.nKeys; ++j)
       {
-        const DataType* keys = j < animation_files.size() && animation_files[j] ?
-          animation_files[j]->get<DataType>(keyHeaders[j].ofsEntries) :
-          file.get<DataType>(keyHeaders[j].ofsEntries);
+        BlizzardArchive::ClientFile const& source =
+          j < animation_files.size() && animation_files[j] ? *animation_files[j] : file;
+
+        std::size_t values_per_key =
+          _interpolationType == Animation::Interpolation::Type::HERMITE ? 3 : 1;
+        if (keyHeaders[j].nEntries > static_cast<std::size_t>(-1) / values_per_key
+            || !contains(source, keyHeaders[j].ofsEntries,
+                         static_cast<std::size_t>(keyHeaders[j].nEntries) * values_per_key,
+                         sizeof(DataType)))
+        {
+          continue;
+        }
+
+        const DataType* keys = source.get<DataType>(keyHeaders[j].ofsEntries);
 
         switch (_interpolationType)
         {
@@ -241,6 +276,20 @@ namespace Animation
           }
           break;
         }
+      }
+
+      auto const track_count = std::max(animationBlock.nTimes, animationBlock.nKeys);
+      for (std::uint32_t j = 0; j < track_count; ++j)
+      {
+        std::size_t common_size = std::min(times[j].size(), data[j].size());
+        if (_interpolationType == Animation::Interpolation::Type::HERMITE)
+        {
+          common_size = std::min(common_size, std::min(in[j].size(), out[j].size()));
+          in[j].resize(common_size);
+          out[j].resize(common_size);
+        }
+        times[j].resize(common_size);
+        data[j].resize(common_size);
       }
     }
 
