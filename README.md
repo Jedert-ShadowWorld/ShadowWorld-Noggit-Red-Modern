@@ -1,18 +1,30 @@
 # ShadowWorld Noggit Red Modern
 
-ShadowWorld's multi-client development fork of Noggit Red. One executable
-contains project targets for Wrath of the Lich King, Shadowlands 9.2.7,
-Retail 12.1, and Forever 1.60.x; these are not separate client builds.
+ShadowWorld's multi-client fork of Noggit Red. One executable provides project
+targets for Wrath of the Lich King, Shadowlands 9.2.7, Retail 12.1, and
+Forever 1.60.x; these are not separate client builds.
 
 This fork is based on Natsirt867's Noggit Red
-`terrain-texture-layers-authoring` work and is being extended toward
-native editing support for newer World of Warcraft map formats.
+`terrain-texture-layers-authoring` work and extends the editor to newer
+World of Warcraft map formats.
 
-> **Work in Progress**
+> **Supported builds and backups**
 >
-> Modern-client support is still experimental. A successful build does not
-> establish that every map, asset, edit, or save operation works for every
-> client build. Keep backups of maps before editing.
+> The core project, map, terrain, object, and save workflows are available for
+> the four targets above in a single build. Forever is a beta client and its
+> data layouts may change between updates. Keep backups of maps before editing
+> and verify important changes in the matching game client.
+
+Shadowlands, Retail, and Forever terrain edits and M2/WMO placements are saved
+in their respective modern map formats. WotLK projects continue to save in the
+WotLK format. Cross-version conversion is planned for a later release; saving
+a project does not convert it to another client version.
+
+The editor enables loading, painting, rendering, and saving up to **16 terrain
+texture layers per chunk in all four project types**. Each project still saves
+in its selected client format: WotLK stays WotLK, while Shadowlands, Retail,
+and Forever use their respective modern formats. The editor's 16-layer limit
+does not by itself guarantee that every game client accepts every layer setup.
 
 ## Preview
 
@@ -28,7 +40,7 @@ native editing support for newer World of Warcraft map formats.
 
 *Project creation supports WotLK, Shadowlands, Retail, and Forever targets.*
 
-## Current Goal
+## Workflow
 
 The goal is to work with multiple WoW client/map generations in one editor
 without requiring maps to be converted back to WotLK. The workflow is:
@@ -36,14 +48,14 @@ without requiring maps to be converted back to WotLK. The workflow is:
 -   Select the target client/map version when creating a Noggit project.
 -   Read assets and map data directly from the selected client.
 -   Edit terrain and objects using the appropriate format/features.
--   Save to the selected project's map format where supported.
+-   Save terrain and M2/WMO placement changes in the selected project's native
+    map format.
 
-The project architecture is being developed with future version-specific
-readers/writers in mind rather than a single "modern support" checkbox.
+Version-specific readers and writers handle the differences between clients.
 
-## Current Development Status
+## Current Capabilities
 
-### Working / Implemented
+### Available in This Build
 
 -   Existing WotLK/Noggit functionality remains the current editing
     foundation.
@@ -70,59 +82,54 @@ readers/writers in mind rather than a single "modern support" checkbox.
     map/project UI paths.
 -   Additional guards have been added around map, tile, asset and
     asynchronous loading.
--   Detailed asset/async loading diagnostics are currently enabled to
-    help locate modern ADT loading failures.
+-   Asset and asynchronous loading diagnostics help identify unsupported
+    client data and map failures.
 -   Terrain texture loading, painting, and rendering support up to **16
     texture layers per chunk**. This is a code limit, not a guarantee that
     every target client accepts every combination.
--   Modern split ADT saving rewrites terrain/texture and object placement
-    parts, including `_obj1.adt` and `_lod.adt` where applicable.
+-   Modern split ADT saving writes terrain/texture and M2/WMO placement parts
+    in the selected modern format, including `_obj1.adt` and `_lod.adt` where
+    applicable. WotLK retains its existing ADT save path.
 -   The project selector uses a Shadow-World themed, animated Qt interface.
 
-### Partially Working / Experimental
+### Compatibility Notes
 
--   Client-specific DB2 layouts and new beta builds; a matching table hash
-    does not imply an identical record layout.
--   Some modern materials, lighting, particles, liquids, and WMO variants.
--   Newly placed object appearance and save compatibility must be checked
-    in the target game client for each build.
+-   Client-specific DB2 layouts can change, especially in Forever beta builds;
+    a matching table hash does not always imply an identical record layout.
+-   Some modern materials, lighting, particles, liquids, and WMO variants may
+    render differently from the game client.
+-   Test important saved terrain and object changes in the matching game
+    client. The four targets have not been exhaustively regression-tested
+    after every change.
 
-Modern loading and rendering are **not yet fully working**. Known visual
-issues include incorrect black or over-bright M2/WMO material passes,
-incorrect tree materials and incomplete modern light effects.
+### Outside the Current Scope
 
-The current WIP snapshot has not been exhaustively regression-tested across
-all four client targets after every change.
-
-### Not Yet Implemented
-
--   Creation of all required modern map database files for newly created
-    maps.
--   Complete modern map creation workflow.
--   Complete modern WMO support.
--   Universal cross-version export/conversion.
+-   Automatic creation of every database file needed by a completely new
+    modern map.
+-   Two-way WotLK/modern map conversion. This is planned for a later release,
+    not performed by the current save operation.
 
 ## Version Direction
 
-The modern reader keeps **9.2.7 / Shadowlands** support alongside
+The modern reader and writer keep **9.2.7 / Shadowlands** support alongside
 version-aware paths for **Retail 12.1** and **Forever 1.60.x**. WotLK
-remains the existing editing and saving foundation.
+retains its existing editing and WotLK-format saving behavior.
 
 Some included DBD definitions already contain `Map.db2` layouts for
 later WoW versions, including 12.x builds. This does **not** mean Noggit
 currently supports editing those versions.
 
-Future development is intended to move toward selectable project/export
-versions rather than treating all post-WotLK clients as one generic
+Future development is intended to add explicit two-way conversion between
+client formats rather than treating all post-WotLK clients as one generic
 "modern" format.
 
 ## Modern Terrain Texture Layers
 
 This fork is based on the `terrain-texture-layers-authoring` development
-branch and currently handles up to **16 texture layers per terrain chunk**.
-
-This is one of the foundations for moving beyond the traditional WotLK
-terrain limitations.
+branch. The 16-layer path is enabled for terrain loading, painting, rendering,
+and saving across WotLK, Shadowlands, Retail, and Forever projects. The target
+client's format and renderer still decide which layer combinations can be used
+in game.
 
 ## Modern ADT Development
 
@@ -188,8 +195,9 @@ The intended direction is a version-aware Noggit architecture where
 projects can select their target client/map format and the appropriate
 readers, writers and features can be used for that target.
 
-This is still early development and the architecture may change
-significantly while modern ADT support is being implemented.
+The supported client paths share one executable while retaining
+version-specific parsing and saving behavior. New client builds may
+require updates to those paths.
 
 ## Community
 
@@ -235,8 +243,9 @@ maintained in this fork.
 
 ## Disclaimer
 
-This project is experimental software intended for WoW modding and
-research.
+This is community-developed software intended for WoW modding and
+research. Back up project data before editing, especially when using
+new or beta client builds.
 
 World of Warcraft and related assets/formats are property of Blizzard
 Entertainment.
