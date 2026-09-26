@@ -39,7 +39,8 @@ namespace Noggit::Project
     LEGION,
     BFA,
     SL,
-    RETAIL
+    RETAIL,
+    FOREVER
   };
 
   struct ClientVersionFactory

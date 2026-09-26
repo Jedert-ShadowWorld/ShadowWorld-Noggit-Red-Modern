@@ -58,5 +58,10 @@ namespace Noggit::Formats::ADT
     // ROOT, TEX0 and OBJ0 are required for the current Shadowlands terrain
     // pipeline; OBJ1 and LOD are retained when present.
     [[nodiscard]] static ShadowlandsADTBackingStore loadBackingStore(std::string const& root_path);
+
+    // Converts Noggit's canonical legacy serialization back into the modern
+    // split layout while retaining chunks that the editor does not own.
+    static void saveFromLegacy(ShadowlandsADTBackingStore const& backing,
+                               std::vector<std::uint8_t> const& legacy_adt);
   };
 }

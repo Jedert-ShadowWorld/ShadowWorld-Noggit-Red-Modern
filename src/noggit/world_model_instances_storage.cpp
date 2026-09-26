@@ -182,14 +182,12 @@ namespace Noggit
       {
         auto instance = static_cast<ModelInstance*>(obj);
         
-        _world->updateTilesModel(instance, model_update::remove);
         delete_instance(instance->uid, action);
       }
       else if (obj->which() == eWMO)
       {
         auto instance = static_cast<WMOInstance*>(obj);
 
-        _world->updateTilesWMO(instance, model_update::remove);
         delete_instance(instance->uid, action);
       }
     }

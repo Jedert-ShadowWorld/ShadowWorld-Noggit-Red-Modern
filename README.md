@@ -1,7 +1,8 @@
 # ShadowWorld Noggit Red Modern
 
-Experimental modern-client development fork of Noggit Red, maintained as
-part of the ShadowWorld project.
+ShadowWorld's multi-client development fork of Noggit Red. One executable
+contains project targets for Wrath of the Lich King, Shadowlands 9.2.7,
+Retail 12.1, and Forever 1.60.x; these are not separate client builds.
 
 This fork is based on Natsirt867's Noggit Red
 `terrain-texture-layers-authoring` work and is being extended toward
@@ -9,9 +10,9 @@ native editing support for newer World of Warcraft map formats.
 
 > **Work in Progress**
 >
-> Modern client support is experimental and incomplete. This repository
-> should currently be considered a development/testing branch, not a
-> production-ready modern WoW map editor.
+> Modern-client support is still experimental. A successful build does not
+> establish that every map, asset, edit, or save operation works for every
+> client build. Keep backups of maps before editing.
 
 ## Preview
 
@@ -25,20 +26,17 @@ native editing support for newer World of Warcraft map formats.
 
 ![Shadowlands project creation](docs/images/shadowlands-project-creation.png)
 
-*Experimental Shadowlands 9.2.7 project target available during project creation.*
+*Project creation supports WotLK, Shadowlands, Retail, and Forever targets.*
 
 ## Current Goal
 
-The long-term goal is to allow Noggit to work with multiple WoW
-client/map generations natively instead of requiring maps to be
-converted back to the WotLK format for editing.
-
-The intended workflow is eventually:
+The goal is to work with multiple WoW client/map generations in one editor
+without requiring maps to be converted back to WotLK. The workflow is:
 
 -   Select the target client/map version when creating a Noggit project.
 -   Read assets and map data directly from the selected client.
--   Edit terrain using the appropriate format/features for that version.
--   Save/export the map in the selected target format.
+-   Edit terrain and objects using the appropriate format/features.
+-   Save to the selected project's map format where supported.
 
 The project architecture is being developed with future version-specific
 readers/writers in mind rather than a single "modern support" checkbox.
@@ -49,19 +47,20 @@ readers/writers in mind rather than a single "modern support" checkbox.
 
 -   Existing WotLK/Noggit functionality remains the current editing
     foundation.
--   Project creation includes a **Shadowlands** project version option.
+-   The project selector and project creation offer **WotLK, Shadowlands,
+    Retail, and Forever** in the same executable.
 -   Modern CASC client initialization has been extended.
 -   WoW `_retail_` client paths can be resolved to the installation root
     containing `.build.info`.
 -   Client build detection using `.build.info` has been added.
--   Shadowlands **9.2.7** client data can be opened far enough for
-    current development/testing.
--   Retail **12.1** client storage can be opened directly through CASC.
--   Retail maps can be discovered, selected and entered for read-only
-    rendering tests.
+-   Shadowlands **9.2.7** and Retail **12.1** client data are read through
+    CASC; terrain, M2s, and WMOs are handled by version-aware paths.
+-   Forever **1.60.x** CASC and its distinct `Map.db2` WDC5 layout have
+    dedicated support. New beta client layouts can still require updates.
 -   The project list can be forced at startup with
     `noggit.exe --project-selector`.
--   Modern `Map.db2` definitions and layouts have been added.
+-   Modern `Map.db2` and `LiquidType.db2` definitions/layouts have been
+    added, including layout-hash selection for the supported builds.
 -   WDC4 format detection has been added to the database library.
 -   WDC4 data is currently routed through the WDC5 reader where
     compatible.
@@ -73,45 +72,41 @@ readers/writers in mind rather than a single "modern support" checkbox.
     asynchronous loading.
 -   Detailed asset/async loading diagnostics are currently enabled to
     help locate modern ADT loading failures.
--   The existing terrain texture layer authoring work supports up to **9
-    terrain texture layers**.
+-   Terrain texture loading, painting, and rendering support up to **16
+    texture layers per chunk**. This is a code limit, not a guarantee that
+    every target client accepts every combination.
+-   Modern split ADT saving rewrites terrain/texture and object placement
+    parts, including `_obj1.adt` and `_lod.adt` where applicable.
+-   The project selector uses a Shadow-World themed, animated Qt interface.
 
 ### Partially Working / Experimental
 
--   Shadowlands 9.2.7 client reading.
--   Modern project creation and project loading.
--   Modern `Map.db2` reading.
--   Modern map discovery/listing.
--   Modern ADT loading.
--   Retail 12.1 ADT, M2 and WMO loading.
--   Modern sky, light, particle and material rendering.
+-   Client-specific DB2 layouts and new beta builds; a matching table hash
+    does not imply an identical record layout.
+-   Some modern materials, lighting, particles, liquids, and WMO variants.
+-   Newly placed object appearance and save compatibility must be checked
+    in the target game client for each build.
 
 Modern loading and rendering are **not yet fully working**. Known visual
 issues include incorrect black or over-bright M2/WMO material passes,
 incorrect tree materials and incomplete modern light effects.
 
-The current development state includes additional diagnostics
-specifically to determine where loading fails when entering/opening a
-modern ADT.
-
-The current WIP snapshot has not yet been fully validated after the
-latest ADT-loading changes.
+The current WIP snapshot has not been exhaustively regression-tested across
+all four client targets after every change.
 
 ### Not Yet Implemented
 
--   Native modern ADT editing.
--   Native modern ADT saving/writing.
 -   Creation of all required modern map database files for newly created
     maps.
 -   Complete modern map creation workflow.
 -   Complete modern WMO support.
--   General multi-version export support.
+-   Universal cross-version export/conversion.
 
 ## Version Direction
 
-The modern reader keeps **World of Warcraft 9.2.7 / Shadowlands** support
-while adding a version-aware path for **Retail 12.x** data. WotLK remains
-the existing editing and saving foundation.
+The modern reader keeps **9.2.7 / Shadowlands** support alongside
+version-aware paths for **Retail 12.1** and **Forever 1.60.x**. WotLK
+remains the existing editing and saving foundation.
 
 Some included DBD definitions already contain `Map.db2` layouts for
 later WoW versions, including 12.x builds. This does **not** mean Noggit
@@ -124,26 +119,18 @@ versions rather than treating all post-WotLK clients as one generic
 ## Modern Terrain Texture Layers
 
 This fork is based on the `terrain-texture-layers-authoring` development
-branch and includes support for authoring terrain with up to **9 texture
-layers**.
+branch and currently handles up to **16 texture layers per terrain chunk**.
 
 This is one of the foundations for moving beyond the traditional WotLK
 terrain limitations.
 
 ## Modern ADT Development
 
-Modern ADT support is currently the primary development focus.
-
-The current approach is to extend Noggit's readers and data structures
-so that modern terrain can eventually be read and edited natively rather
-than relying permanently on an external down-conversion workflow.
-
-At the current WIP stage, the editor can initialize modern
-client/project data, but ADT loading still encounters unsupported or
-incompatible data paths.
-
-Extra diagnostics and safety guards are intentionally present in the
-current branch to identify these failures.
+Modern split ADTs are loaded from the selected client's storage. The writer
+preserves and updates supported root, texture, and object parts rather than
+down-converting the map to WotLK. Unsupported layouts or assets may still
+fail; diagnostics and safety guards remain enabled. Check the saved result
+in the matching game client before relying on it.
 
 ## ShadowWorld Dependencies
 

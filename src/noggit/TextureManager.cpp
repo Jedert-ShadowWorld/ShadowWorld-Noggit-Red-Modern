@@ -4,6 +4,7 @@
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <ClientFile.hpp>
+#include <Exception.hpp>
 
 #include <QtGui/QOffscreenSurface>
 #include <QtGui/QOpenGLContext>
@@ -32,9 +33,17 @@ void TextureManager::report()
 void TextureManager::unload_all(Noggit::NoggitRenderContext context)
 {
   _.context_aware_apply(
-      [&] (BlizzardArchive::Listfile::FileKey const&, blp_texture& blp_texture)
+      [&] (BlizzardArchive::Listfile::FileKey const& key, blp_texture& blp_texture)
       {
-          blp_texture.unload();
+          try
+          {
+            blp_texture.unload();
+          }
+          catch (std::exception const& error)
+          {
+            LogError << "Could not reload texture while releasing context: "
+                     << key.stringRepr() << ": " << error.what() << std::endl;
+          }
       }
       , context
   );
@@ -481,7 +490,8 @@ blp_texture::blp_texture(BlizzardArchive::Listfile::FileKey const& file_key, Nog
 
 void blp_texture::finishLoading()
 {
-  bool exists = Noggit::Application::NoggitApplication::instance()->clientData()->exists( _file_key.filepath());
+  auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+  bool exists = client_data->exists(_file_key);
   if (!exists)
   {
     LogError << "file not found: '" <<  _file_key.stringRepr() << "'" << std::endl;
@@ -490,7 +500,7 @@ void blp_texture::finishLoading()
   std::string spec_filename = "", height_filename = "";
   bool has_specular = false, has_height = false;
 
-  if (_file_key.filepath().starts_with("tileset/") )
+  if (_file_key.hasFilepath() && _file_key.filepath().starts_with("tileset/") )
   {
     _is_tileset = true;
 
@@ -518,9 +528,39 @@ void blp_texture::finishLoading()
     }
   }
 
-  BlizzardArchive::ClientFile f(
-      exists ? (has_specular ? spec_filename : _file_key.filepath()) : "textures/shanecube.blp"
-      , Noggit::Application::NoggitApplication::instance()->clientData());
+  BlizzardArchive::Listfile::FileKey load_key = _file_key;
+  if (!exists)
+    load_key = BlizzardArchive::Listfile::FileKey("textures/shanecube.blp");
+  else if (has_specular)
+    load_key = BlizzardArchive::Listfile::FileKey(spec_filename);
+
+  std::unique_ptr<BlizzardArchive::ClientFile> file;
+  try
+  {
+    file = std::make_unique<BlizzardArchive::ClientFile>(load_key, client_data);
+  }
+  catch (BlizzardArchive::Exceptions::FileReadFailedError const&)
+  {
+    std::string fallback_path;
+    if (has_specular)
+      fallback_path = _file_key.filepath();
+    else if (_file_key.hasFilepath())
+    {
+      auto const& path = _file_key.filepath();
+      if (path.size() > 6 && path.compare(path.size() - 6, 6, "_s.blp") == 0)
+        fallback_path = path.substr(0, path.size() - 6) + ".blp";
+    }
+
+    if (fallback_path.empty())
+      throw;
+
+    file = std::make_unique<BlizzardArchive::ClientFile>(fallback_path, client_data);
+    _is_specular = false;
+    LogDebug << "Using diffuse texture '" << fallback_path
+             << "' because the specular variant could not be read." << std::endl;
+  }
+
+  auto& f = *file;
   if (f.isEof())
   {
     finished = true;
@@ -565,7 +605,7 @@ void blp_texture::finishLoading()
 
       fallback.close();
 
-      LogError << "Unsupported BLP compression: " << _file_key.filepath() << std::endl;
+      LogError << "Unsupported BLP compression: " << _file_key.stringRepr() << std::endl;
   }
 
   f.close();

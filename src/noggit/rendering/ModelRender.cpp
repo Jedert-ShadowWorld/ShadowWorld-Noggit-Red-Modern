@@ -13,6 +13,8 @@
 
 #include <opengl/shader.hpp>
 
+#include <Listfile.hpp>
+
 #include <external/tracy/Tracy.hpp>
 
 
@@ -25,7 +27,8 @@ namespace
     auto* project = Noggit::Project::CurrentProject::get();
     return project
       && (project->projectVersion == Noggit::Project::ProjectVersion::SL
-          || project->projectVersion == Noggit::Project::ProjectVersion::RETAIL);
+          || project->projectVersion == Noggit::Project::ProjectVersion::RETAIL
+          || project->projectVersion == Noggit::Project::ProjectVersion::FOREVER);
   }
 }
 
@@ -41,8 +44,20 @@ void ModelRender::upload()
       misc::transform_model_box_coords(_model->bounding_box_min)
       , misc::transform_model_box_coords(_model->bounding_box_max));
 
-  for (std::string const& texture : _model->_textureFilenames)
-    _model->_textures.emplace_back(texture, _model->_context);
+  for (std::size_t i = 0; i < _model->_textureFilenames.size(); ++i)
+  {
+    if (i < _model->_textureFileDataIds.size() && _model->_textureFileDataIds[i] != 0)
+    {
+      _model->_textures.emplace_back(
+          BlizzardArchive::Listfile::FileKey(
+              _model->_textureFilenames[i], _model->_textureFileDataIds[i]),
+          _model->_context);
+    }
+    else
+    {
+      _model->_textures.emplace_back(_model->_textureFilenames[i], _model->_context);
+    }
+  }
 
   _buffers.upload();
   _vertex_arrays.upload();
@@ -75,6 +90,7 @@ void ModelRender::upload()
   gl.bufferData (GL_ELEMENT_ARRAY_BUFFER, _box_indices.size() * sizeof(uint16_t), _box_indices.data(), GL_STATIC_DRAW);
 
   _model->_textureFilenames.clear();
+  _model->_textureFileDataIds.clear();
 
   _uploaded = true;
 }

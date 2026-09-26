@@ -74,7 +74,8 @@ namespace Noggit::Ui::Windows
 
     if (project->projectVersion == Project::ProjectVersion::WOTLK
         || project->projectVersion == Project::ProjectVersion::SL
-        || project->projectVersion == Project::ProjectVersion::RETAIL)
+        || project->projectVersion == Project::ProjectVersion::RETAIL
+        || project->projectVersion == Project::ProjectVersion::FOREVER)
     {
       OpenDBs(project->ClientData);
     }
@@ -184,7 +185,14 @@ namespace Noggit::Ui::Windows
     {
 
       getWorld()->mapIndex.loadMaxUID();
-      enterMapAt(pos, camera_pitch, camera_yaw, uid_fix_mode::none, from_bookmark);
+      auto const modern_project = _project->projectVersion == Project::ProjectVersion::SL
+                               || _project->projectVersion == Project::ProjectVersion::RETAIL
+                               || _project->projectVersion == Project::ProjectVersion::FOREVER;
+      auto const check_max_uid = modern_project
+                              && settings.value("uid_startup_check", true).toBool();
+      enterMapAt(pos, camera_pitch, camera_yaw,
+                 check_max_uid ? uid_fix_mode::max_uid : uid_fix_mode::none,
+                 from_bookmark);
     }
     // old if no mysql block
     /*

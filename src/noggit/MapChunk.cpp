@@ -23,10 +23,13 @@
 
 #include <limits>
 #include <map>
+#include <cstring>
+#include <stdexcept>
 #include <QImage>
 
 MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAlpha,tile_mode mode
-                    , Noggit::NoggitRenderContext context, bool init_empty, int chunk_idx, bool load_textures)
+                    , Noggit::NoggitRenderContext context, bool init_empty, int chunk_idx,
+                    bool load_textures, bool modern_root)
   : _mode(mode)
   , mt(maintile)
   , use_big_alphamap(bigAlpha)
@@ -148,7 +151,77 @@ MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAl
     px = tmp_chunk_header.ix;
     py = tmp_chunk_header.iy;
 
-    holes = tmp_chunk_header.holes;
+    if (tmp_chunk_header.flags.flags.high_res_holes)
+    {
+      auto const high_res = static_cast<std::uint64_t>(tmp_chunk_header.ofsHeight)
+                          | (static_cast<std::uint64_t>(tmp_chunk_header.ofsNormal) << 32);
+      holes = 0;
+      for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+        {
+          auto const first = 2 * y * 8 + 2 * x;
+          auto const block = (std::uint64_t{3} << first)
+                           | (std::uint64_t{3} << (first + 8));
+          if (high_res & block)
+            holes |= 1 << (y * 4 + x);
+        }
+    }
+    else
+      holes = tmp_chunk_header.holes & 0xFFFF;
+
+    if (modern_root)
+    {
+      auto const file_size = f->getSize();
+      if (base > file_size || file_size - base < 8 || size > file_size - base - 8
+          || size < sizeof(MapChunkHeader))
+        throw std::runtime_error("Modern MCNK has an invalid size.");
+
+      auto const* data = f->getBuffer();
+      auto const end = base + 8 + size;
+      std::size_t sub = base + 8 + sizeof(MapChunkHeader);
+      tmp_chunk_header.ofsHeight = 0;
+      tmp_chunk_header.ofsNormal = 0;
+      tmp_chunk_header.ofsShadow = 0;
+      tmp_chunk_header.sizeShadow = 0;
+      tmp_chunk_header.ofsMCCV = 0;
+      tmp_chunk_header.ofsLiquid = 0;
+      tmp_chunk_header.sizeLiquid = 0;
+      tmp_chunk_header.ofsSndEmitters = 0;
+      tmp_chunk_header.nSndEmitters = 0;
+
+      while (sub + 8 <= end)
+      {
+        std::uint32_t magic = 0;
+        std::uint32_t sub_size = 0;
+        std::memcpy(&magic, data + sub, sizeof(magic));
+        std::memcpy(&sub_size, data + sub + 4, sizeof(sub_size));
+        if (sub_size > end - sub - 8)
+          throw std::runtime_error("Modern MCNK contains a truncated subchunk.");
+
+        auto const offset = static_cast<std::uint32_t>(sub - base);
+        switch (magic)
+        {
+        case 'MCVT': tmp_chunk_header.ofsHeight = offset; break;
+        case 'MCNR': tmp_chunk_header.ofsNormal = offset; break;
+        case 'MCSH':
+          tmp_chunk_header.ofsShadow = offset;
+          tmp_chunk_header.sizeShadow = sub_size;
+          break;
+        case 'MCCV': tmp_chunk_header.ofsMCCV = offset; break;
+        case 'MCLQ':
+          tmp_chunk_header.ofsLiquid = offset;
+          tmp_chunk_header.sizeLiquid = sub_size + 8;
+          break;
+        case 'MCSE': tmp_chunk_header.ofsSndEmitters = offset; break;
+        }
+        sub += 8 + sub_size;
+      }
+
+      if (!tmp_chunk_header.ofsHeight)
+        throw std::runtime_error("Modern MCNK is missing MCVT.");
+      if (!tmp_chunk_header.ofsSndEmitters)
+        tmp_chunk_header.nSndEmitters = 0;
+    }
 
     // correct the x and z values ^_^
     zbase = zbase*-1.0f + ZEROPOINT;
@@ -204,6 +277,7 @@ MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAl
     tmp_chunk_header.ypos = 0.0f;
   }
   // - MCNR ----------------------------------------------
+  if (!modern_root || tmp_chunk_header.ofsNormal)
   {
     f->seek(base + tmp_chunk_header.ofsNormal);
     f->read(&fourcc, 4);
@@ -222,6 +296,18 @@ MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAl
       tile_buffer[pixel_start] = nor[0] / 127.0f;
       tile_buffer[pixel_start + 1] = nor[2] / 127.0f;
       tile_buffer[pixel_start + 2] = nor[1] / 127.0f;
+    }
+  }
+  else
+  {
+    auto& tile_buffer = mt->getChunkHeightmapBuffer();
+    int const chunk_start = (px * 16 + py) * mapbufsize * 4;
+    for (int i = 0; i < mapbufsize; ++i)
+    {
+      int const pixel_start = chunk_start + i * 4;
+      tile_buffer[pixel_start] = 0.0f;
+      tile_buffer[pixel_start + 1] = 1.0f;
+      tile_buffer[pixel_start + 2] = 0.0f;
     }
   }
   // - MCSH ----------------------------------------------
@@ -2186,6 +2272,13 @@ void MapChunk::requeueChunkUpdate(unsigned flags)
 void MapChunk::registerChunkUpdate(unsigned flags)
 {
   requeueChunkUpdate(flags);
+
+  // Unlike requeueChunkUpdate(), this entry point represents an actual edit.
+  // Make sure "Save changed tiles" includes the owning ADT.
+  if (mt && mt->getWorld())
+  {
+    mt->getWorld()->mapIndex.setChanged(mt);
+  }
 
   if (flags & (ChunkUpdateFlags::VERTEX | ChunkUpdateFlags::ALPHAMAP | ChunkUpdateFlags::FLAGS
              | ChunkUpdateFlags::HOLES | ChunkUpdateFlags::GROUND_EFFECT

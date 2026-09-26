@@ -1,6 +1,9 @@
 #ifndef NOGGIT_ASSETBROWSER_HPP
 #define NOGGIT_ASSETBROWSER_HPP
 
+#include <cstdint>
+#include <unordered_map>
+
 #include <QWidget>
 #include <QSortFilterProxyModel>
 #include <QRegularExpression>
@@ -82,6 +85,7 @@ namespace Noggit
       QRegularExpression _wmo_group_and_lod_regex;
       MapView* _map_view;
       std::string _selected_path;
+      std::unordered_map<std::uint32_t, bool> _available_client_assets;
 
       void updateModelData();
       void recurseDirectory(Model::TreeManager& tree_mgr, const QString& s_dir, const QString& project_dir);

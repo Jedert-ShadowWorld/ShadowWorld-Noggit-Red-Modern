@@ -14,6 +14,7 @@
 #include <noggit/ui/texturing_tool.hpp>
 #include <noggit/ui/tools/AssetBrowser/Ui/Model/TreeManager.hpp>
 #include <noggit/ui/tools/PreviewRenderer/PreviewRenderer.hpp>
+#include <Listfile.hpp>
 
 #include <QDial>
 #include <QDialog>
@@ -454,7 +455,8 @@ void AssetBrowserWidget::updateModelData()
 {
   _model->clear();
   Model::TreeManager tree_mgr =  Model::TreeManager(_model);
-  for (auto const& key_pair : Noggit::Application::NoggitApplication::instance()->clientData()->listfile()->pathToFileDataIDMap())
+  auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+  for (auto const& key_pair : client_data->listfile()->pathToFileDataIDMap())
   {
     // std::string const& filename = key_pair.first;
 
@@ -467,6 +469,18 @@ void AssetBrowserWidget::updateModelData()
 
     if (!validateBrowseMode(q_path))
         continue;
+
+    if (client_data->version() == BlizzardArchive::ClientVersion::FOREVER)
+    {
+      auto const cached = _available_client_assets.find(key_pair.second);
+      bool const available = cached != _available_client_assets.end()
+        ? cached->second
+        : client_data->exists(BlizzardArchive::Listfile::FileKey(key_pair.first, key_pair.second));
+      if (cached == _available_client_assets.end() && key_pair.second != 0)
+        _available_client_assets.emplace(key_pair.second, available);
+      if (!available)
+        continue;
+    }
 
     tree_mgr.addItem(q_path);
   }

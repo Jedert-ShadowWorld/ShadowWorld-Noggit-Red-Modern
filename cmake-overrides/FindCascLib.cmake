@@ -12,6 +12,12 @@ set(CASC_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
 set(CASC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(casclib)
 
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" "-DCASC_SOURCE_ROOT=${casclib_SOURCE_DIR}/src"
+          -P "${CMAKE_SOURCE_DIR}/src/external/blizzard-archive-library/cmake-overrides/PreferLocalHighResCasc.cmake"
+  COMMAND_ERROR_IS_FATAL ANY
+)
+
 add_library(CascLib ALIAS casc_static)
 set(CASCLIB_INCLUDE_DIR "${casclib_SOURCE_DIR}/src")
 set(CascLib_FOUND TRUE)

@@ -11,6 +11,7 @@
 
 #include <functional>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 struct pair_hash
@@ -58,14 +59,28 @@ namespace Noggit
         }
       }
 
-      T* const obj ( [&]
-                     {
-                       return &_elements.emplace ( std::piecewise_construct
-                                                 , std::forward_as_tuple (pair)
-                                                 , std::forward_as_tuple (file_key.filepath(), context, args...)
-                                                 ).first->second;
-                     }()
-                   );
+      T* const obj ([&]
+                    {
+                      if constexpr (std::is_constructible_v<T,
+                                                           BlizzardArchive::Listfile::FileKey const&,
+                                                           Noggit::NoggitRenderContext,
+                                                           Args...>)
+                      {
+                        return &_elements.emplace(std::piecewise_construct,
+                                                  std::forward_as_tuple(pair),
+                                                  std::forward_as_tuple(file_key, context,
+                                                                        std::forward<Args>(args)...))
+                                          .first->second;
+                      }
+                      else
+                      {
+                        return &_elements.emplace(std::piecewise_construct,
+                                                  std::forward_as_tuple(pair),
+                                                  std::forward_as_tuple(file_key.filepath(), context,
+                                                                        std::forward<Args>(args)...))
+                                          .first->second;
+                      }
+                    }());
 
       AsyncLoader::instance->queue_for_load(static_cast<AsyncObject*>(obj));
 

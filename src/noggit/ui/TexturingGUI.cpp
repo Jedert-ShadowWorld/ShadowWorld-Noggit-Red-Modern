@@ -5,6 +5,7 @@
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/TextureManager.h> // TextureManager, Texture
+#include <noggit/Log.h>
 #include <noggit/ui/TextureList.hpp>
 
 #include <ClientData.hpp>
@@ -16,6 +17,7 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <string>
+#include <exception>
 #include <unordered_set>
 #include <vector>
 
@@ -38,7 +40,15 @@ namespace Noggit
             //! \note The one time Qt is const correct and we don't want that.
             auto that (const_cast<model_item*> (this));
             that->_rendered = true;
-            that->_pixmap = *BLPRenderer::getInstance().render_blp_to_pixmap (data (Qt::DisplayRole).toString().prepend ("tileset/").toStdString(), 256, 256);
+            try
+            {
+              that->_pixmap = *BLPRenderer::getInstance().render_blp_to_pixmap (
+                data (Qt::DisplayRole).toString().prepend ("tileset/").toStdString(), 256, 256);
+            }
+            catch (std::exception const& error)
+            {
+              LogError << "Texture preview unavailable: " << error.what() << std::endl;
+            }
           }
           return QIcon(_pixmap);
         }
@@ -63,12 +73,16 @@ namespace Noggit
       // If modern features are enabled, set filtering to height textures (_h), otherwise specular (_s).
       bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
-      for (auto const& entry_pair : Application::NoggitApplication::instance()->clientData()->listfile()->pathToFileDataIDMap())
+      auto* client_data = Application::NoggitApplication::instance()->clientData();
+
+      for (auto const& entry_pair : client_data->listfile()->pathToFileDataIDMap())
       {
         std::string const& filepath = entry_pair.first;
+        BlizzardArchive::Listfile::FileKey const file_key(filepath, entry_pair.second);
 
         if ( filepath.find ("tileset") != std::string::npos
-          && filepath.find (".blp") != std::string::npos
+          && filepath.ends_with (".blp")
+          && client_data->exists(file_key)
            )
         {
           auto suffix_pos (filepath.find (modern_features ? "_h.blp" : "_s.blp"));
@@ -94,12 +108,15 @@ namespace Noggit
         {
           for ( auto const& entry_abs : std::filesystem::recursive_directory_iterator (prefix))
           {
+            if (!entry_abs.is_regular_file())
+              continue;
+
             auto entry ( BlizzardArchive::ClientData::normalizeFilenameInternal(
                 entry_abs.path().string().substr(prefix_size))
                        );
 
             if ( entry.find ("tileset") != std::string::npos
-              && entry.find (".blp") != std::string::npos
+              && entry.ends_with (".blp")
               && entry.find("_h.blp") == std::string::npos // skip _h textures
                )
             {

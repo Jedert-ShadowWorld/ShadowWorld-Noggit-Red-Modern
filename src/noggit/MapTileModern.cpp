@@ -275,6 +275,7 @@ namespace
 
   bool decode_modern_alpha(ModernTexChunk const& tex_chunk,
                            ModernTextureLayer const& layer,
+                           std::size_t layer_index,
                            std::vector<std::uint8_t>& output)
   {
     output.clear();
@@ -319,11 +320,42 @@ namespace
       return output.size() == 4096;
     }
 
-    if (static_cast<std::size_t>(end - input) < 4096)
-      return false;
+    std::size_t stored_size = static_cast<std::size_t>(end - input);
+    for (std::size_t next_index = layer_index + 1;
+         next_index < tex_chunk.layers.size(); ++next_index)
+    {
+      auto const& next_layer = tex_chunk.layers[next_index];
+      if (!(next_layer.flags & FLAG_USE_ALPHA))
+        continue;
+      if (next_layer.alpha_offset > layer.alpha_offset
+          && next_layer.alpha_offset <= tex_chunk.mcal.size())
+      {
+        stored_size = next_layer.alpha_offset - layer.alpha_offset;
+        break;
+      }
+    }
 
-    output.assign(input, input + 4096);
-    return true;
+    if (stored_size >= 4096)
+    {
+      output.assign(input, input + 4096);
+      return true;
+    }
+
+    if (stored_size >= 2048)
+    {
+      output.resize(4096);
+      for (std::size_t byte_index = 0; byte_index < 2048; ++byte_index)
+      {
+        std::uint8_t const packed = input[byte_index];
+        std::uint8_t const low = packed & 0x0F;
+        std::uint8_t const high = packed >> 4;
+        output[byte_index * 2] = low | (low << 4);
+        output[byte_index * 2 + 1] = high | (high << 4);
+      }
+      return true;
+    }
+
+    return false;
   }
 
   ModernTex0Data inspect_modern_tex0(std::string const& root_path, int tile_x, int tile_z)
@@ -474,7 +506,9 @@ namespace
         break;
       }
 
-      int const added_layer = chunk->addTexture(scoped_blp_texture_reference(texture_path, context));
+      BlizzardArchive::Listfile::FileKey const texture_key(texture_path,
+                                                            source_layer.file_data_id);
+      int const added_layer = chunk->addTexture(scoped_blp_texture_reference(texture_key, context));
       if (added_layer != static_cast<int>(layer_index))
       {
         LogError << "[ModernADT] Modern terrain texture layer order mismatch: expected "
@@ -490,7 +524,7 @@ namespace
       if (layer_index > 0 && (source_layer.flags & FLAG_USE_ALPHA))
       {
         std::vector<std::uint8_t> alpha;
-        if (!decode_modern_alpha(tex_chunk, source_layer, alpha))
+        if (!decode_modern_alpha(tex_chunk, source_layer, layer_index, alpha))
         {
           LogError << "[ModernADT] Failed to decode MCAL for chunk " << chunk_index
                    << " layer " << layer_index
@@ -587,7 +621,7 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
     unsigned const z = static_cast<unsigned>(next_chunk % 16);
 
     mChunks[x][z] = std::make_unique<MapChunk>(
-      this, &root_file, mBigAlpha, _mode, _context, false, 0, false);
+      this, &root_file, mBigAlpha, _mode, _context, false, 0, false, true);
 
     auto* chunk = mChunks[x][z].get();
     rebuild_modern_chunk_geometry(chunk, this, raw_height);

@@ -27,6 +27,8 @@ namespace Noggit::Ui::Widget
       icon = QIcon(":/icon-shadow");
     if (data.project_version == Project::ProjectVersion::RETAIL)
       icon = QIcon(":/icon-shadow");
+    if (data.project_version == Project::ProjectVersion::FOREVER)
+      icon = QIcon(":/icon-wrath");
 
     _project_version_icon = new QLabel("", this);
     _project_version_icon->setPixmap(icon.pixmap(QSize(66, 66)));
@@ -68,6 +70,8 @@ namespace Noggit::Ui::Widget
       version = "Shadowlands";
     if (data.project_version == Project::ProjectVersion::RETAIL)
       version = "Retail";
+    if (data.project_version == Project::ProjectVersion::FOREVER)
+      version = "Forever";
 
     _project_version_label = new QLabel(version, this);
     _project_version_label->setObjectName("project-version-label");

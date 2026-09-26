@@ -5,6 +5,7 @@
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
+#include <noggit/formats/adt/ShadowlandsADTCodec.hpp>
 #include <noggit/Misc.h>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h> // ModelInstance
@@ -19,6 +20,7 @@
 #include <math/ray.hpp>
 
 #include <ClientFile.hpp>
+#include <ClientData.hpp>
 
 #include <util/sExtendableArray.hpp>
 
@@ -27,6 +29,7 @@
 #include <cassert>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -570,7 +573,7 @@ void MapTile::getVertexInternal(float x, float z, glm::vec3* v)
 
 /// --- Only saving related below this line. --------------------------
 
-void MapTile::saveTile(World* world)
+bool MapTile::saveTile(World* world)
 {
   // if we want to save a duplicate with mclq in a separate folder
   /*
@@ -585,12 +588,35 @@ void MapTile::saveTile(World* world)
   QSettings settings;
   bool use_mclq = settings.value("use_mclq_liquids_export", false).toBool();
 
-  save(world, use_mclq);
+  return save(world, use_mclq);
 }
 
-void MapTile::save(World* world, bool save_using_mclq_liquids)
+bool MapTile::save(World* world, bool save_using_mclq_liquids)
 {
   Log << "Saving ADT \"" << _file_key.stringRepr() << "\"." << std::endl;
+
+  auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+  std::optional<Noggit::Formats::ADT::ShadowlandsADTBackingStore> modern_backing;
+  if (client_data->version() != BlizzardArchive::ClientVersion::WOTLK)
+  {
+    try
+    {
+      modern_backing = Noggit::Formats::ADT::ShadowlandsADTCodec::loadBackingStore(
+        _file_key.filepath());
+
+      // Modern split ADTs require full 8-bit alpha maps when MCLY does not set
+      // FLAG_ALPHA_COMPRESSED. Writing the legacy 4-bit (2048-byte) layout
+      // with that flag cleared is tolerated by Noggit's loader, but retail
+      // clients read it as 4096 bytes and can run past the MCAL payload.
+      convert_alphamap(true);
+    }
+    catch (std::exception const& error)
+    {
+      LogError << "[ModernADT][Save] Could not load the original split tile before saving: "
+               << error.what() << std::endl;
+      return false;
+    }
+  }
 
   int lID;  // This is a global counting variable. Do not store something in here you need later.
   std::vector<WMOInstance*> lObjectInstances;
@@ -840,7 +866,7 @@ void MapTile::save(World* world, bool save_using_mclq_liquids)
     if (filename_to_offset_and_name == lModels.end())
     {
       LogError << "There is a problem with saving the doodads. We have a doodad that somehow changed the name during the saving function. However this got produced, you can get a reward from schlumpf by pasting him this line." << std::endl;
-      return;
+      return false;
     }
 
     lMDDF_Data[lID].nameID = filename_to_offset_and_name->second.nameID;
@@ -876,7 +902,7 @@ void MapTile::save(World* world, bool save_using_mclq_liquids)
     if (filename_to_offset_and_name == lObjects.end())
     {
       LogError << "There is a problem with saving the objects. We have an object that somehow changed the name during the saving function. However this got produced, you can get a reward from schlumpf by pasting him this line." << std::endl;
-      return;
+      return false;
     }
 
     lMODF_Data[lID].nameID = filename_to_offset_and_name->second.nameID;
@@ -965,6 +991,22 @@ void MapTile::save(World* world, bool save_using_mclq_liquids)
   }
 #endif
 
+  if (modern_backing)
+  {
+    try
+    {
+      auto const legacy_bytes = lADTFile.data_up_to(lCurrentPosition);
+      std::vector<std::uint8_t> serialized(legacy_bytes.begin(), legacy_bytes.end());
+      Noggit::Formats::ADT::ShadowlandsADTCodec::saveFromLegacy(*modern_backing, serialized);
+    }
+    catch (std::exception const& error)
+    {
+      LogError << "[ModernADT][Save] Split ADT save failed for \""
+               << _file_key.stringRepr() << "\": " << error.what() << std::endl;
+      return false;
+    }
+  }
+  else
   {
     BlizzardArchive::ClientFile f(_file_key.filepath(), Noggit::Application::NoggitApplication::instance()->clientData()
       , BlizzardArchive::ClientFile::NEW_FILE);
@@ -988,6 +1030,7 @@ void MapTile::save(World* world, bool save_using_mclq_liquids)
   lObjectInstances.clear();
   lModelInstances.clear();
   lModels.clear();
+  return true;
 }
 
 

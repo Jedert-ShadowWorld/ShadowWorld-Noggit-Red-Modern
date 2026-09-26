@@ -34,7 +34,8 @@ void OpenDBs(std::shared_ptr<BlizzardArchive::ClientData> clientData)
 {
   auto const project_version = Noggit::Project::CurrentProject::get()->projectVersion;
   bool const modern_db2_project = project_version == Noggit::Project::ProjectVersion::SL
-    || project_version == Noggit::Project::ProjectVersion::RETAIL;
+    || project_version == Noggit::Project::ProjectVersion::RETAIL
+    || project_version == Noggit::Project::ProjectVersion::FOREVER;
 
   if (modern_db2_project)
   {

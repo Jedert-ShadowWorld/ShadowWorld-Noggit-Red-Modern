@@ -241,6 +241,7 @@ public:
   // ===============================
   std::vector<scoped_blp_texture_reference> _textures;
   std::vector<std::string> _textureFilenames;
+  std::vector<std::uint32_t> _textureFileDataIds;
   std::map<std::size_t, scoped_blp_texture_reference> _replaceTextures;
   std::vector<int> _specialTextures;
   std::vector<bool> _useReplaceTextures;

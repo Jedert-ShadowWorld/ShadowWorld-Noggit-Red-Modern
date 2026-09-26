@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32
+#ifndef _WIN32
   #include <execinfo.h>
 #else
   #include <win/StackWalker.h>
@@ -16,7 +16,7 @@ namespace Noggit
 {
   void printStacktrace()
   {
-#ifndef WIN32
+#ifndef _WIN32
     std::vector<void*> frames  (32);
 
     std::size_t actual  (0);

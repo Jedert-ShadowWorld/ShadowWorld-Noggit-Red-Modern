@@ -222,6 +222,7 @@ public:
   void saveMinimapMD5translate();
 
 private:
+	void ensureModernWdtInProject();
 	uint32_t getHighestGUIDFromFile(const std::string& pFilename) const;
 
   bool _uid_fix_all_in_progress = false;

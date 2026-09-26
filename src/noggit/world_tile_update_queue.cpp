@@ -3,6 +3,7 @@
 #include <noggit/world_tile_update_queue.hpp>
 
 #include <noggit/Log.h>
+#include <noggit/MapTile.h>
 #include <noggit/World.h>
 
 
@@ -25,6 +26,17 @@ namespace Noggit
 
     void apply(World* const world)
     {
+      if (update_type == model_update::remove && !instance->getTiles().empty())
+      {
+        std::vector<TileIndex> tiles;
+        tiles.reserve(instance->getTiles().size());
+        for (auto const* tile : instance->getTiles())
+          tiles.push_back(tile->index);
+        for (auto const& tile : tiles)
+          world->mapIndex.update_model_tile(tile, update_type, instance);
+        return;
+      }
+
       instance->instance_model()->wait_until_loaded();
       auto& extents(instance->getExtents());
       TileIndex start(extents[0]), end(extents[1]);

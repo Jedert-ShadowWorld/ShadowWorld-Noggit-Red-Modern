@@ -18,13 +18,73 @@
 #include <QSettings>
 #include <QString>
 #include <QMessageBox>
+#include <QGraphicsDropShadowEffect>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
+#include <QElapsedTimer>
+#include <QPainter>
+#include <QRadialGradient>
+#include <QTimer>
+#include <QMouseEvent>
+#include <QEvent>
 
 #include "ui_NoggitProjectSelectionWindow.h"
 
 #include <filesystem>
+#include <array>
+#include <cmath>
 
 
 using namespace Noggit::Ui::Windows;
+
+namespace
+{
+class LauncherSparkles final : public QWidget
+{
+public:
+  explicit LauncherSparkles(QWidget* parent) : QWidget(parent)
+  {
+    setAttribute(Qt::WA_TransparentForMouseEvents);
+    setAttribute(Qt::WA_TranslucentBackground);
+    _clock.start();
+    auto* timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, QOverload<>::of(&QWidget::update));
+    timer->start(40);
+  }
+
+protected:
+  void paintEvent(QPaintEvent*) override
+  {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    auto const t = _clock.elapsed() / 1000.0;
+    constexpr std::array<QPointF, 8> stars = {{
+        {0.11, 0.39}, {0.89, 0.13}, {0.86, 0.70}, {0.17, 0.86},
+        {0.52, 0.16}, {0.48, 0.72}, {0.08, 0.69}, {0.93, 0.46}}};
+    for (size_t i = 0; i < stars.size(); ++i)
+    {
+      auto const phase = t * (1.5 + i * 0.13) + i * 1.7;
+      auto const glow = 0.5 + 0.5 * std::sin(phase);
+      auto const x = stars[i].x() * width() + 5.0 * std::sin(t * 0.3 + i);
+      auto const y = stars[i].y() * height() - 9.0 * std::sin(t * 0.5 + i);
+      auto const radius = 7.0 + 8.0 * glow;
+      QRadialGradient halo(QPointF(x, y), radius);
+      halo.setColorAt(0, QColor(238, 225, 255, static_cast<int>(140 * glow)));
+      halo.setColorAt(0.3, QColor(165, 118, 255, static_cast<int>(85 * glow)));
+      halo.setColorAt(1, QColor(80, 90, 220, 0));
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(halo);
+      painter.drawEllipse(QPointF(x, y), radius, radius);
+      painter.setPen(QPen(QColor(225, 213, 255, static_cast<int>(210 * glow)), 1.0));
+      painter.drawLine(QPointF(x - 3.0 - 2.0 * glow, y), QPointF(x + 3.0 + 2.0 * glow, y));
+      painter.drawLine(QPointF(x, y - 3.0 - 2.0 * glow), QPointF(x, y + 3.0 + 2.0 * glow));
+    }
+  }
+
+private:
+  QElapsedTimer _clock;
+};
+}
 
 NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::NoggitApplication* noggit_app,
                                                            QWidget* parent)
@@ -33,9 +93,48 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   , _noggit_application(noggit_app)
 {
   _ui->setupUi(this);
+  _ui->recentHint->hide();
+  _ui->headerLayout->removeWidget(_ui->titleCrest);
+  _ui->titleCrest->setParent(_ui->centralwidget);
+  _ui->titleCrest->show();
+  _ui->centralwidget->installEventFilter(this);
+  _ui->topBar->installEventFilter(this);
+  _ui->titleCrest->installEventFilter(this);
+  _ui->shadowWorldTitle->installEventFilter(this);
+  _ui->shadowWorldSubtitle->installEventFilter(this);
+  _ui->titleCrest->raise();
+  auto* title_glow = new QGraphicsDropShadowEffect(_ui->shadowWorldTitle);
+  title_glow->setColor(QColor(71, 151, 255, 220));
+  title_glow->setOffset(0, 0);
+  _ui->shadowWorldTitle->setGraphicsEffect(title_glow);
+  auto* breathing = new QPropertyAnimation(title_glow, "blurRadius", title_glow);
+  breathing->setDuration(3600);
+  breathing->setStartValue(7.0);
+  breathing->setKeyValueAt(0.5, 28.0);
+  breathing->setEndValue(7.0);
+  breathing->setEasingCurve(QEasingCurve::InOutSine);
+  breathing->setLoopCount(-1);
+  breathing->start();
+  auto* sparkles = new LauncherSparkles(_ui->heroArtwork);
+  auto position_sparkles = [artwork = _ui->heroArtwork, sparkles]
+  {
+    sparkles->setGeometry((artwork->width() - 470) / 2,
+                          (artwork->height() - 470) / 2, 470, 470);
+    sparkles->raise();
+  };
+  QTimer::singleShot(0, sparkles, position_sparkles);
+  auto* sparkle_layout_timer = new QTimer(sparkles);
+  QObject::connect(sparkle_layout_timer, &QTimer::timeout, sparkles, position_sparkles);
+  sparkle_layout_timer->start(250);
   _load_project_component = std::make_unique<Component::LoadProjectComponent>();
 
-  setWindowFlags(Qt::Window | Qt::MSWindowsFixedSizeDialogHint);
+  setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+  setFixedSize(size());
+  QTimer::singleShot(0, this, [this]
+  {
+    _ui->titleCrest->move((_ui->centralwidget->width() - _ui->titleCrest->width()) / 2, 82);
+    _ui->titleCrest->raise();
+  });
   bool const force_project_selector = _noggit_application->GetCommand(2);
 
   ////////////////////////////
@@ -347,5 +446,42 @@ void Noggit::Ui::Windows::NoggitProjectSelectionWindow::resetFavoriteProject()
 
 NoggitProjectSelectionWindow::~NoggitProjectSelectionWindow()
 {
+  _ui->centralwidget->removeEventFilter(this);
+  _ui->topBar->removeEventFilter(this);
+  _ui->titleCrest->removeEventFilter(this);
+  _ui->shadowWorldTitle->removeEventFilter(this);
+  _ui->shadowWorldSubtitle->removeEventFilter(this);
   delete _ui;
+}
+
+bool NoggitProjectSelectionWindow::eventFilter(QObject* watched, QEvent* event)
+{
+  if (watched == _ui->centralwidget && event->type() == QEvent::Resize)
+    _ui->titleCrest->move((_ui->centralwidget->width() - _ui->titleCrest->width()) / 2, 82);
+
+  if (watched == _ui->topBar || watched == _ui->titleCrest
+      || watched == _ui->shadowWorldTitle || watched == _ui->shadowWorldSubtitle)
+  {
+    if (event->type() == QEvent::MouseButtonPress)
+    {
+      auto* mouse = static_cast<QMouseEvent*>(event);
+      if (mouse->button() == Qt::LeftButton)
+      {
+        _drag_offset = mouse->globalPos() - frameGeometry().topLeft();
+        _dragging = true;
+        return true;
+      }
+    }
+    if (event->type() == QEvent::MouseMove && _dragging)
+    {
+      move(static_cast<QMouseEvent*>(event)->globalPos() - _drag_offset);
+      return true;
+    }
+    if (event->type() == QEvent::MouseButtonRelease && _dragging)
+    {
+      _dragging = false;
+      return true;
+    }
+  }
+  return QMainWindow::eventFilter(watched, event);
 }

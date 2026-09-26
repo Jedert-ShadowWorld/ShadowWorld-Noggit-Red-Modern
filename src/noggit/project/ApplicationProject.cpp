@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <regex>
 #include <sstream>
 #include <system_error>
 
@@ -179,6 +180,45 @@ namespace
         return first_version;
     }
 
+    if (client_path.filename() == "_retail_")
+      client_path = client_path.parent_path();
+    else if (!std::filesystem::exists(client_path / "Data" / "config")
+             && std::filesystem::exists(client_path.parent_path() / "Data" / "config"))
+      client_path = client_path.parent_path();
+
+    auto const config_path = client_path / "Data" / "config";
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator iterator(
+      config_path, std::filesystem::directory_options::skip_permission_denied, error);
+    std::filesystem::recursive_directory_iterator end;
+    static std::regex const build_name_pattern(
+      R"(WOW-([0-9]+)patch([0-9]+\.[0-9]+\.[0-9]+))", std::regex::icase);
+
+    for (; !error && iterator != end; iterator.increment(error))
+    {
+      if (!iterator->is_regular_file(error))
+        continue;
+
+      std::ifstream stream(iterator->path());
+      std::string line;
+      if (!std::getline(stream, line))
+        continue;
+      if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+      if (line != "# Build Configuration")
+        continue;
+
+      while (std::getline(stream, line))
+      {
+        if (line.rfind("build-name", 0) != 0)
+          continue;
+
+        std::smatch match;
+        if (std::regex_search(line, match, build_name_pattern))
+          return match[2].str() + "." + match[1].str();
+      }
+    }
+
     return {};
   }
 }
@@ -225,20 +265,26 @@ namespace Noggit::Project
     project_reader.readObjectSelectionGroups(&project.value());
 
     std::string dbd_file_directory = _configuration->ApplicationDatabaseDefinitionsPath;
+    if (project->projectVersion == ProjectVersion::FOREVER)
+      dbd_file_directory = "definitions-forever";
 
     BlizzardDatabaseLib::Structures::Build client_build("3.3.5.12340");
     auto client_archive_version = BlizzardArchive::ClientVersion::WOTLK;
     auto client_archive_locale = BlizzardArchive::Locale::AUTO;
-    if (project->projectVersion == ProjectVersion::SL || project->projectVersion == ProjectVersion::RETAIL)
+    if (project->projectVersion == ProjectVersion::SL || project->projectVersion == ProjectVersion::RETAIL
+        || project->projectVersion == ProjectVersion::FOREVER)
     {
-      client_archive_version = project->projectVersion == ProjectVersion::RETAIL
-        ? BlizzardArchive::ClientVersion::RETAIL
-        : BlizzardArchive::ClientVersion::SL;
+      client_archive_version = project->projectVersion == ProjectVersion::FOREVER
+        ? BlizzardArchive::ClientVersion::FOREVER
+        : (project->projectVersion == ProjectVersion::RETAIL
+            ? BlizzardArchive::ClientVersion::RETAIL
+            : BlizzardArchive::ClientVersion::SL);
       auto detected_build = detectClientBuildVersion(project->ClientPath);
       if (detected_build.empty())
       {
         detected_build = "9.2.7.45745";
-        LogError << "Could not detect client build from .build.info, falling back to " << detected_build << std::endl;
+        LogError << "Could not detect client build from .build.info or Data/config, falling back to "
+                 << detected_build << std::endl;
       }
       else
       {
@@ -250,7 +296,7 @@ namespace Noggit::Project
       {
         std::size_t parsed_length = 0;
         auto const major_version = std::stoi(detected_build, &parsed_length);
-        if (parsed_length != 0)
+        if (parsed_length != 0 && project->projectVersion != ProjectVersion::FOREVER)
         {
           client_archive_version = major_version >= 10
             ? BlizzardArchive::ClientVersion::RETAIL
@@ -281,7 +327,8 @@ namespace Noggit::Project
       return {};
     }
 
-    project->ClientDatabase = std::make_shared<BlizzardDatabaseLib::BlizzardDatabase>(dbd_file_directory, client_build);
+    project->ClientDatabase = std::make_shared<BlizzardDatabaseLib::BlizzardDatabase>(
+      dbd_file_directory, client_build, project->projectVersion == ProjectVersion::FOREVER);
 
     Log << "Loading Client Path : " << project->ClientPath << std::endl;
 
@@ -332,6 +379,19 @@ namespace Noggit::Project
     if (!project->ClientData)
     {
       LogError << "Failed loading Client data." << std::endl;
+      return {};
+    }
+
+    if ((project->projectVersion == ProjectVersion::SL || project->projectVersion == ProjectVersion::RETAIL
+         || project->projectVersion == ProjectVersion::FOREVER)
+        && !project->ClientData->exists(BlizzardArchive::Listfile::FileKey("dbfilesclient/map.db2")))
+    {
+      auto const message = QString(
+        "The CASC archive opened, but DBFilesClient/Map.db2 is not available locally.\n\n"
+        "This usually means the selected client is only partially downloaded. "
+        "Finish downloading the client data, or place the required DB2 in the Noggit project override directory.");
+      LogError << message.toStdString() << std::endl;
+      QMessageBox::critical(nullptr, "Incomplete CASC client", message);
       return {};
     }
 
@@ -453,6 +513,8 @@ namespace Noggit::Project
         return ProjectVersion::SL;
       if (projectVersion == "Retail")
         return ProjectVersion::RETAIL;
+      if (projectVersion == "Forever")
+        return ProjectVersion::FOREVER;
 
       LogError << "Unknown project version '" << projectVersion << "', falling back to Shadowlands compatibility." << std::endl;
       return ProjectVersion::SL;
@@ -466,6 +528,8 @@ namespace Noggit::Project
         return std::string("Shadowlands");
       if (projectVersion == ProjectVersion::RETAIL)
         return std::string("Retail");
+      if (projectVersion == ProjectVersion::FOREVER)
+        return std::string("Forever");
 
       LogError << "Unknown project version enum, falling back to Shadowlands." << std::endl;
       return std::string("Shadowlands");

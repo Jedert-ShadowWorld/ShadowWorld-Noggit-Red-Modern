@@ -22,6 +22,7 @@
         <file alias="icon-legion">../media/project-icon-legion.png</file>
         <file alias="icon-battle">../media/project-icon-battle.png</file>
         <file alias="icon-shadow">../media/project-icon-shadow.png</file>
+        <file alias="shadow-world-selector-background">../media/shadow-world-selector-background.png</file>
     </qresource>
     <qresource prefix="/sw-ui">
         <file alias="outer-frame">shadowworld/outer_frame.svg</file>

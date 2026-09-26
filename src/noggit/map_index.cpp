@@ -4,6 +4,7 @@
 #include <noggit/AsyncLoader.h>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
+#include <noggit/Log.h>
 #include <noggit/Misc.h>
 #include <noggit/World.h>
 #include <noggit/ActionManager.hpp>
@@ -22,6 +23,8 @@
 #include <QFile>
 
 #include <forward_list>
+#include <cstring>
+#include <filesystem>
 #include <sstream>
 
 MapIndex::TileRange<false> MapIndex::loaded_tiles()
@@ -210,17 +213,62 @@ MapIndex::MapIndex (const std::string &pBasename, int map_id, World* world,
   loadMinimapMD5translate();
 }
 
+void MapIndex::ensureModernWdtInProject()
+{
+  auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+  if (client_data->version() == BlizzardArchive::ClientVersion::WOTLK)
+  {
+    return;
+  }
+
+  std::stringstream wdt_filename;
+  wdt_filename << "World\\Maps\\" << basename << "\\" << basename << ".wdt";
+
+  auto const project_wdt_path =
+    std::filesystem::path(Noggit::Project::CurrentProject::get()->ProjectPath)
+    / BlizzardArchive::ClientData::normalizeFilenameInternal(wdt_filename.str());
+
+  if (std::filesystem::exists(project_wdt_path))
+  {
+    return;
+  }
+
+  try
+  {
+    BlizzardArchive::ClientFile source_wdt(wdt_filename.str(), client_data);
+    std::vector<char> source_data(source_wdt.getBuffer(),
+                                  source_wdt.getBuffer() + source_wdt.getSize());
+    BlizzardArchive::ClientFile project_wdt(wdt_filename.str(), client_data,
+                                            BlizzardArchive::ClientFile::NEW_FILE);
+    project_wdt.setBuffer(source_data);
+    project_wdt.save();
+    project_wdt.close();
+
+    Log << "[WDT Save] Copied the original modern WDT to the project override: "
+        << wdt_filename.str() << std::endl;
+  }
+  catch (std::exception const& error)
+  {
+    LogError << "[WDT Save] Failed to copy the original modern WDT to the project override: "
+             << error.what() << std::endl;
+  }
+}
+
 void MapIndex::saveall (World* world)
 {
   world->wait_for_all_tile_updates();
+
+  ensureModernWdtInProject();
 
   saveMaxUID();
 
   for (MapTile* tile : loaded_tiles())
   {
     world->horizon.update_horizon_tile(tile);
-    tile->saveTile(world);
-    tile->changed = false;
+    if (tile->saveTile(world))
+    {
+      tile->changed = false;
+    }
   }
 }
 
@@ -535,6 +583,22 @@ void MapIndex::saveChanged (World* world, bool save_unloaded)
 {
   world->wait_for_all_tile_updates();
 
+  ensureModernWdtInProject();
+
+  std::size_t loaded_tile_count = 0;
+  std::size_t changed_tile_count = 0;
+  for (MapTile* tile : loaded_tiles())
+  {
+    ++loaded_tile_count;
+    if (tile->changed.load())
+    {
+      ++changed_tile_count;
+    }
+  }
+
+  Log << "[ADT Save] Save changed requested: " << loaded_tile_count
+      << " loaded tile(s), " << changed_tile_count << " changed tile(s)." << std::endl;
+
   if (changed)
   {
     save();
@@ -564,8 +628,10 @@ void MapIndex::saveChanged (World* world, bool save_unloaded)
           file.open(QIODevice::WriteOnly);
 
           mTiles[i][j].tile->initEmptyChunks();
-          mTiles[i][j].tile->saveTile(world);
-          mTiles[i][j].tile->changed = false;
+          if (mTiles[i][j].tile->saveTile(world))
+          {
+            mTiles[i][j].tile->changed = false;
+          }
         }
         else
         {
@@ -582,8 +648,10 @@ void MapIndex::saveChanged (World* world, bool save_unloaded)
     if (tile->changed.load())
     {
       world->horizon.update_horizon_tile(tile);
-      tile->saveTile(world);
-      tile->changed = false;
+      if (tile->saveTile(world))
+      {
+        tile->changed = false;
+      }
     }
   }
 }
@@ -688,66 +756,65 @@ void MapIndex::set_sort_models_by_size_class(bool state)
 
 uint32_t MapIndex::getHighestGUIDFromFile(const std::string& pFilename) const
 {
-	uint32_t highGUID = 0;
+    uint32_t highGUID = 0;
+    auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
 
-    BlizzardArchive::ClientFile theFile(pFilename, Noggit::Application::NoggitApplication::instance()->clientData());
-    if (theFile.isEof())
-    {
+    // Cata and newer clients keep MDDF/MODF in the split _obj0 file. Legacy
+    // clients keep the same chunks in the monolithic root ADT.
+    const std::filesystem::path root_path(pFilename);
+    const auto obj0_path = root_path.parent_path() /
+      (root_path.stem().string() + "_obj0" + root_path.extension().string());
+    const auto scan_path = client_data->exists(obj0_path.string()) ? obj0_path.string() : pFilename;
+
+    BlizzardArchive::ClientFile file(scan_path, client_data);
+    if (file.isEof() || file.getSize() < 8)
       return highGUID;
-    }
 
-    uint32_t fourcc;
-    uint32_t size;
+    auto const* data = file.getBuffer();
+    auto const file_size = file.getSize();
+    std::size_t pos = 0;
 
-    MHDR Header;
-
-    // - MVER ----------------------------------------------
-
-    uint32_t version;
-
-    theFile.read(&fourcc, 4);
-    theFile.seekRelative(4);
-    theFile.read(&version, 4);
-
-    assert(fourcc == 'MVER' && version == 18);
-
-    // - MHDR ----------------------------------------------
-
-    theFile.read(&fourcc, 4);
-    theFile.seekRelative(4);
-
-    assert(fourcc == 'MHDR');
-
-    theFile.read(&Header, sizeof(MHDR));
-
-    // - MDDF ----------------------------------------------
-
-    theFile.seek(Header.mddf + 0x14);
-    theFile.read(&fourcc, 4);
-    theFile.read(&size, 4);
-
-    assert(fourcc == 'MDDF');
-
-    ENTRY_MDDF const* mddf_ptr = reinterpret_cast<ENTRY_MDDF const*>(theFile.getPointer());
-    for (unsigned int i = 0; i < size / sizeof(ENTRY_MDDF); ++i)
+    while (pos + 8 <= file_size)
     {
-        highGUID = std::max(highGUID, mddf_ptr[i].uniqueID);
+      std::uint32_t chunk_size = 0;
+      std::memcpy(&chunk_size, data + pos + 4, sizeof(chunk_size));
+      const auto payload = pos + 8;
+      if (chunk_size > file_size - payload)
+      {
+        LogError << "getHighestGUIDFromFile(): truncated chunk in " << scan_path
+                 << " at offset " << pos << ". Skipping the rest of the file." << std::endl;
+        break;
+      }
+
+      if (std::memcmp(data + pos, "FDDM", 4) == 0)
+      {
+        if (chunk_size % sizeof(ENTRY_MDDF) != 0)
+          LogError << "getHighestGUIDFromFile(): invalid MDDF size in " << scan_path << std::endl;
+
+        const auto count = chunk_size / sizeof(ENTRY_MDDF);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+          ENTRY_MDDF entry{};
+          std::memcpy(&entry, data + payload + i * sizeof(entry), sizeof(entry));
+          highGUID = std::max(highGUID, entry.uniqueID);
+        }
+      }
+      else if (std::memcmp(data + pos, "FDOM", 4) == 0)
+      {
+        if (chunk_size % sizeof(ENTRY_MODF) != 0)
+          LogError << "getHighestGUIDFromFile(): invalid MODF size in " << scan_path << std::endl;
+
+        const auto count = chunk_size / sizeof(ENTRY_MODF);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+          ENTRY_MODF entry{};
+          std::memcpy(&entry, data + payload + i * sizeof(entry), sizeof(entry));
+          highGUID = std::max(highGUID, entry.uniqueID);
+        }
+      }
+
+      pos = payload + chunk_size;
     }
-
-    // - MODF ----------------------------------------------
-
-    theFile.seek(Header.modf + 0x14);
-    theFile.read(&fourcc, 4);
-    theFile.read(&size, 4);
-
-    assert(fourcc == 'MODF');
-
-    ENTRY_MODF const* modf_ptr = reinterpret_cast<ENTRY_MODF const*>(theFile.getPointer());
-    for (unsigned int i = 0; i < size / sizeof(ENTRY_MODF); ++i)
-    {
-        highGUID = std::max(highGUID, modf_ptr[i].uniqueID);
-    }
-    theFile.close();
 
     return highGUID;
 }

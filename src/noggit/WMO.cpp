@@ -165,22 +165,25 @@ void WMO::finishLoading ()
   auto load_texture
     ( [&] (std::uint32_t texture_ref)
       {
-        std::string texture = "textures/shanecube.blp";
+        BlizzardArchive::Listfile::FileKey texture("textures/shanecube.blp");
         if (uses_file_data_ids)
         {
           if (texture_ref != 0)
           {
             auto const resolved = client_data->listfile()->getPath(texture_ref);
-            if (!resolved.empty())
-              texture = resolved;
-            else
+            texture = BlizzardArchive::Listfile::FileKey(
+                resolved.empty() ? "unknown/" + std::to_string(texture_ref) + ".blp" : resolved,
+                texture_ref);
+
+            if (resolved.empty())
               LogError << "Unresolved WMO texture FileDataID " << texture_ref
-                       << " in \"" << _file_key.stringRepr() << "\"." << std::endl;
+                       << " in \"" << _file_key.stringRepr()
+                       << "\"; loading directly by ID." << std::endl;
           }
         }
         else if (texture_ref < texbuf.size() && texbuf[texture_ref])
         {
-          texture = &texbuf[texture_ref];
+          texture = BlizzardArchive::Listfile::FileKey(&texbuf[texture_ref]);
         }
 
         auto const mapping

@@ -2,6 +2,7 @@
 #define NOGGITREDPROJECTPAGE_H
 
 #include <QMainWindow>
+#include <QPoint>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class NoggitProjectSelectionWindow; }
@@ -42,7 +43,11 @@ namespace Noggit::Ui::Windows
         ~NoggitProjectSelectionWindow();
 
     private:
+        bool eventFilter(QObject* watched, QEvent* event) override;
+
         ::Ui::NoggitProjectSelectionWindow* _ui;
+        QPoint _drag_offset;
+        bool _dragging = false;
         Noggit::Application::NoggitApplication* _noggit_application;
         Noggit::Ui::settings* _settings;
         //Noggit::Ui::CUpdater* _updater;

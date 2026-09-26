@@ -55,7 +55,8 @@ namespace
     auto* project = Noggit::Project::CurrentProject::get();
     return project
       && (project->projectVersion == Noggit::Project::ProjectVersion::SL
-          || project->projectVersion == Noggit::Project::ProjectVersion::RETAIL)
+          || project->projectVersion == Noggit::Project::ProjectVersion::RETAIL
+          || project->projectVersion == Noggit::Project::ProjectVersion::FOREVER)
       && is_root_adt_path(path);
   }
 

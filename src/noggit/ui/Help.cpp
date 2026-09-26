@@ -117,8 +117,8 @@ namespace Noggit
       holes_label->setStyleSheet(header_style);
       flag_layout->addRow(holes_label);
 
-      generate_hotkey_row({FontNoggit::shift, FontNoggit::lmb}, "\a+\aClear hole", flag_layout);
-      generate_hotkey_row({FontNoggit::ctrl, FontNoggit::lmb}, "\a+\aAdd hole", flag_layout);
+      generate_hotkey_row({FontNoggit::shift, FontNoggit::lmb}, "\a+\aAdd hole", flag_layout);
+      generate_hotkey_row({FontNoggit::ctrl, FontNoggit::lmb}, "\a+\aClear hole", flag_layout);
       generate_hotkey_row({FontNoggit::t}, "\aRemove all holes on ADT", flag_layout);
       generate_hotkey_row({FontNoggit::alt, FontNoggit::t}, "\a+\aRemove all ground on ADT", flag_layout);
 

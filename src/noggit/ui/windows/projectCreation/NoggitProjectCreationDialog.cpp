@@ -19,6 +19,8 @@ NoggitProjectCreationDialog::NoggitProjectCreationDialog(ProjectInformation& pro
     ui->project_expansion->addItem("Shadowlands");
   if (ui->project_expansion->findText("Retail") < 0)
     ui->project_expansion->addItem("Retail");
+  if (ui->project_expansion->findText("Forever") < 0)
+    ui->project_expansion->addItem("Forever");
   QIcon icon = QIcon(":/icon-wrath");
   ui->expansion_icon->setPixmap(icon.pixmap(QSize(32, 32)));
   ui->expansion_icon->setObjectName("icon");
@@ -29,7 +31,7 @@ NoggitProjectCreationDialog::NoggitProjectCreationDialog(ProjectInformation& pro
                      auto version_selected = ui->project_expansion->currentText().toStdString();
 
                      QIcon icon;
-                     if (version_selected == "Wrath Of The Lich King")
+                     if (version_selected == "Wrath Of The Lich King" || version_selected == "Forever")
                        icon = QIcon(":/icon-wrath");
                      else if (version_selected == "Shadowlands" || version_selected == "Retail")
                        icon = QIcon(":/icon-shadow");

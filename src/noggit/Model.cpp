@@ -144,6 +144,7 @@ void Model::finishLoading()
     break;
   case Noggit::Project::ProjectVersion::SL:
   case Noggit::Project::ProjectVersion::RETAIL:
+  case Noggit::Project::ProjectVersion::FOREVER:
     if (packed_version == m2_version_legion_bfa_sl
         || packed_version == m2_version_legion_bfa_274)
       valid_version = true;
@@ -198,6 +199,7 @@ void Model::finishLoading()
   {
     auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
     auto const texture_count = std::min(_textureFilenames.size(), modern_texture_file_ids.size());
+    _textureFileDataIds.assign(_textureFilenames.size(), 0);
     std::size_t resolved_textures = 0;
 
     for (std::size_t i = 0; i < texture_count; ++i)
@@ -205,12 +207,18 @@ void Model::finishLoading()
       if (modern_texture_file_ids[i] == 0)
         continue;
 
+      _textureFileDataIds[i] = modern_texture_file_ids[i];
       auto const texture_path = client_data->listfile()->getPath(modern_texture_file_ids[i]);
       if (!texture_path.empty())
       {
         _textureFilenames[i] = texture_path;
         _specialTextures[i] = -1;
         ++resolved_textures;
+      }
+      else
+      {
+        _textureFilenames[i] = "unknown/" + std::to_string(modern_texture_file_ids[i]) + ".blp";
+        _specialTextures[i] = -1;
       }
     }
 

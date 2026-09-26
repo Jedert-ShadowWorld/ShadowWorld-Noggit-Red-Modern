@@ -93,14 +93,14 @@ namespace Noggit
             NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_HOLES,
                 Noggit::ActionModalityControllers::eSHIFT
                 | Noggit::ActionModalityControllers::eLMB);
-            mv->getWorld()->setHole(mv->cursorPosition(), _holeTool->brushRadius(), params.mod_alt_down, false);
+            mv->getWorld()->setHole(mv->cursorPosition(), _holeTool->brushRadius(), params.mod_alt_down, true);
         }
         else if (params.mod_ctrl_down && !params.underMap)
         {
             NOGGIT_ACTION_MGR->beginAction(mv, Noggit::ActionFlags::eCHUNKS_HOLES,
                 Noggit::ActionModalityControllers::eCTRL
                 | Noggit::ActionModalityControllers::eLMB);
-            mv->getWorld()->setHole(mv->cursorPosition(), _holeTool->brushRadius(), params.mod_alt_down, true);
+            mv->getWorld()->setHole(mv->cursorPosition(), _holeTool->brushRadius(), params.mod_alt_down, false);
         }
     }
 

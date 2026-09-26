@@ -13,6 +13,10 @@ class AsyncObject
 {
 private: 
   bool _loading_failed = false;
+  mutable std::mutex _modern_attachment_mutex;
+  mutable std::condition_variable _modern_attachment_changed;
+  mutable unsigned char _modern_water_state = 0;
+  mutable unsigned char _modern_objects_state = 0;
 
 protected:
   std::atomic<bool> finished = {false};
@@ -46,6 +50,9 @@ public:
 
   [[nodiscard]]
   virtual async_priority loading_priority() const;
+
+  bool begin_modern_attachment(bool water) const;
+  void finish_modern_attachment(bool water) const;
 
   virtual void finishLoading() = 0;
   virtual void waitForChildrenLoaded() = 0;

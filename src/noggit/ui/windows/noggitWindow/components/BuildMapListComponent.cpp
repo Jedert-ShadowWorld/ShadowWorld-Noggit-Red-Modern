@@ -15,6 +15,7 @@
 #include <QAction>
 #include <QListWidgetItem>
 #include <QMenu>
+#include <QMessageBox>
 #include <QObject>
 
 #include <exception>
@@ -69,6 +70,8 @@ void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* pare
   }
 
   const auto& table = std::string("Map");
+  try
+  {
   auto map_table = ClientDatabase::getTable(table);
 
   auto iterator = map_table.Records();
@@ -184,5 +187,13 @@ void BuildMapListComponent::buildMapList(Noggit::Ui::Windows::NoggitWindow* pare
     item->setSizeHint(map_list_item->minimumSizeHint());
     item->setData(Qt::UserRole, QVariant(map.map_id));
     parent->_continents_table->setItemWidget(item, map_list_item);
+  }
+  }
+  catch (std::exception const& e)
+  {
+    LogError << "Could not build map list: " << e.what() << std::endl;
+    QMessageBox::warning(parent, QObject::tr("Map list unavailable"),
+                         QObject::tr("The client Map database could not be loaded:\n%1")
+                           .arg(QString::fromUtf8(e.what())));
   }
 }

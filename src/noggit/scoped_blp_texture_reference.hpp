@@ -4,6 +4,8 @@
 
 #include <noggit/ContextObject.hpp>
 
+#include <Listfile.hpp>
+
 #include <memory>
 #include <string>
 
@@ -13,6 +15,8 @@ struct scoped_blp_texture_reference
 {
   scoped_blp_texture_reference() = delete;
   scoped_blp_texture_reference(std::string const& filename, Noggit::NoggitRenderContext context);
+  scoped_blp_texture_reference(BlizzardArchive::Listfile::FileKey const& file_key,
+                               Noggit::NoggitRenderContext context);
   scoped_blp_texture_reference(scoped_blp_texture_reference const& other);
   scoped_blp_texture_reference(scoped_blp_texture_reference&&) = default;
   scoped_blp_texture_reference& operator= (scoped_blp_texture_reference const&) = delete;

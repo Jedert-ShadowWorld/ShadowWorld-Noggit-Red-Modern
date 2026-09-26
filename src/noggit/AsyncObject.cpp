@@ -19,7 +19,6 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace
@@ -70,29 +69,12 @@ namespace
     if (root_path.size() < 4 || root_path.compare(root_path.size() - 4, 4, ".adt") != 0)
       return;
 
-    static std::mutex state_mutex;
-    static std::condition_variable state_changed;
-    static std::unordered_set<std::string> loading;
-    static std::unordered_set<std::string> completed;
-
-    {
-      std::unique_lock<std::mutex> lock(state_mutex);
-      if (completed.count(root_path))
-        return;
-      if (loading.count(root_path))
-      {
-        state_changed.wait(lock, [&] { return completed.count(root_path) != 0; });
-        return;
-      }
-      loading.insert(root_path);
-    }
+    if (!object->begin_modern_attachment(false))
+      return;
 
     auto finish_state = [&]
     {
-      std::lock_guard<std::mutex> lock(state_mutex);
-      loading.erase(root_path);
-      completed.insert(root_path);
-      state_changed.notify_all();
+      object->finish_modern_attachment(false);
     };
 
     try
@@ -237,7 +219,7 @@ namespace
   // Water is currently attached after MapTile's terrain loader sets finished=true.
   // finishedLoading() can be queried from several threads, so the old one-shot set
   // allowed a second caller to observe/use the tile while the first caller was still
-  // mutating TileWater. Keep a per-path loading/completed state and make every caller
+  // mutating TileWater. Keep a per-object loading/completed state and make every caller
   // wait until the MH2O attachment has fully completed before reporting the tile ready.
   void load_modern_mh2o_before_exposing_tile(AsyncObject const* object)
   {
@@ -249,31 +231,12 @@ namespace
     if (path.size() < 4 || path.compare(path.size() - 4, 4, ".adt") != 0)
       return;
 
-    static std::mutex state_mutex;
-    static std::condition_variable state_changed;
-    static std::unordered_set<std::string> loading;
-    static std::unordered_set<std::string> completed;
-
-    {
-      std::unique_lock<std::mutex> lock(state_mutex);
-      if (completed.count(path))
-        return;
-
-      if (loading.count(path))
-      {
-        state_changed.wait(lock, [&] { return completed.count(path) != 0; });
-        return;
-      }
-
-      loading.insert(path);
-    }
+    if (!object->begin_modern_attachment(true))
+      return;
 
     auto finish_state = [&]
     {
-      std::lock_guard<std::mutex> lock(state_mutex);
-      loading.erase(path);
-      completed.insert(path);
-      state_changed.notify_all();
+      object->finish_modern_attachment(true);
     };
 
     try
@@ -423,6 +386,30 @@ namespace
 }
 
 AsyncObject::AsyncObject(BlizzardArchive::Listfile::FileKey file_key) : _file_key(std::move(file_key)) {}
+
+bool AsyncObject::begin_modern_attachment(bool water) const
+{
+  std::unique_lock<std::mutex> lock(_modern_attachment_mutex);
+  auto& state = water ? _modern_water_state : _modern_objects_state;
+  if (state == 2)
+    return false;
+  if (state == 1)
+  {
+    _modern_attachment_changed.wait(lock, [&] { return state == 2; });
+    return false;
+  }
+  state = 1;
+  return true;
+}
+
+void AsyncObject::finish_modern_attachment(bool water) const
+{
+  {
+    std::lock_guard<std::mutex> lock(_modern_attachment_mutex);
+    (water ? _modern_water_state : _modern_objects_state) = 2;
+  }
+  _modern_attachment_changed.notify_all();
+}
 
 [[nodiscard]]
 BlizzardArchive::Listfile::FileKey const& AsyncObject::file_key() const
