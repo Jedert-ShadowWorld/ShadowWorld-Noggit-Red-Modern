@@ -129,7 +129,7 @@ public:
 
 private:
 
-  uint8_t sum_alpha(size_t offset) const;
+  unsigned sum_alpha(size_t offset) const;
 
   void alphas_to_big_alpha(uint8_t* dest);
   void alphas_to_old_alpha(uint8_t* dest);

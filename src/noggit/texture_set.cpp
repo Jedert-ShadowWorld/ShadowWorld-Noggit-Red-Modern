@@ -207,7 +207,7 @@ void TextureSet::swap_layers(int layer_1, int layer_2)
 
       for (int i = 0; i < 4096; ++i)
       {
-        alpha[i] = 255 - sum_alpha(i);
+        alpha[i] = static_cast<std::uint8_t>(255 - std::min(255u, sum_alpha(i)));
       }
 
       alphamaps[a2]->setAlpha(alpha);
@@ -350,7 +350,7 @@ bool TextureSet::eraseUnusedTextures()
   {
     for (int i = 0; i < 4096 && visible_tex.size() < nTextures; ++i)
     {
-      uint8_t sum = 0;
+      unsigned sum = 0;
       for (int n = 0; n < nTextures - 1; ++n)
       {
         uint8_t a = alphamaps[n]->getAlpha(i);
@@ -1642,9 +1642,9 @@ void TextureSet::updateDoodadMapping()
     _doodadMapping = new_doodad_mapping;
 }
 
-uint8_t TextureSet::sum_alpha(size_t offset) const
+unsigned TextureSet::sum_alpha(size_t offset) const
 {
-  uint8_t sum = 0;
+  unsigned sum = 0;
 
   for (auto const& amap : alphamaps)
   {
@@ -1692,15 +1692,11 @@ bool TextureSet::apply_alpha_changes()
     for (int i = 0; i < ALPHA_SIZE; ++i)
     {
       uint8_t new_value = float_alpha_to_uint8(tmp_layer[i]);
+      // Rounding each layer independently can make the sum exceed 255,
+      // especially when more than four textures are present.
+      new_value = std::min<std::uint8_t>(new_value, static_cast<std::uint8_t>(255 - totals[i]));
       values[i] = new_value;
-      uint16_t total = totals[i] += new_value;
-
-      // remove the possible overflow with rounding
-      // max 2 if all 4 values round up so it won't change the layer's alpha much
-      if (total > 255)
-      {
-        new_value -= static_cast<std::uint8_t>(total - 255);
-      }
+      totals[i] += new_value;
     }
 
     alphamaps[alpha_layer]->setAlpha(values.data());

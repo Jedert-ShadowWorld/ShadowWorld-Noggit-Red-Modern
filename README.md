@@ -42,6 +42,23 @@ does not by itself guarantee that every game client accepts every layer setup.
 
 ## Workflow
 
+### SaveFix Update (v1.4.3)
+
+- Shadowlands split-ADT saving accepts shipped OBJ1 layouts without optional
+  `MLDL` or `MLFD` chunks, including empty object lists.
+- Split ADT parts are staged before replacement. If a later commit fails,
+  the writer attempts to restore the previously committed project overrides.
+- Incomplete saves display an error, retain failed tiles as changed and keep
+  undo history instead of reporting a successful save.
+- Shadowlands save/reopen was checked on Hillsbrad and Lost Isles. The Lost
+  Isles test saved 40 loaded tiles without a save error; edited terrain and
+  objects survived reopening. Automated tests cover 36 original Hillsbrad
+  OBJ1 files and file-write failure/rollback cases.
+
+See [SaveFix release notes](docs/releases/v1.4.3-savefix.md). This update does
+not claim to resolve every modern-client rendering issue or convert maps
+between client generations.
+
 The goal is to work with multiple WoW client/map generations in one editor
 without requiring maps to be converted back to WotLK. The workflow is:
 
@@ -73,6 +90,9 @@ Version-specific readers and writers handle the differences between clients.
     `noggit.exe --project-selector`.
 -   Modern `Map.db2` and `LiquidType.db2` definitions/layouts have been
     added, including layout-hash selection for the supported builds.
+-   When a newly updated modern client build is not yet listed in a DBD file,
+    WDC4/WDC5 tables can use an existing definition with the same layout
+    hash. A genuinely new layout still needs a matching definition.
 -   WDC4 format detection has been added to the database library.
 -   WDC4 data is currently routed through the WDC5 reader where
     compatible.
@@ -91,6 +111,10 @@ Version-specific readers and writers handle the differences between clients.
     in the selected modern format, including `_obj1.adt` and `_lod.adt` where
     applicable. WotLK retains its existing ADT save path.
 -   The project selector uses a Shadow-World themed, animated Qt interface.
+-   The project selector scales down for smaller available screen sizes.
+-   Alphamap PNG import/export supports layers 1 through 15 (the base
+    texture has no alphamap). A target chunk must already contain the
+    corresponding texture layer before its PNG can be imported.
 
 ### Compatibility Notes
 
@@ -115,9 +139,9 @@ The modern reader and writer keep **9.2.7 / Shadowlands** support alongside
 version-aware paths for **Retail 12.1** and **Forever 1.60.x**. WotLK
 retains its existing editing and WotLK-format saving behavior.
 
-Some included DBD definitions already contain `Map.db2` layouts for
-later WoW versions, including 12.x builds. This does **not** mean Noggit
-currently supports editing those versions.
+Definitions for later WoW builds may be included without full editor support
+for those builds. A matching DB2 layout hash establishes table compatibility,
+not end-to-end map editing compatibility.
 
 Future development is intended to add explicit two-way conversion between
 client formats rather than treating all post-WotLK clients as one generic

@@ -8,7 +8,6 @@
 #include <noggit/ui/windows/projectSelection/NoggitProjectSelectionWindow.hpp>
 #include <noggit/ui/windows/projectSelection/widgets/ProjectListItem.hpp>
 
-#include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
@@ -55,7 +54,6 @@ void RecentProjectsComponent::buildRecentProjectsList(Noggit::Ui::Windows::Noggi
     project_data.project_version = project->projectVersion;
     project_data.project_directory = QString::fromStdString(project_path.generic_string());
     project_data.project_name = QString::fromStdString(project->ProjectName);
-    project_data.project_last_edited = QDateTime::currentDateTime().date().toString();
     project_data.is_favorite = favorite_proj_idx == i ? true : false;
 
     auto project_list_item = new Noggit::Ui::Widget::ProjectListItem(project_data, parent->_ui->listView);

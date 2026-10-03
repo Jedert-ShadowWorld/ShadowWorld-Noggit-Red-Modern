@@ -27,10 +27,14 @@
 #include <QTimer>
 #include <QMouseEvent>
 #include <QEvent>
+#include <QGuiApplication>
+#include <QCursor>
+#include <QScreen>
 
 #include "ui_NoggitProjectSelectionWindow.h"
 
 #include <filesystem>
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -118,8 +122,9 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   auto* sparkles = new LauncherSparkles(_ui->heroArtwork);
   auto position_sparkles = [artwork = _ui->heroArtwork, sparkles]
   {
-    sparkles->setGeometry((artwork->width() - 470) / 2,
-                          (artwork->height() - 470) / 2, 470, 470);
+    auto const size = std::min({470, artwork->width(), artwork->height()});
+    sparkles->setGeometry((artwork->width() - size) / 2,
+                          (artwork->height() - size) / 2, size, size);
     sparkles->raise();
   };
   QTimer::singleShot(0, sparkles, position_sparkles);
@@ -129,10 +134,46 @@ NoggitProjectSelectionWindow::NoggitProjectSelectionWindow(Noggit::Application::
   _load_project_component = std::make_unique<Component::LoadProjectComponent>();
 
   setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
-  setFixedSize(size());
+  auto* screen = QGuiApplication::screenAt(QCursor::pos());
+  if (!screen)
+    screen = QGuiApplication::primaryScreen();
+  if (screen)
+  {
+    auto const available = screen->availableGeometry();
+    auto const width = std::min(1600, available.width());
+    auto const height = std::min(900, available.height());
+    if (width < 1600 || height < 900)
+    {
+      setMinimumSize(std::min(900, width), std::min(580, height));
+      _ui->outerLayout->setContentsMargins(20, 0, 20, 12);
+      auto const panel_width = std::min(398, std::max(220, (width - 80) * 27 / 100));
+      _ui->recentPanel->setFixedWidth(panel_width);
+      _ui->startPanel->setFixedWidth(panel_width);
+      _ui->recentLayout->setContentsMargins(10, 14, 10, 14);
+      _ui->startLayout->setContentsMargins(10, 14, 10, 14);
+      _ui->startLayout->setSpacing(8);
+      _ui->heroLayout->setContentsMargins(6, 6, 6, 6);
+      _ui->heroArtwork->setMinimumSize(180, 180);
+      _ui->topBar->setFixedHeight(84);
+      _ui->bottomBar->setFixedHeight(24);
+      _ui->button_open_project_folder->setMinimumHeight(48);
+      for (auto* button : {_ui->button_create_new_project,
+                           _ui->button_open_existing_project,
+                           _ui->button_convert_project})
+        button->setMinimumHeight(68);
+      auto const crest_width = std::min(760, width - 400);
+      _ui->titleCrest->setFixedSize(crest_width, 84);
+      _ui->shadowWorldTitle->setStyleSheet("QLabel#shadowWorldTitle { color:#e4e8ff; font-family:'Times New Roman'; font-size:36px; font-weight:600; letter-spacing:2px; background:transparent; }");
+      _ui->shadowWorldSubtitle->setStyleSheet("QLabel#shadowWorldSubtitle { color:#b6a6de; font-family:'Times New Roman'; font-size:14px; letter-spacing:3px; background:transparent; }");
+      _ui->heroSubtitle->setWordWrap(true);
+    }
+    resize(width, height);
+    move(available.center() - rect().center());
+  }
   QTimer::singleShot(0, this, [this]
   {
-    _ui->titleCrest->move((_ui->centralwidget->width() - _ui->titleCrest->width()) / 2, 82);
+    _ui->titleCrest->move((_ui->centralwidget->width() - _ui->titleCrest->width()) / 2,
+                          height() < 900 ? 58 : 82);
     _ui->titleCrest->raise();
   });
   bool const force_project_selector = _noggit_application->GetCommand(2);
@@ -457,7 +498,8 @@ NoggitProjectSelectionWindow::~NoggitProjectSelectionWindow()
 bool NoggitProjectSelectionWindow::eventFilter(QObject* watched, QEvent* event)
 {
   if (watched == _ui->centralwidget && event->type() == QEvent::Resize)
-    _ui->titleCrest->move((_ui->centralwidget->width() - _ui->titleCrest->width()) / 2, 82);
+    _ui->titleCrest->move((_ui->centralwidget->width() - _ui->titleCrest->width()) / 2,
+                          height() < 900 ? 58 : 82);
 
   if (watched == _ui->topBar || watched == _ui->titleCrest
       || watched == _ui->shadowWorldTitle || watched == _ui->shadowWorldSubtitle)

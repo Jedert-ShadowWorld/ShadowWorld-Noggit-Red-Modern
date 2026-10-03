@@ -251,25 +251,35 @@ void MapIndex::ensureModernWdtInProject()
   {
     LogError << "[WDT Save] Failed to copy the original modern WDT to the project override: "
              << error.what() << std::endl;
+    throw;
   }
 }
 
-void MapIndex::saveall (World* world)
+bool MapIndex::saveall (World* world)
 {
   world->wait_for_all_tile_updates();
 
   ensureModernWdtInProject();
+  if (changed)
+    save();
 
   saveMaxUID();
 
+  bool success = true;
   for (MapTile* tile : loaded_tiles())
   {
-    world->horizon.update_horizon_tile(tile);
     if (tile->saveTile(world))
     {
+      world->horizon.update_horizon_tile(tile);
       tile->changed = false;
     }
+    else
+    {
+      tile->changed = true;
+      success = false;
+    }
   }
+  return success;
 }
 
 void MapIndex::save()
@@ -553,33 +563,39 @@ bool MapIndex::isTileExternal(const TileIndex& tile) const
   return tile.is_valid() && mTiles[tile.z][tile.x].onDisc;
 }
 
-void MapIndex::saveTile(const TileIndex& tile, World* world, bool save_unloaded)
+bool MapIndex::saveTile(const TileIndex& tile, World* world, bool save_unloaded)
 {
   world->wait_for_all_tile_updates();
+  if (!tile.is_valid() || !mTiles[tile.z][tile.x].tile)
+    return false;
+  ensureModernWdtInProject();
+  if (changed)
+    save();
 
 	// save given tile
 	if (save_unloaded)
   {
-    auto filepath = std::filesystem::path (Noggit::Project::CurrentProject::get()->ProjectPath)
-                    / BlizzardArchive::ClientData::normalizeFilenameInternal (mTiles[tile.z][tile.x].tile->file_key().filepath());
-
-    QFile file(filepath.string().c_str());
-    file.open(QIODevice::WriteOnly);
-
     mTiles[tile.z][tile.x].tile->initEmptyChunks();
-    mTiles[tile.z][tile.x].tile->saveTile(world);
-    return;
+    return mTiles[tile.z][tile.x].tile->saveTile(world);
   }
 
 	if (tileLoaded(tile))
 	{
     saveMaxUID();
-    world->horizon.update_horizon_tile(mTiles[tile.z][tile.x].tile.get());
-		mTiles[tile.z][tile.x].tile->saveTile(world);
+    auto* current = mTiles[tile.z][tile.x].tile.get();
+    if (!current->saveTile(world))
+    {
+      current->changed = true;
+      return false;
+    }
+    world->horizon.update_horizon_tile(current);
+    current->changed = false;
+    return true;
 	}
+  return false;
 }
 
-void MapIndex::saveChanged (World* world, bool save_unloaded)
+bool MapIndex::saveChanged (World* world, bool save_unloaded)
 {
   world->wait_for_all_tile_updates();
 
@@ -604,6 +620,7 @@ void MapIndex::saveChanged (World* world, bool save_unloaded)
     save();
   }
 
+  bool success = true;
   if (!save_unloaded)
   {
     saveMaxUID();
@@ -624,36 +641,39 @@ void MapIndex::saveChanged (World* world, bool save_unloaded)
 
         if (mTiles[i][j].flags & 0x1)
         {
-          QFile file(filepath.string().c_str());
-          file.open(QIODevice::WriteOnly);
-
           mTiles[i][j].tile->initEmptyChunks();
           if (mTiles[i][j].tile->saveTile(world))
           {
             mTiles[i][j].tile->changed = false;
           }
+          else
+            success = false;
         }
         else
         {
           QFile file(filepath.string().c_str());
-          file.remove();
+          if (file.exists() && !file.remove())
+            success = false;
         }
       }
     }
-    return;
+    return success;
   }
 
   for (MapTile* tile : loaded_tiles())
   {
     if (tile->changed.load())
     {
-      world->horizon.update_horizon_tile(tile);
       if (tile->saveTile(world))
       {
+        world->horizon.update_horizon_tile(tile);
         tile->changed = false;
       }
+      else
+        success = false;
     }
   }
+  return success;
 }
 
 bool MapIndex::hasAGlobalWMO() const

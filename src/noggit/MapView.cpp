@@ -1,5 +1,6 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #include <noggit/DBC.h>
+#include <noggit/Alphamap.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapView.h>
 #include <noggit/Misc.h>
@@ -1272,7 +1273,7 @@ void MapView::setupAssistMenu()
 
   adt_import_params_layout->addWidget(new QLabel("Layer:", adt_import_params));
   QSpinBox* adt_import_params_layer = new QSpinBox(adt_import_params);
-  adt_import_params_layer->setRange(1, 3);
+  adt_import_params_layer->setRange(1, MAX_ALPHAMAPS);
   adt_import_params_layout->addWidget(adt_import_params_layer);
 
   QCheckBox* adt_import_params_cleanup_layers = new QCheckBox("Cleanup unused chunk layers", adt_import_params);
@@ -1284,7 +1285,8 @@ void MapView::setupAssistMenu()
   adt_import_params_layout->addWidget(adt_import_params_okay);
 
   auto const alphamap_file_info_tooltip = "\nThe image file must be placed in the map's directory in the project"
-      " folder with the following naming : MAPNAME_XX_YY_layer1.png (or layer2...)."
+      " folder with the following naming : MAPNAME_XX_YY_layer1.png (up to layer15)."
+      "\nLayer1 is the alphamap for the second texture; the base texture has no alphamap."
       "\nFor example \"C:/noggitproject/world/maps/MAPNAME/MAPNAME_29_53_layer2.png\"";
   adt_import_params_okay->setToolTip(alphamap_file_info_tooltip);
 
@@ -4285,18 +4287,39 @@ void MapView::save(save_mode mode)
     makeCurrent();
     OpenGL::context::scoped_setter const _ (::gl, context());
 
-    switch (mode)
+    bool tiles_saved = false;
+    try
     {
-    case save_mode::current: _world->mapIndex.saveTile(TileIndex(_camera.position), _world.get()); break;
-    case save_mode::changed: _world->mapIndex.saveChanged(_world.get()); break;
-    case save_mode::all:     _world->mapIndex.saveall(_world.get()); break;
-    }
-    // write wdl, we update wdl data prior in the mapIndex saving fucntions above
-    _world->horizon.save_wdl(_world.get());
+      switch (mode)
+      {
+      case save_mode::current: tiles_saved = _world->mapIndex.saveTile(TileIndex(_camera.position), _world.get()); break;
+      case save_mode::changed: tiles_saved = _world->mapIndex.saveChanged(_world.get()); break;
+      case save_mode::all:     tiles_saved = _world->mapIndex.saveall(_world.get()); break;
+      }
+      if (!tiles_saved)
+      {
+        _main_window->statusBar()->showMessage("Map save incomplete", 10000);
+        QMessageBox::warning(this, "Map save incomplete",
+          "One or more tiles could not be saved. Failed tiles remain marked as changed.\n\n"
+          "Keep the map open and check log.txt for the failing tile and reason before retrying.");
+        return;
+      }
+      // Update the WDL only after every requested tile has been saved.
+      _world->horizon.save_wdl(_world.get());
 
-    for (auto&& dbc : _dirty_dbcs)
+      for (auto&& dbc : _dirty_dbcs)
+      {
+        dbc->save();
+      }
+    }
+    catch (std::exception const& error)
     {
-      dbc->save();
+      LogError << "[Map Save] Save incomplete: " << error.what() << std::endl;
+      _main_window->statusBar()->showMessage("Map save incomplete", 10000);
+      QMessageBox::warning(this, "Map save incomplete",
+        QString("Saving failed: %1\n\nKeep the map open and retry after resolving the error.")
+          .arg(QString::fromUtf8(error.what())));
+      return;
     }
 
     NOGGIT_ACTION_MGR->purge();

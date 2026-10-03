@@ -211,6 +211,16 @@ void WMO::finishLoading ()
     }
   }
 
+  if (_file_key.stringRepr().find("12xp_eversongtree_yellow") != std::string::npos)
+  {
+    for (size_t i = 0; i < num_materials; ++i)
+      Log << "[EversongTreeWMO] material=" << i
+          << " shader=" << materials[i].shader
+          << " texture_ref1=" << materials[i].texture_offset_1
+          << " texture_ref2=" << materials[i].texture_offset_2
+          << " texture_ref3=" << materials[i].texture_offset_3 << std::endl;
+  }
+
   if (uses_file_data_ids)
   {
     auto const require_chunk = [&](std::uint32_t tag, char const* name) -> RootChunk const&
@@ -1018,6 +1028,17 @@ void WMOGroup::load()
     if (_batches.size() != old_batch_count)
       LogError << "[ModernWMOGroup] Dropped " << (old_batch_count - _batches.size())
                << " invalid render batches from \"" << fname << "\"." << std::endl;
+
+    if (fname.find("12xp_eversongtree_yellow") != std::string::npos)
+    {
+      Log << "[EversongTreeWMO] group=" << fname
+          << " batches=" << _batches.size() << std::endl;
+      for (auto const& batch : _batches)
+        Log << "[EversongTreeWMO] batch_flags=" << static_cast<unsigned>(batch.flags)
+            << " texture=" << batch.texture
+            << " alternate_material=" << static_cast<unsigned>(batch.unused[5])
+            << " indices=" << batch.index_count << std::endl;
+    }
 
     _renderer.initRenderBatches();
 

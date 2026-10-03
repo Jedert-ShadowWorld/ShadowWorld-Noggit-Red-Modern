@@ -169,8 +169,8 @@ public:
   void setFlag(bool to, glm::vec3 const& pos, uint32_t flag);
   bool has_unsaved_changes(const TileIndex& tile) const;
 
-  void saveTile(const TileIndex& tile, World*, bool save_unloaded = false);
-  void saveChanged (World*, bool save_unloaded = false);
+  bool saveTile(const TileIndex& tile, World*, bool save_unloaded = false);
+  bool saveChanged (World*, bool save_unloaded = false);
   void reloadTile(const TileIndex& tile);
   void unloadTiles(const TileIndex& tile);  // unloads all tiles more then x adts away from given
   void unloadTile(const TileIndex& tile);  // unload given tile
@@ -183,7 +183,7 @@ public:
   bool tileLoaded(const TileIndex& tile) const;
 
   void save();
-  void saveall (World*);
+  bool saveall (World*);
 
   MapTile* getTile(const TileIndex& tile) const;
   MapTile* getTileAbove(MapTile* tile) const;

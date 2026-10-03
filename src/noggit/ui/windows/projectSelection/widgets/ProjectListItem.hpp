@@ -14,7 +14,6 @@ namespace Noggit::Ui::Widget
     {
         QString project_name;
         QString project_directory;
-        QString project_last_edited;
         Project::ProjectVersion project_version;
         bool is_favorite;
     };
@@ -27,7 +26,6 @@ namespace Noggit::Ui::Widget
         QLabel* _project_name_label = nullptr;
         QLabel* _project_directory_label = nullptr;
         QLabel* _project_version_label = nullptr;
-        QLabel* _project_last_edited_label = nullptr;
         QLabel* _project_favorite_icon = nullptr;
     public:
         ProjectListItem(const ProjectListItemData& data, QWidget* parent);

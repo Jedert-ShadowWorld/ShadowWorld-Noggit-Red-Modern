@@ -11,6 +11,8 @@
 #include <Listfile.hpp>
 
 #include <QSaveFile>
+#include <QFile>
+#include <memory>
 
 #include <algorithm>
 #include <array>
@@ -593,8 +595,8 @@ namespace Noggit::Formats::ADT
       auto const* mlmd_chunk = find_chunk(chunks, fourcc('M','L','M','D'));
       auto const* mlmx_chunk = find_chunk(chunks, fourcc('M','L','M','X'));
       auto const* mlfd_chunk = find_chunk(chunks, fourcc('M','L','F','D'));
-      if (!mldd_chunk || !mldx_chunk || !mldl_chunk || !mlmd_chunk || !mlmx_chunk
-          || !mlfd_chunk || mlfd_chunk->size != 12 * sizeof(std::uint32_t))
+      if (!mldd_chunk || !mldx_chunk || !mlmd_chunk || !mlmx_chunk
+          || (mlfd_chunk && mlfd_chunk->size != 12 * sizeof(std::uint32_t)))
         throw std::runtime_error("OBJ1 has an unsupported LOD placement layout.");
 
       ChunkView const new_mddf{0, 0, 0, static_cast<std::uint32_t>(mddf_bytes.size())};
@@ -603,13 +605,24 @@ namespace Noggit::Formats::ADT
       auto const map_objects = placement_records<ENTRY_MODF>(modf_bytes, new_modf, "OBJ0 MODF");
       auto const old_doodads = placement_records<ENTRY_MDDF>(obj1, *mldd_chunk, "OBJ1 MLDD");
       auto const old_doodad_extents = placement_records<LodExtent>(obj1, *mldx_chunk, "OBJ1 MLDX");
-      auto const old_doodad_lod = placement_records<std::uint32_t>(obj1, *mldl_chunk, "OBJ1 MLDL");
+      // Shipped Shadowlands OBJ1 files can omit the optional per-doodad LOD chunk.
+      auto const old_doodad_lod = mldl_chunk
+        ? placement_records<std::uint32_t>(obj1, *mldl_chunk, "OBJ1 MLDL")
+        : std::vector<std::uint32_t>(old_doodads.size(), 0);
       auto const old_doodad_indices = mdli_chunk
         ? placement_records<std::uint32_t>(obj1, *mdli_chunk, "OBJ1 MDLI")
         : std::vector<std::uint32_t>{};
       auto const old_map_objects = placement_records<LodMapObject>(obj1, *mlmd_chunk, "OBJ1 MLMD");
       auto const old_map_extents = placement_records<LodExtent>(obj1, *mlmx_chunk, "OBJ1 MLMX");
-      auto counts = placement_records<std::uint32_t>(obj1, *mlfd_chunk, "OBJ1 MLFD");
+      // Older split layouts have no group table; all records form the base group.
+      auto counts = mlfd_chunk
+        ? placement_records<std::uint32_t>(obj1, *mlfd_chunk, "OBJ1 MLFD")
+        : std::vector<std::uint32_t>(12, 0);
+      if (!mlfd_chunk)
+      {
+        counts[3] = static_cast<std::uint32_t>(old_doodads.size());
+        counts[8] = counts[9] = static_cast<std::uint32_t>(old_map_objects.size());
+      }
       if (old_doodads.size() != old_doodad_extents.size()
           || old_doodads.size() != old_doodad_lod.size()
           || old_map_objects.size() != old_map_extents.size()
@@ -791,8 +804,9 @@ namespace Noggit::Formats::ADT
         make_chunk(fourcc('M','L','D','D'), record_bytes(updated_doodads)));
       output = replace_top_level_chunk(output, fourcc('M','L','D','X'),
         make_chunk(fourcc('M','L','D','X'), record_bytes(updated_doodad_extents)));
-      output = replace_top_level_chunk(output, fourcc('M','L','D','L'),
-        make_chunk(fourcc('M','L','D','L'), record_bytes(updated_doodad_lod)));
+      if (mldl_chunk)
+        output = replace_top_level_chunk(output, fourcc('M','L','D','L'),
+          make_chunk(fourcc('M','L','D','L'), record_bytes(updated_doodad_lod)));
       if (mdli_chunk)
         output = replace_top_level_chunk(output, fourcc('M','D','L','I'),
           make_chunk(fourcc('M','D','L','I'), record_bytes(updated_doodad_indices)));
@@ -800,8 +814,10 @@ namespace Noggit::Formats::ADT
         make_chunk(fourcc('M','L','M','D'), record_bytes(updated_map_objects)));
       output = replace_top_level_chunk(output, fourcc('M','L','M','X'),
         make_chunk(fourcc('M','L','M','X'), record_bytes(updated_map_extents)));
-      return replace_top_level_chunk(output, fourcc('M','L','F','D'),
-        make_chunk(fourcc('M','L','F','D'), record_bytes(counts)));
+      if (mlfd_chunk)
+        output = replace_top_level_chunk(output, fourcc('M','L','F','D'),
+          make_chunk(fourcc('M','L','F','D'), record_bytes(counts)));
+      return output;
     }
 
     void validate_tex0_alpha_layout(std::vector<std::uint8_t> const& tex0)
@@ -954,19 +970,65 @@ namespace Noggit::Formats::ADT
       return payload;
     }
 
-    void save_part(std::string const& logical_path, std::vector<std::uint8_t> const& bytes)
+    void save_parts(std::vector<std::pair<std::string, std::vector<std::uint8_t>>> const& parts)
     {
+      struct PendingPart
+      {
+        QString path;
+        bool existed;
+        QByteArray original;
+        std::unique_ptr<QSaveFile> file;
+      };
       auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
-      BlizzardArchive::Listfile::FileKey key(logical_path);
-      auto const disk_path = client_data->getDiskPath(key);
-      std::filesystem::create_directories(std::filesystem::path(disk_path).parent_path());
+      std::vector<PendingPart> pending;
+      pending.reserve(parts.size());
+      for (auto const& [logical_path, bytes] : parts)
+      {
+        BlizzardArchive::Listfile::FileKey key(logical_path);
+        auto const disk_path = client_data->getDiskPath(key);
+        std::filesystem::create_directories(std::filesystem::path(disk_path).parent_path());
+        PendingPart part{QString::fromStdString(disk_path), false, {}, nullptr};
+        part.existed = QFile::exists(part.path);
+        if (part.existed)
+        {
+          QFile original(part.path);
+          if (!original.open(QIODevice::ReadOnly))
+            throw std::runtime_error("Could not read previous modern ADT part: " + disk_path);
+          part.original = original.readAll();
+          if (original.error() != QFileDevice::NoError)
+            throw std::runtime_error("Could not read previous modern ADT part: " + disk_path);
+        }
+        part.file = std::make_unique<QSaveFile>(part.path);
+        if (!part.file->open(QIODevice::WriteOnly)
+            || part.file->write(reinterpret_cast<char const*>(bytes.data()),
+                                 static_cast<qint64>(bytes.size())) != static_cast<qint64>(bytes.size()))
+          throw std::runtime_error("Could not stage modern ADT part: " + disk_path);
+        pending.push_back(std::move(part));
+      }
 
-      QSaveFile file(QString::fromStdString(disk_path));
-      if (!file.open(QIODevice::WriteOnly)
-          || file.write(reinterpret_cast<char const*>(bytes.data()),
-                        static_cast<qint64>(bytes.size())) != static_cast<qint64>(bytes.size())
-          || !file.commit())
-        throw std::runtime_error("Could not atomically save modern ADT part: " + disk_path);
+      for (std::size_t committed = 0; committed < pending.size(); ++committed)
+      {
+        if (pending[committed].file->commit())
+          continue;
+        std::string message = "Could not commit modern ADT part: " + pending[committed].path.toStdString();
+        // A tile spans several files. Restore already committed overrides on failure.
+        for (std::size_t i = 0; i < committed; ++i)
+        {
+          auto const& part = pending[i];
+          bool restored = false;
+          if (part.existed)
+          {
+            QSaveFile restore(part.path);
+            restored = restore.open(QIODevice::WriteOnly)
+              && restore.write(part.original) == part.original.size() && restore.commit();
+          }
+          else
+            restored = QFile::remove(part.path);
+          if (!restored)
+            message += "; rollback failed for " + part.path.toStdString();
+        }
+        throw std::runtime_error(message);
+      }
     }
   }
 
@@ -1056,16 +1118,17 @@ namespace Noggit::Formats::ADT
 
     validate_tex0_alpha_layout(tex0);
 
-    // Build every part before touching disk. QSaveFile then replaces each loose
-    // project override atomically and the original CASC remains read-only.
-    save_part(backing.source.paths[part_index(ShadowlandsADTPart::Root)], root);
-    save_part(backing.source.paths[part_index(ShadowlandsADTPart::Tex0)], tex0);
-    save_part(backing.source.paths[part_index(ShadowlandsADTPart::Obj0)], obj0);
+    // Stage the complete tile before replacing any project override.
+    std::vector<std::pair<std::string, std::vector<std::uint8_t>>> parts;
+    parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Root)], std::move(root));
+    parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Tex0)], std::move(tex0));
+    parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Obj0)], std::move(obj0));
     if (backing.has(ShadowlandsADTPart::Obj1))
-      save_part(backing.source.paths[part_index(ShadowlandsADTPart::Obj1)], obj1);
+      parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Obj1)], std::move(obj1));
     if (backing.has(ShadowlandsADTPart::Lod))
-      save_part(backing.source.paths[part_index(ShadowlandsADTPart::Lod)],
-                backing.part(ShadowlandsADTPart::Lod).bytes);
+      parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Lod)],
+                         backing.part(ShadowlandsADTPart::Lod).bytes);
+    save_parts(parts);
 
     Log << "[ModernADT][Save] Saved split tile ROOT/TEX0/OBJ0/OBJ1/LOD to the project override: "
         << backing.source.root_path << std::endl;

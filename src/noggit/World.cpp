@@ -56,6 +56,20 @@
 
 namespace
 {
+  int maxAlphamapLayer(MapTile* tile)
+  {
+    int max_layer = 0;
+    for (int x = 0; x < 16; ++x)
+    {
+      for (int z = 0; z < 16; ++z)
+      {
+        max_layer = std::max(max_layer,
+          static_cast<int>(tile->getChunk(x, z)->texture_set->num()) - 1);
+      }
+    }
+    return std::min(max_layer, MAX_ALPHAMAPS);
+  }
+
   constexpr std::size_t WDT_FLAGS_OFFSET = 8 + 4 + 8;
   constexpr std::size_t WDT_MAIN_TILES_OFFSET = WDT_FLAGS_OFFSET + 0x20 + 8;
   constexpr std::size_t WDT_MAIN_TILES_SIZE = 8192 * sizeof(int);
@@ -2735,7 +2749,8 @@ void World::exportADTAlphamap(glm::vec3 const& pos)
       if (!dir.exists())
         dir.mkpath(".");
 
-      for (int i = 1; i < 4; ++i)
+      int const max_layer = maxAlphamapLayer(tile);
+      for (int i = 1; i <= max_layer; ++i)
       {
         QImage img = tile->getAlphamapImage(i);
         img.save(path + "/world/maps/" + basename.c_str() + "/" + basename.c_str()
@@ -2898,7 +2913,7 @@ void World::importADTAlphamap(glm::vec3 const& pos, bool cleanup)
   for_tile_at ( pos
     , [&] (MapTile* tile)
     {
-      for (int i = 1; i < 4; ++i)
+      for (int i = 1; i <= MAX_ALPHAMAPS; ++i)
       {
         QString filename = path + "/world/maps/" + basename.c_str() + "/" + basename.c_str()
                        + "_" + std::to_string(tile->index.x).c_str() + "_" + std::to_string(tile->index.z).c_str()
@@ -2908,12 +2923,16 @@ void World::importADTAlphamap(glm::vec3 const& pos, bool cleanup)
           continue;
 
         QImage img;
-        img.load(filename, "PNG");
+        if (!img.load(filename, "PNG"))
+        {
+          LogError << "Could not load alphamap PNG: " << filename.toStdString() << std::endl;
+          continue;
+        }
 
         if (img.width() != 1024 || img.height() != 1024)
           img = img.scaled(1024, 1024, Qt::AspectRatioMode::IgnoreAspectRatio);
 
-        tile->setAlphaImage(img, i, true);
+        tile->setAlphaImage(img, i, cleanup);
       }
 
     }
@@ -3828,7 +3847,8 @@ void World::exportAllADTsAlphamap()
         if (!dir.exists())
           dir.mkpath(".");
 
-        for (int i = 1; i < 4; ++i)
+        int const max_layer = maxAlphamapLayer(mTile);
+        for (int i = 1; i <= max_layer; ++i)
         {
           QImage img = mTile->getAlphamapImage(i);
           img.save(path + "/world/maps/" + basename.c_str() + "/" + basename.c_str()
@@ -4073,7 +4093,7 @@ void World::importAllADTsAlphamaps(QProgressDialog* progress_dialog)
     // ensure loaded
     mTile->wait_until_loaded();
 
-    for (int layer = 1; layer < 4; ++layer)
+    for (int layer = 1; layer <= MAX_ALPHAMAPS; ++layer)
     {
       QString filename = QString("%1/world/maps/%2/%2_%3_%4_layer%5.png")
         .arg(path)
@@ -4086,7 +4106,11 @@ void World::importAllADTsAlphamaps(QProgressDialog* progress_dialog)
         continue;
 
       QImage img;
-      img.load(filename, "PNG");
+      if (!img.load(filename, "PNG"))
+      {
+        LogError << "Could not load alphamap PNG: " << filename.toStdString() << std::endl;
+        continue;
+      }
       if (img.width() != 1024 || img.height() != 1024)
         img = img.scaled(1024, 1024, Qt::IgnoreAspectRatio);
 

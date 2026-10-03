@@ -859,6 +859,27 @@ void ModelRender::initRenderPasses(ModelView const* view, ModelTexUnit const* te
     pass.initUVTypes(_model);
   }
 
+  if (_model->_file_key.stringRepr().find("8fx_ambient_waterfall_ripple02_misty.m2") != std::string::npos
+      || _model->_file_key.stringRepr().find("6fx_waterfall_mist01.m2") != std::string::npos)
+  {
+    Log << "[WaterfallM2] model=" << _model->_file_key.stringRepr()
+        << " uv_animations=" << _model->_texture_animations.size()
+        << " uv_lookups=" << _model->_texture_animation_lookups.size()
+        << " texture_unit_lookups=" << _model->_texture_unit_lookup.size()
+        << " passes=" << _render_passes.size() << std::endl;
+    for (auto const& pass : _render_passes)
+      Log << "[WaterfallM2] shader=" << pass.shader_id
+          << " pixel_shader=" << (pass.pixel_shader ? static_cast<int>(*pass.pixel_shader) : -1)
+          << " blend=" << pass.blend_mode
+          << " textures=" << pass.texture_count
+          << " texture_combo=" << pass.texture_combo_index
+          << " uv_combo=" << pass.texture_coord_combo_index
+          << " uv0=" << pass.uv_animations[0]
+          << " uv1=" << pass.uv_animations[1]
+          << " tex_unit0=" << static_cast<int>(pass.tu_lookups[0])
+          << " tex_unit1=" << static_cast<int>(pass.tu_lookups[1]) << std::endl;
+  }
+
   std::sort(_render_passes.begin(), _render_passes.end());
 }
 
@@ -1026,25 +1047,13 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     return animation_index;
   };
 
-  int16_t tex_anim_lookup = texture_animation(uv_animations[0]);
-
-  if (tex_anim_lookup != -1)
-  {
-    m2_shader.uniform("tex_matrix_1", m->_texture_animations[tex_anim_lookup].mat);
-    if (texture_count > 1)
-    {
-      tex_anim_lookup = texture_animation(uv_animations[1]);
-      if (tex_anim_lookup != -1)
-        m2_shader.uniform("tex_matrix_2", m->_texture_animations[tex_anim_lookup].mat);
-      else
-        m2_shader.uniform("tex_matrix_2", unit);
-    }
-  }
-  else
-  {
-    m2_shader.uniform("tex_matrix_1", unit);
-    m2_shader.uniform("tex_matrix_2", unit);
-  }
+  int16_t const first_tex_anim = texture_animation(uv_animations[0]);
+  int16_t const second_tex_anim = texture_count > 1
+    ? texture_animation(uv_animations[1]) : -1;
+  m2_shader.uniform("tex_matrix_1", first_tex_anim != -1
+    ? m->_texture_animations[first_tex_anim].mat : unit);
+  m2_shader.uniform("tex_matrix_2", second_tex_anim != -1
+    ? m->_texture_animations[second_tex_anim].mat : unit);
 
   GLint ps = static_cast<GLint>(pixel_shader.value());
   if (model_render_state.pixel_shader != ps)

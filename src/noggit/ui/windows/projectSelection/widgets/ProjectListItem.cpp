@@ -18,7 +18,6 @@ namespace Noggit::Ui::Widget
     layout->setColumnStretch(0, 0);
     layout->setColumnStretch(1, 1);
     layout->setColumnStretch(2, 0);
-    layout->setColumnStretch(3, 0);
 
     QIcon icon;
     if (data.project_version == Project::ProjectVersion::WOTLK)
@@ -31,9 +30,9 @@ namespace Noggit::Ui::Widget
       icon = QIcon(":/icon-wrath");
 
     _project_version_icon = new QLabel("", this);
-    _project_version_icon->setPixmap(icon.pixmap(QSize(66, 66)));
+    _project_version_icon->setPixmap(icon.pixmap(QSize(56, 56)));
     _project_version_icon->setAlignment(Qt::AlignCenter);
-    _project_version_icon->setFixedSize(72, 72);
+    _project_version_icon->setFixedSize(60, 60);
 
     auto project_name = toCamelCase(QString(data.project_name));
     _project_name_label = new QLabel(project_name, this);
@@ -46,7 +45,7 @@ namespace Noggit::Ui::Widget
         " padding: 0px;"
         " }");
     _project_name_label->setToolTip(project_name);
-    _project_name_label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    _project_name_label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     _project_directory_label = new QLabel(data.project_directory, this);
     _project_directory_label->setObjectName("project-directory-label");
@@ -57,7 +56,7 @@ namespace Noggit::Ui::Widget
         " padding: 0px;"
         " }");
     _project_directory_label->setToolTip(data.project_directory);
-    _project_directory_label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    _project_directory_label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     auto directory_effect = new QGraphicsOpacityEffect(this);
     directory_effect->setOpacity(0.9);
@@ -83,16 +82,6 @@ namespace Noggit::Ui::Widget
         " padding: 0px;"
         " }");
 
-    _project_last_edited_label = new QLabel(data.project_last_edited, this);
-    _project_last_edited_label->setObjectName("project-date-label");
-    _project_last_edited_label->setStyleSheet(
-        "QLabel#project-date-label {"
-        " color: #87788e;"
-        " font-size: 9px;"
-        " padding: 0px;"
-        " }");
-    _project_last_edited_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
     if (data.is_favorite)
     {
       _project_favorite_icon = new QLabel("", this);
@@ -114,18 +103,17 @@ namespace Noggit::Ui::Widget
         "QLabel { background: transparent; }");
 
     layout->addWidget(_project_version_icon, 0, 0, 3, 1, Qt::AlignVCenter);
-    layout->addWidget(_project_name_label, 0, 1, 1, 2);
-    layout->addWidget(_project_directory_label, 1, 1, 1, 2);
-    layout->addWidget(_project_version_label, 2, 1, 1, 1);
-    layout->addWidget(_project_last_edited_label, 2, 2, 1, 1, Qt::AlignRight);
+    layout->addWidget(_project_name_label, 0, 1);
+    layout->addWidget(_project_directory_label, 1, 1);
+    layout->addWidget(_project_version_label, 2, 1);
 
     if (_project_favorite_icon)
-      layout->addWidget(_project_favorite_icon, 0, 3, 1, 1, Qt::AlignRight | Qt::AlignTop);
+      layout->addWidget(_project_favorite_icon, 0, 2, 1, 1, Qt::AlignRight | Qt::AlignTop);
   }
 
   QSize ProjectListItem::minimumSizeHint() const
   {
-    return QSize(360, 88);
+    return QSize(240, 88);
   }
 
   QString ProjectListItem::toCamelCase(const QString& s)
