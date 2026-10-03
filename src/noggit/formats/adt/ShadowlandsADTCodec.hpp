@@ -59,6 +59,10 @@ namespace Noggit::Formats::ADT
     // pipeline; OBJ1 and LOD are retained when present.
     [[nodiscard]] static ShadowlandsADTBackingStore loadBackingStore(std::string const& root_path);
 
+    // Builds the required split parts for an explicitly new tile, without CASC reads.
+    [[nodiscard]] static ShadowlandsADTBackingStore createBackingStore(
+      std::string const& root_path, std::vector<std::uint8_t> const& legacy_adt);
+
     // Converts Noggit's canonical legacy serialization back into the modern
     // split layout while retaining chunks that the editor does not own.
     static void saveFromLegacy(ShadowlandsADTBackingStore const& backing,

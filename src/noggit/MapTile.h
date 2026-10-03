@@ -178,6 +178,7 @@ private:
 
   tile_mode _mode;
   bool _tile_is_being_reloaded;
+  bool _new_split_tile = false;
 
   bool _extents_dirty = true;
   bool _combined_extents_dirty = true;

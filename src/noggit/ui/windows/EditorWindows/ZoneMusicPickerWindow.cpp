@@ -2,6 +2,7 @@
 #include "ZoneMusicPickerWindow.h"
 
 #include <noggit/DBC.h>
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 #include <noggit/ui/FontAwesome.hpp>
 #include <noggit/ui/windows/SoundPlayer/SoundEntryPlayer.h>
 
@@ -279,11 +280,11 @@ namespace Noggit
                 int day_sound_entry = record.getInt(ZoneMusicDB::DayMusic);
                 int night_sound_entry = record.getInt(ZoneMusicDB::NightMusic);
 
-                if (day_sound_entry != 0 && gSoundEntriesDB.CheckIfIdExists(day_sound_entry)) // some entries reference sound entries that don't exist
+                if (day_sound_entry != 0)
                 {
-                    DBCFile::Record day_sound_record = gSoundEntriesDB.getByID(day_sound_entry);
                     std::stringstream ss_day;
-                    ss_day << day_sound_entry << "-" << day_sound_record.getString(SoundEntriesDB::Name);
+                    ss_day << day_sound_entry << "-" << (gSoundEntriesDB.CheckIfIdExists(day_sound_entry)
+                        ? gSoundEntriesDB.getByID(day_sound_entry).getString(SoundEntriesDB::Name) : "Unresolved sound");
                     _day_music_button->setText(ss_day.str().c_str());
                     _day_music_button->setProperty("id", day_sound_entry);
                 }
@@ -293,11 +294,11 @@ namespace Noggit
                     _day_music_button->setProperty("id", 0);
                 }
 
-                if (night_sound_entry != 0 && gSoundEntriesDB.CheckIfIdExists(night_sound_entry))
+                if (night_sound_entry != 0)
                 {
-                    DBCFile::Record night_sound_record = gSoundEntriesDB.getByID(night_sound_entry);
                     std::stringstream ss_night;
-                    ss_night << night_sound_entry << "-" << night_sound_record.getString(SoundEntriesDB::Name);
+                    ss_night << night_sound_entry << "-" << (gSoundEntriesDB.CheckIfIdExists(night_sound_entry)
+                        ? gSoundEntriesDB.getByID(night_sound_entry).getString(SoundEntriesDB::Name) : "Unresolved sound");
                     _night_music_button->setText(ss_night.str().c_str());
                     _night_music_button->setProperty("id", night_sound_entry);
                 }
@@ -334,7 +335,7 @@ namespace Noggit
                 record.write(ZoneMusicDB::DayMusic, _day_music_button->property("id").toInt());
                 record.write(ZoneMusicDB::NightMusic, _night_music_button->property("id").toInt());
 
-                gZoneMusicDB.save();
+                if (!Noggit::ClientData::saveEditorDatabase(gZoneMusicDB, this)) return;
             }
             catch (ZoneMusicDB::NotFound)
             {

@@ -2,6 +2,7 @@
 
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/DBC.h>
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 #include <noggit/ui/FontAwesome.hpp>
 #include <noggit/ui/tools/MapCreationWizard/Ui/MapCreationWizard.hpp>
 #include <noggit/ui/tools/UiCommon/expanderwidget.h>
@@ -398,7 +399,7 @@ namespace Noggit
 
                 new_record.write(AreaDB::MinElevation, -500.0f);
                 // save dbc instantly ?
-                gAreaDB.save();
+                if (!Noggit::ClientData::saveEditorDatabase(gAreaDB, this)) return;
                 // add to tree
                 auto areawidgetitem = add_area(params_id_spinbox->value());
                 // select the new item
@@ -494,7 +495,7 @@ namespace Noggit
 
                 new_record.write(AreaDB::MinElevation, -500.0f); // loc mask, only verified for enUS
                 // save dbc instantly ?
-                gAreaDB.save();
+                if (!Noggit::ClientData::saveEditorDatabase(gAreaDB, this)) return;
                 // add to tree
                 auto areawidgetitem = add_area(params_id_spinbox->value());
                 // select the new item
@@ -884,11 +885,11 @@ namespace Noggit
                     auto sound_ambiance_record = gSoundAmbienceDB.getByID(sound_ambiance_id);
 
                     int day_sound_id = sound_ambiance_record.getInt(SoundAmbienceDB::SoundEntry_day);
-                    if (day_sound_id != 0 && gSoundEntriesDB.CheckIfIdExists(day_sound_id))
+                    if (day_sound_id != 0)
                     {
-                        auto sound_entry_day_record = gSoundEntriesDB.getByID(day_sound_id);
                         std::stringstream ss_day;
-                        ss_day << day_sound_id << "-" << sound_entry_day_record.getString(SoundEntriesDB::Name);
+                        ss_day << day_sound_id << "-" << (gSoundEntriesDB.CheckIfIdExists(day_sound_id)
+                            ? gSoundEntriesDB.getByID(day_sound_id).getString(SoundEntriesDB::Name) : "Unresolved sound");
                         _sound_ambiance_day_button->setText(ss_day.str().c_str());
                         _sound_ambiance_day_button->setProperty("id", day_sound_id);
                     }
@@ -899,11 +900,11 @@ namespace Noggit
                     }
 
                     int night_sound_id = sound_ambiance_record.getInt(SoundAmbienceDB::SoundEntry_night);
-                    if (night_sound_id != 0 && gSoundEntriesDB.CheckIfIdExists(night_sound_id))
+                    if (night_sound_id != 0)
                     {
-                        auto sound_entry_night_record = gSoundEntriesDB.getByID(night_sound_id);
                         std::stringstream ss_night;
-                        ss_night << night_sound_id << "-" << sound_entry_night_record.getString(SoundEntriesDB::Name);
+                        ss_night << night_sound_id << "-" << (gSoundEntriesDB.CheckIfIdExists(night_sound_id)
+                            ? gSoundEntriesDB.getByID(night_sound_id).getString(SoundEntriesDB::Name) : "Unresolved sound");
                         _sound_ambiance_night_button->setText(ss_night.str().c_str());
                         _sound_ambiance_night_button->setProperty("id", night_sound_id);
                     }
@@ -965,7 +966,7 @@ namespace Noggit
                 if (soundambience_day && !soundambience_night) // if day is set but not night, set night to day
                     soundambience_night = soundambience_day;
                 else if (!soundambience_day && soundambience_night) // night to day
-                    soundambience_night = soundambience_day;
+                    soundambience_day = soundambience_night;
 
                 if (soundambience_day && soundambience_night) // check if both day and night are set
                 {
@@ -989,7 +990,7 @@ namespace Noggit
 
                         new_record.write(SoundAmbienceDB::SoundEntry_day, soundambience_day);
                         new_record.write(SoundAmbienceDB::SoundEntry_night, soundambience_night);
-                        gSoundAmbienceDB.save();
+                        if (!Noggit::ClientData::saveEditorDatabase(gSoundAmbienceDB, this)) return;
                         record.write(AreaDB::SoundAmbience, new_id);
                     }
                 }
@@ -1016,7 +1017,7 @@ namespace Noggit
                 record.write(AreaDB::AmbientMultiplier, _ambiant_multiplier->value() / 100.0f);
                 record.write(AreaDB::LightId, 0); // never used
 
-                gAreaDB.save();
+                if (!Noggit::ClientData::saveEditorDatabase(gAreaDB, this)) return;
 
                 load_area(_area_id_label->text().toInt());// reload ui, especially for night/day ambience
             }

@@ -253,6 +253,7 @@ private:
   bool mBigAlpha;
   bool mHasAGlobalWMO;
   bool changed;
+  bool _needs_wdt_creation = false;
 
   bool _sort_models_by_size_class;
 
@@ -260,7 +261,7 @@ private:
 
   uint32_t highestGUID;
 
-  MPHD mphd;
+  MPHD mphd{};
 
   // Holding all MapTiles there can be in a World.
   MapTileEntry mTiles[64][64];

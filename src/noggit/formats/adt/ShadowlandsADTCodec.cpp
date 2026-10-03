@@ -1081,6 +1081,59 @@ namespace Noggit::Formats::ADT
     return backing;
   }
 
+  ShadowlandsADTBackingStore ShadowlandsADTCodec::createBackingStore(
+    std::string const& root_path, std::vector<std::uint8_t> const& legacy_adt)
+  {
+    auto const chunks = parse_chunks(legacy_adt, "new legacy ADT");
+    auto const* version = find_chunk(chunks, fourcc('M','V','E','R'));
+    if (!version || version->size != sizeof(std::uint32_t))
+      throw std::runtime_error("New ADT has no valid MVER chunk.");
+
+    ShadowlandsADTBackingStore backing;
+    backing.source = makeSource(root_path);
+    for (auto part : {ShadowlandsADTPart::Root, ShadowlandsADTPart::Tex0, ShadowlandsADTPart::Obj0})
+    {
+      backing.part(part).present = true;
+      backing.part(part).bytes = chunk_bytes(legacy_adt, *version);
+    }
+    auto& root = backing.part(ShadowlandsADTPart::Root).bytes;
+    auto& tex0 = backing.part(ShadowlandsADTPart::Tex0).bytes;
+    auto& obj0 = backing.part(ShadowlandsADTPart::Obj0).bytes;
+    auto append = [](auto& destination, auto const& bytes)
+    {
+      destination.insert(destination.end(), bytes.begin(), bytes.end());
+    };
+    append(root, make_chunk(fourcc('M','H','D','R'), std::vector<std::uint8_t>(sizeof(MHDR), 0)));
+    append(tex0, make_chunk(fourcc('M','D','I','D'), {}));
+    append(obj0, make_chunk(fourcc('M','D','D','F'), {}));
+    append(obj0, make_chunk(fourcc('M','O','D','F'), {}));
+
+    std::size_t count = 0;
+    for (auto const& chunk : chunks)
+    {
+      if (chunk.magic != fourcc('M','C','N','K'))
+        continue;
+      if (chunk.size < sizeof(MapChunkHeader))
+        throw std::runtime_error("New ADT has a truncated MCNK header.");
+      MapChunkHeader header{};
+      std::memcpy(&header, legacy_adt.data() + chunk.payload, sizeof(header));
+      header.nLayers = header.nDoodadRefs = header.nMapObjRefs = 0;
+      header.ofsHeight = header.ofsNormal = header.ofsLayer = header.ofsRefs = 0;
+      header.ofsAlpha = header.sizeAlpha = header.ofsShadow = header.sizeShadow = 0;
+      header.ofsSndEmitters = header.nSndEmitters = header.ofsLiquid = header.sizeLiquid = 0;
+      header.ofsMCCV = 0;
+      std::vector<std::uint8_t> payload(sizeof(header));
+      std::memcpy(payload.data(), &header, sizeof(header));
+      append(root, make_chunk(fourcc('M','C','N','K'), payload));
+      append(tex0, make_chunk(fourcc('M','C','N','K'), {}));
+      append(obj0, make_chunk(fourcc('M','C','N','K'), {}));
+      ++count;
+    }
+    if (count != 256)
+      throw std::runtime_error("New ADT must contain exactly 256 MCNK chunks.");
+    return backing;
+  }
+
   void ShadowlandsADTCodec::saveFromLegacy(
     ShadowlandsADTBackingStore const& backing,
     std::vector<std::uint8_t> const& legacy_adt)

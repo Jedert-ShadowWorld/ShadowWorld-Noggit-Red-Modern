@@ -3,6 +3,7 @@
 // #include <noggit/ui/ZoneIDBrowser.h>
 #include "SoundEntryPickerWindow.h"
 #include <noggit/DBC.h>
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 #include <noggit/ui/FontAwesome.hpp>
 
 #include <QtWidgets/QVBoxLayout>
@@ -221,11 +222,11 @@ namespace Noggit
 
                 int sound_entry = record.getInt(ZoneIntroMusicTableDB::SoundId);
 
-                if (sound_entry != 0 && gSoundEntriesDB.CheckIfIdExists(sound_entry))
+                if (sound_entry != 0)
                 {
-                    DBCFile::Record sound_record = gSoundEntriesDB.getByID(sound_entry);
                     std::stringstream ss;
-                    ss << sound_entry << "-" << sound_record.getString(SoundEntriesDB::Name);
+                    ss << sound_entry << "-" << (gSoundEntriesDB.CheckIfIdExists(sound_entry)
+                        ? gSoundEntriesDB.getByID(sound_entry).getString(SoundEntriesDB::Name) : "Unresolved sound");
                     _sound_button->setText(ss.str().c_str());
                     _sound_button->setProperty("id", sound_entry);
                 }
@@ -259,7 +260,7 @@ namespace Noggit
                 record.write(ZoneIntroMusicTableDB::Priority, _priority);
                 record.write(ZoneIntroMusicTableDB::MinDelayMinutes, _min_delay_spinbox->value());
 
-                gZoneIntroMusicTableDB.save();
+                if (!Noggit::ClientData::saveEditorDatabase(gZoneIntroMusicTableDB, this)) return;
             }
             catch (ZoneIntroMusicTableDB::NotFound)
             {

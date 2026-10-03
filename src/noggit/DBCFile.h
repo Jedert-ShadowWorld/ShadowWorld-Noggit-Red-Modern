@@ -23,6 +23,9 @@ public:
   void save();
 
   void overwriteWith(DBCFile const& file);
+  void markSaved();
+  void useSaveBaseline(DBCFile const& file);
+  std::shared_ptr<DBCFile> saveBaseline() const { return _saveBaseline; }
 
   static DBCFile createNew(std::string filename, std::uint32_t fieldCount, std::uint32_t recordSize);
 
@@ -134,6 +137,7 @@ private:
   std::uint32_t stringSize = 0;
   std::vector<unsigned char> data;
   std::vector<char> stringTable;
+  std::shared_ptr<DBCFile> _saveBaseline;
   std::shared_ptr<std::mutex> _lookupMutex = std::make_shared<std::mutex>();
   std::unordered_map<size_t, std::unordered_map<unsigned int, size_t>> _recordIndices;
   std::unordered_map<size_t, std::unordered_set<unsigned int>> _missingIdWarnings;

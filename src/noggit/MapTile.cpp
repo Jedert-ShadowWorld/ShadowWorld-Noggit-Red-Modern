@@ -601,8 +601,9 @@ bool MapTile::save(World* world, bool save_using_mclq_liquids)
   {
     try
     {
-      modern_backing = Noggit::Formats::ADT::ShadowlandsADTCodec::loadBackingStore(
-        _file_key.filepath());
+      if (!_new_split_tile)
+        modern_backing = Noggit::Formats::ADT::ShadowlandsADTCodec::loadBackingStore(
+          _file_key.filepath());
 
       // Modern split ADTs require full 8-bit alpha maps when MCLY does not set
       // FLAG_ALPHA_COMPRESSED. Writing the legacy 4-bit (2048-byte) layout
@@ -991,12 +992,16 @@ bool MapTile::save(World* world, bool save_using_mclq_liquids)
   }
 #endif
 
-  if (modern_backing)
+  if (modern_backing || (_new_split_tile
+      && client_data->version() != BlizzardArchive::ClientVersion::WOTLK))
   {
     try
     {
       auto const legacy_bytes = lADTFile.data_up_to(lCurrentPosition);
       std::vector<std::uint8_t> serialized(legacy_bytes.begin(), legacy_bytes.end());
+      if (!modern_backing)
+        modern_backing = Noggit::Formats::ADT::ShadowlandsADTCodec::createBackingStore(
+          _file_key.filepath(), serialized);
       Noggit::Formats::ADT::ShadowlandsADTCodec::saveFromLegacy(*modern_backing, serialized);
     }
     catch (std::exception const& error)
@@ -1030,6 +1035,7 @@ bool MapTile::save(World* world, bool save_using_mclq_liquids)
   lObjectInstances.clear();
   lModelInstances.clear();
   lModels.clear();
+  _new_split_tile = false;
   return true;
 }
 
@@ -1190,6 +1196,7 @@ std::vector<uint32_t>* MapTile::get_uids()
 
 void MapTile::initEmptyChunks()
 {
+  _new_split_tile = true;
   for (int nextChunk = 0; nextChunk < 256; ++nextChunk)
   {
     mChunks[nextChunk / 16][nextChunk % 16] = std::make_unique<MapChunk> (this, nullptr, mBigAlpha, _mode, _context, true, nextChunk);

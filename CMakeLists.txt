@@ -128,6 +128,7 @@ option(BUILD_LIBNOISE_EXAMPLES "Build libnoise examples" OFF)
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/libnoise")
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/glm")
 ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/rapidfuzz-cpp")
+ADD_SUBDIRECTORY("${EXTERNAL_SOURCE_DIR}/barebones-dbc-core")
 
 # Add the found include directories to our include list.
 INCLUDE_DIRECTORIES(SYSTEM "${CMAKE_SOURCE_DIR}/include/")
@@ -321,6 +322,7 @@ ENDIF()
 
 
 TARGET_LINK_LIBRARIES (noggit
+  barebones-dbc-core
   ${OPENGL_LIBRARIES}
   StormLib
   CascLib
@@ -445,6 +447,11 @@ add_custom_command(TARGET noggit POST_BUILD
         $<TARGET_FILE_DIR:noggit>/definitions/.git)
 
 # add distribution noggit definitions tables
+add_custom_command(TARGET noggit POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${PROJECT_SOURCE_DIR}/dist/native-db2-definitions"
+        "$<TARGET_FILE_DIR:noggit>/native-db2-definitions")
+
 # TODO : git repo
 add_custom_command(TARGET noggit POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory

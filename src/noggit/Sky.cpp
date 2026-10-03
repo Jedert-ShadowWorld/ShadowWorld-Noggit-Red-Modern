@@ -21,6 +21,7 @@
 #include <QFile>
 #include <QTextStream>
 #include <QStringList>
+#include <QMessageBox>
 
 const float skymul = 36.0f;
 
@@ -1522,7 +1523,7 @@ void Sky::save_to_dbc()
   try 
   {
     // assuming a new unused id is already set with is_new_record
-    DBCFile::Record lightDbRecord = is_new_record ? gLightDB.addRecord(Id) : gLightDB.getByID(Id);
+    DBCFile::Record lightDbRecord = !gLightDB.CheckIfIdExists(Id) ? gLightDB.addRecord(Id) : gLightDB.getByID(Id);
 
     if (is_new_record)
         lightDbRecord.write(LightDB::Map, mapId);
@@ -1538,9 +1539,9 @@ void Sky::save_to_dbc()
     bool save_floats_dbc = false;
     bool save_skybox_dbc = false;
 
-    for (int param_id = 0; param_id < NUM_SkyFloatParamsNames; param_id++)
+    for (int param_id = 0; param_id < NUM_SkyParamsNames; param_id++)
     {
-      auto param_opt = getCurrentParam();
+      auto param_opt = getParam(param_id);
       if (!param_opt.has_value())
         continue;
 
@@ -1569,7 +1570,7 @@ void Sky::save_to_dbc()
           save_param_dbc = true;
           try
                 {
-                    DBCFile::Record light_param = sky_param->_is_new_param_record ? gLightParamsDB.addRecord(lightParam_dbc_id)
+                    DBCFile::Record light_param = !gLightParamsDB.CheckIfIdExists(lightParam_dbc_id) ? gLightParamsDB.addRecord(lightParam_dbc_id)
                         : gLightParamsDB.getByID(lightParam_dbc_id);
 
                     light_param.write(LightParamsDB::highlightSky, int(sky_param->highlight_sky()));
@@ -1631,7 +1632,7 @@ void Sky::save_to_dbc()
         {
           try
           {
-            DBCFile::Record rec = sky_param->_is_new_param_record ? gLightIntBandDB.addRecord(light_int_start + i) 
+            DBCFile::Record rec = !gLightIntBandDB.CheckIfIdExists(light_int_start + i) ? gLightIntBandDB.addRecord(light_int_start + i)
                                                                   : gLightIntBandDB.getByID(light_int_start + i);
 
             int entries = static_cast<int>(sky_param->colorRows[i].size());
@@ -1676,7 +1677,7 @@ void Sky::save_to_dbc()
         {
           try
           {
-            DBCFile::Record rec = sky_param->_is_new_param_record ? gLightFloatBandDB.addRecord(light_float_start + i) 
+            DBCFile::Record rec = !gLightFloatBandDB.CheckIfIdExists(light_float_start + i) ? gLightFloatBandDB.addRecord(light_float_start + i)
                                                                   : gLightFloatBandDB.getByID(light_float_start + i);
             int entries = static_cast<int>(sky_param->floatParams[i].size());
 
@@ -1706,18 +1707,27 @@ void Sky::save_to_dbc()
       }
 
       // sky_param->_need_save = false;
-      sky_param->_is_new_param_record = false;
     }
 
-    gLightDB.save();
+    bool const modern = Noggit::Project::CurrentProject::get()->projectVersion != Noggit::Project::ProjectVersion::WOTLK;
+    if (!modern) gLightDB.save();
+    // Save dependencies before publishing a new modern Light reference.
+    if (modern && save_param_dbc) gLightParamsDB.save();
     if (save_colors_dbc)
         gLightIntBandDB.save();
-    if (save_colors_dbc)
+    if (save_floats_dbc)
         gLightFloatBandDB.save();
-    if (save_param_dbc)
+    if (!modern && save_param_dbc)
         gLightParamsDB.save();
+    if (modern) gLightDB.save();
 
     is_new_record = false;
+    for (int index = 0; index < NUM_SkyParamsNames; ++index)
+    {
+      auto parameter = getParam(index);
+      if (!parameter || !*parameter) continue;
+      (*parameter)->_is_new_param_record = false;
+    }
   }
   catch (DBCFile::AlreadyExists)
   {
@@ -1728,6 +1738,11 @@ void Sky::save_to_dbc()
   {
     LogError << "DBCFile::NotFound When trying to add light.dbc record for the entry " << Id << std::endl;
     assert(false);
+  }
+  catch (std::exception const& error)
+  {
+    LogError << "Sky database save failed: " << error.what() << std::endl;
+    QMessageBox::warning(nullptr, "Sky database save failed", QString::fromUtf8(error.what()));
   }
   catch (...)
   {

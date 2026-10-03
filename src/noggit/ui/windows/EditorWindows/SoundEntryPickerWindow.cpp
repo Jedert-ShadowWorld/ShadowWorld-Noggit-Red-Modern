@@ -1,5 +1,6 @@
 #include "SoundEntryPickerWindow.h"
 #include <noggit/DBC.h>
+#include <noggit/project/CurrentProject.hpp>
 #include <noggit/ui/FontAwesome.hpp>
 #include <noggit/ui/windows/SoundPlayer/SoundEntryPlayer.h>
 // #include <noggit/ui/ZoneIDBrowser.h>
@@ -151,6 +152,14 @@ namespace Noggit
 
 
             auto save_music_entry_btn = new QPushButton("Save changes", this);
+            auto project = Noggit::Project::CurrentProject::get();
+            if (project && project->projectVersion != Noggit::Project::ProjectVersion::WOTLK)
+            {
+                duplicate_entry_btn->setEnabled(false);
+                save_music_entry_btn->setEnabled(false);
+                duplicate_entry_btn->setToolTip("Modern SoundKit/SoundKitEntry editing is not implemented in this legacy sound editor.");
+                save_music_entry_btn->setToolTip(duplicate_entry_btn->toolTip());
+            }
             Editor_layout->addWidget(save_music_entry_btn, 0, Qt::AlignRight);
 
             Editor_layout->addStretch();

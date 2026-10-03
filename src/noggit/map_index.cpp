@@ -84,6 +84,7 @@ MapIndex::MapIndex (const std::string &pBasename, int map_id, World* world,
 
   if (create_empty)
   {
+    _needs_wdt_creation = true;
 
     mHasAGlobalWMO = false;
     mBigAlpha = true;
@@ -218,6 +219,13 @@ void MapIndex::ensureModernWdtInProject()
   auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
   if (client_data->version() == BlizzardArchive::ClientVersion::WOTLK)
   {
+    return;
+  }
+
+  // New maps have no archive WDT to copy; serialize the current tile index.
+  if (_needs_wdt_creation)
+  {
+    save();
     return;
   }
 
@@ -377,6 +385,7 @@ void MapIndex::save()
   f.close();
 
   changed = false;
+  _needs_wdt_creation = false;
 }
 
 void MapIndex::enterTile(const TileIndex& tile)

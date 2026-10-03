@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/client_data/ShadowlandsMapDB2Bridge.hpp>
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 
 #include <noggit/DBC.h>
 #include <noggit/Log.h>
@@ -371,6 +372,7 @@ namespace Noggit::ClientData
       load_optional(database, client_data, "SoundAmbience");
       load_optional(database, client_data, "ZoneMusic");
       load_optional(database, client_data, "ZoneIntroMusicTable");
+      loadModernEditorSoundDB2();
 
       Table* wmo_area = load_optional(database, client_data, "WMOAreaTable");
       Log << "[ModernDB2][Map] Bridging WMOAreaTable" << std::endl;

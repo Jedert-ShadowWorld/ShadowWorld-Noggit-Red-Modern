@@ -3,6 +3,7 @@
 #include <noggit/DBCFile.h>
 #include <noggit/Log.h>
 #include <noggit/project/CurrentProject.hpp>
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 
 #include <ClientFile.hpp>
 
@@ -63,10 +64,18 @@ void DBCFile::open(std::shared_ptr<BlizzardArchive::ClientData> clientData)
   invalidateLookupCaches();
 
   f.close();
+  markSaved();
 }
 
 void DBCFile::save()
 {
+  auto project = Noggit::Project::CurrentProject::get();
+  if (project && project->projectVersion != Noggit::Project::ProjectVersion::WOTLK)
+  {
+    Noggit::ClientData::saveModernEditorDB2(*this, filename);
+    markSaved();
+    return;
+  }
   QString str = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
   if (!(str.endsWith('\\') || str.endsWith('/')))
   {
@@ -93,6 +102,18 @@ void DBCFile::save()
   stream.close();
 }
 
+void DBCFile::markSaved()
+{
+  auto snapshot = std::make_shared<DBCFile>(*this);
+  snapshot->_saveBaseline.reset();
+  _saveBaseline = std::move(snapshot);
+}
+
+void DBCFile::useSaveBaseline(DBCFile const& file)
+{
+  _saveBaseline = file._saveBaseline;
+}
+
 void DBCFile::overwriteWith(DBCFile const& file)
 {
   filename = file.filename;
@@ -103,6 +124,8 @@ void DBCFile::overwriteWith(DBCFile const& file)
   data = file.data;
   stringTable = file.stringTable;
   invalidateLookupCaches();
+  if (file._saveBaseline) _saveBaseline = file._saveBaseline;
+  else markSaved();
 }
 
 DBCFile DBCFile::createNew(std::string filename, std::uint32_t fieldCount, std::uint32_t recordSize)

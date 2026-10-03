@@ -4,6 +4,7 @@
 
 #include <noggit/application/Utils.hpp>
 #include <noggit/DBC.h>
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
 #include <noggit/project/CurrentProject.hpp>
@@ -990,22 +991,6 @@ void MapCreationWizard::saveCurrentEntry()
         }
     }
 
-    // Create WDT empty file for new map
-    std::stringstream filename;
-    filename << "World\\Maps\\" << map_internal_name << "\\" << map_internal_name << ".wdt";
-
-    auto project_path = std::filesystem::path(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
-
-    QDir dir((project_path / "/world/maps/" / map_internal_name).string().c_str());
-
-    if (!dir.exists())
-      dir.mkpath(".");
-
-    auto filepath = project_path / BlizzardArchive::ClientData::normalizeFilenameInternal (filename.str());
-
-    QFile file(filepath.string().c_str());
-    file.open(QIODevice::WriteOnly);
-    file.close();
   }
 
   // Save ADTs and WDT to disk
@@ -1021,22 +1006,51 @@ void MapCreationWizard::saveCurrentEntry()
   {
       _world->mapIndex.removeGlobalWmo();
   }
-  _world->mapIndex.saveChanged(_world.get(), true);
-  _world->mapIndex.save(); // save wdt file
-  
-  if (_is_new_record)
+  try
   {
-    _world->mapIndex.create_empty_wdl(); // create default wdl
-
-    // save default maxguid to avoid the uid fix popup
-    _world->mapIndex.saveMaxUID();
-
+    if (!_world->mapIndex.saveChanged(_world.get(), true))
+    {
+      QMessageBox::warning(this, "Map save failed",
+          "Some map tiles could not be saved. The map database was not updated. Check the log and retry.");
+      return;
+    }
+    _world->mapIndex.save(); // save wdt file
+    if (_is_new_record)
+    {
+      _world->mapIndex.create_empty_wdl();
+      _world->mapIndex.saveMaxUID();
+    }
+  }
+  catch (std::exception const& error)
+  {
+    LogError << "[Map Creation] Save failed: " << error.what() << std::endl;
+    QMessageBox::warning(this, "Map save failed", QString::fromUtf8(error.what()));
+    return;
+  }
+  auto save_default_light = [&]() {
+    if (!_is_new_record) return;
     // TODO save mapdifficulty.dbc
     //
 
     // save default global light.dbc entry for new maps
     try
     {
+        bool modern = Noggit::Project::CurrentProject::get()->projectVersion != Noggit::Project::ProjectVersion::WOTLK;
+        std::array<std::uint32_t, 8> parameters{};
+        if (modern)
+        {
+          for (auto const& light : gLightDB)
+            if (light.getUInt(LightDB::Map) == 0)
+            {
+              for (std::size_t slot = 0; slot < parameters.size(); ++slot)
+              {
+                auto id = light.getUInt(LightDB::DataIDs + slot);
+                if (gLightParamsDB.CheckIfIdExists(id)) parameters[slot] = id;
+              }
+              if (parameters[0]) break;
+            }
+          if (!parameters[0]) throw std::runtime_error("No usable modern default LightParams record was found.");
+        }
         int new_id = gLightDB.getEmptyRecordID();
         DBCFile::Record record = gLightDB.addRecord(new_id);
         record.write(LightDB::Map, _cur_map_id);
@@ -1047,6 +1061,9 @@ void MapCreationWizard::saveCurrentEntry()
         record.write(LightDB::DataIDs + 2, 10);//     STORM,
         record.write(LightDB::DataIDs + 3, 13);//     STORM_WATER,
         record.write(LightDB::DataIDs + 4, 4);//     DEATH,
+        if (modern)
+          for (std::size_t slot = 0; slot < parameters.size(); ++slot)
+            record.write(LightDB::DataIDs + slot, parameters[slot]);
 
         gLightDB.save();
     }
@@ -1055,9 +1072,13 @@ void MapCreationWizard::saveCurrentEntry()
         assert(false);
         LogError << "Light.dbc entry already exists, failed to add record" << std::endl;
     }
-  }
+  };
+  if (Noggit::Project::CurrentProject::get()->projectVersion == Noggit::Project::ProjectVersion::WOTLK)
+    save_default_light();
 
-  // Save Map.dbc record
+  // Retain the in-memory table until the native database commit succeeds.
+  auto previousMaps = DBCFile::createNew("DBFilesClient\\Map.dbc", 66, 264);
+  previousMaps.overwriteWith(gMapDB);
   try
   {
     DBCFile::Record record = _is_new_record ? gMapDB.addRecord(_cur_map_id) : gMapDB.getByID(_cur_map_id);
@@ -1065,7 +1086,7 @@ void MapCreationWizard::saveCurrentEntry()
     record.writeString(MapDB::InternalName, _directory->text().toStdString());
 
     record.write(MapDB::AreaType, _instance_type->itemData(_instance_type->currentIndex()).toInt());
-    record.write(MapDB::Flags, _sort_by_size_cat->isChecked() ? 16 : 0 );
+    record.write(MapDB::Flags, (record.getUInt(MapDB::Flags) & ~16u) | (_sort_by_size_cat->isChecked() ? 16u : 0u));
     _map_name->toRecord(record, MapDB::Name);
 
     record.write(MapDB::AreaTableID, _area_table_id->value());
@@ -1081,7 +1102,27 @@ void MapCreationWizard::saveCurrentEntry()
     record.write(MapDB::RaidOffset, _raid_offset->value());
     record.write(MapDB::NumberOfPlayers, _max_players->value());
 
-    gMapDB.save();
+    if (Noggit::Project::CurrentProject::get()->projectVersion == Noggit::Project::ProjectVersion::WOTLK)
+      gMapDB.save();
+    else if (!Noggit::ClientData::saveModernMapDB2(_cur_map_id, this))
+    {
+      gMapDB.overwriteWith(previousMaps);
+      return;
+    }
+
+    if (Noggit::Project::CurrentProject::get()->projectVersion != Noggit::Project::ProjectVersion::WOTLK)
+    {
+      auto previousLights = DBCFile::createNew("DBFilesClient\\Light.dbc", 15, 60);
+      previousLights.overwriteWith(gLightDB);
+      try { save_default_light(); }
+      catch (std::exception const& error)
+      {
+        gLightDB.overwriteWith(previousLights);
+        LogError << "[Map Creation] Map saved, default light failed: " << error.what() << std::endl;
+        QMessageBox::warning(this, "Default light save failed",
+            "Map.db2 was saved, but the default Light.db2 entry failed: " + QString::fromUtf8(error.what()));
+      }
+    }
 
     // reloads map list, and selects the new map
     emit map_dbc_updated(_cur_map_id);
@@ -1105,6 +1146,12 @@ void MapCreationWizard::saveCurrentEntry()
           , QString("Map.dbc entry %1 was not found").arg(_cur_map_id)
           , QMessageBox::Ok
       );
+  }
+  catch (std::exception const& error)
+  {
+    gMapDB.overwriteWith(previousMaps);
+    LogError << "[ModernDB2][Map] Save failed: " << error.what() << std::endl;
+    QMessageBox::warning(this, "Map database save failed", QString::fromUtf8(error.what()));
   }
 }
 
@@ -1210,8 +1257,18 @@ void MapCreationWizard::removeMap()
 
   if (!_is_new_record && _cur_map_id >= 0)
   {
+    if (Noggit::Project::CurrentProject::get()->projectVersion != Noggit::Project::ProjectVersion::WOTLK)
+    {
+      try { Noggit::ClientData::removeModernMapDB2(_cur_map_id); }
+      catch (std::exception const& error)
+      {
+        QMessageBox::warning(this, "Map database delete failed", QString::fromUtf8(error.what()));
+        return;
+      }
+    }
     gMapDB.removeRecord(_cur_map_id);
-    gMapDB.save();
+    if (Noggit::Project::CurrentProject::get()->projectVersion == Noggit::Project::ProjectVersion::WOTLK)
+      gMapDB.save();
   }
 
   emit map_dbc_updated();

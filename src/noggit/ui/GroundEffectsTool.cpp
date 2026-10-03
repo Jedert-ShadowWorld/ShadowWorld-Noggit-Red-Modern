@@ -1,5 +1,6 @@
-﻿#include <noggit/ActionManager.hpp>
+#include <noggit/ActionManager.hpp>
 #include <noggit/DBC.h>
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 #include <noggit/DetailDoodads.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/project/CurrentProject.hpp>
@@ -1154,7 +1155,7 @@ namespace Noggit
                 }
 
                 gGroundEffectTextureDB.removeRecord(set.ID);
-                gGroundEffectTextureDB.save();
+                if (!Noggit::ClientData::saveEditorDatabase(gGroundEffectTextureDB, this)) return;
 
                 // cached per-chunk placements rebuild without the record
                 DetailDoodads::bumpDbcStamp();
@@ -1316,8 +1317,8 @@ namespace Noggit
             record.write(GroundEffectTextureDB::Amount, static_cast<unsigned int>(_spinbox_doodads_amount->value()));
             record.write(GroundEffectTextureDB::TerrainType, _cbbox_terrain_type->currentData().toUInt());
 
-            gGroundEffectDoodadDB.save();
-            gGroundEffectTextureDB.save();
+            if (!Noggit::ClientData::saveEditorDatabase(gGroundEffectDoodadDB, this)) return;
+            if (!Noggit::ClientData::saveEditorDatabase(gGroundEffectTextureDB, this)) return;
 
             // cached per-chunk placements rebuild against the new records
             DetailDoodads::bumpDbcStamp();

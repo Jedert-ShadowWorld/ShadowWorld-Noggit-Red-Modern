@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "AreaTriggerTool.hpp"
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 
 #include <math/coordinates.hpp>
 #include <math/sphere.hpp>
@@ -203,7 +204,8 @@ namespace Noggit
         }, trigger.trigger);
     }
 
-    dbc.save();
+    dbc.useSaveBaseline(gAreaTriggerDB);
+    if (!Noggit::ClientData::saveEditorDatabase(dbc, nullptr)) return;
     gAreaTriggerDB.overwriteWith(dbc);
   }
 

@@ -42,6 +42,23 @@ does not by itself guarantee that every game client accepts every layer setup.
 
 ## Workflow
 
+### Native DB2 Release (v1.4.3)
+
+- Modern map creation and metadata editing write native `Map.db2`.
+- Area, trigger, light, ground effect, music and ambience edits write the
+  corresponding modern DB2 tables. WotLK retains its existing DBC save path.
+- The writer retains the loaded container/layout and unedited fields.
+  Unknown layouts and unresolved encrypted sections fail visibly.
+- Eleven Shadowlands editor-table round-trip tests passed. Native Map tests
+  passed on Shadowlands WDC3 and Retail WDC5. The project author confirmed
+  new-map save/reopen on Shadowlands `Teszt-1`, with six texture layers,
+  M2 placements and water.
+- Full SoundKit/SoundKitEntry editing and cross-version conversion are not
+  included. Other client builds/layouts still require matching definitions
+  and validation; this is not a claim of universal client compatibility.
+
+See [Native DB2 release notes](docs/releases/v1.4.3-native-db2.md).
+
 ### SaveFix Update (v1.4.3)
 
 - Shadowlands split-ADT saving accepts shipped OBJ1 layouts without optional
