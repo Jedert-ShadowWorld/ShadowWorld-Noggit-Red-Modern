@@ -258,6 +258,11 @@ namespace
     std::uint32_t flags = 0;
     std::uint32_t alpha_offset = 0;
     std::uint32_t effect_id = 0xFFFFFFFF;
+    std::uint32_t height_file_data_id = 0;
+    bool has_height_id_table = false;
+    bool disable_height_texture = false;
+    bool has_mtxp = false;
+    texture_heightmapping_data height_mapping;
   };
 
   struct ModernTexChunk
@@ -266,10 +271,19 @@ namespace
     std::vector<std::uint8_t> mcal;
   };
 
+  struct ModernTextureParameters
+  {
+    std::uint32_t flags = 0;
+    float height_scale = 0.0f;
+    float height_offset = 1.0f;
+  };
+
   struct ModernTex0Data
   {
     std::vector<std::uint32_t> diffuse_ids;
     std::vector<std::uint32_t> height_ids;
+    std::vector<ModernTextureParameters> texture_parameters;
+    bool has_height_ids_chunk = false;
     std::vector<ModernTexChunk> chunks;
   };
 
@@ -383,12 +397,29 @@ namespace
 
       if (magic == on_disk_fourcc('M','D','I','D') || magic == on_disk_fourcc('M','H','I','D'))
       {
+        if (magic == on_disk_fourcc('M','H','I','D'))
+          result.has_height_ids_chunk = true;
         auto& out = magic == on_disk_fourcc('M','D','I','D') ? result.diffuse_ids : result.height_ids;
         if (size % 4 != 0)
           throw std::runtime_error("Shadowlands TEX0 texture-ID chunk is not uint32 aligned.");
         out.resize(size / 4);
         if (size)
           std::memcpy(out.data(), data + payload, size);
+      }
+      else if (magic == on_disk_fourcc('M','T','X','P'))
+      {
+        if (size % 16 != 0)
+          throw std::runtime_error("Shadowlands TEX0 MTXP is not aligned to 16-byte entries.");
+
+        result.texture_parameters.resize(size / 16);
+        for (std::size_t i = 0; i < result.texture_parameters.size(); ++i)
+        {
+          auto const entry = payload + i * 16;
+          auto& parameters = result.texture_parameters[i];
+          std::memcpy(&parameters.flags, data + entry, 4);
+          std::memcpy(&parameters.height_scale, data + entry + 4, 4);
+          std::memcpy(&parameters.height_offset, data + entry + 8, 4);
+        }
       }
       else if (magic == on_disk_fourcc('M','C','N','K'))
       {
@@ -451,6 +482,19 @@ namespace
         if (layer.texture_id >= result.diffuse_ids.size())
           throw std::runtime_error("Shadowlands TEX0 MCLY references a diffuse texture outside MDID.");
         layer.file_data_id = result.diffuse_ids[layer.texture_id];
+        layer.has_height_id_table = result.has_height_ids_chunk;
+        if (layer.texture_id < result.height_ids.size())
+          layer.height_file_data_id = result.height_ids[layer.texture_id];
+
+        if (layer.texture_id < result.texture_parameters.size())
+        {
+          auto const& parameters = result.texture_parameters[layer.texture_id];
+          layer.has_mtxp = true;
+          layer.disable_height_texture = (parameters.flags & 0x1u) != 0;
+          layer.height_mapping.uvScale = (parameters.flags >> 4) & 0x0Fu;
+          layer.height_mapping.heightScale = parameters.height_scale;
+          layer.height_mapping.heightOffset = parameters.height_offset;
+        }
       }
     }
 
@@ -519,6 +563,34 @@ namespace
       auto* info = chunk->texture_set->getMCLYEntries();
       info[layer_index].flags = source_layer.flags;
       info[layer_index].effectID = source_layer.effect_id;
+
+      if (layer_index < 4)
+      {
+        if (source_layer.has_mtxp)
+          chunk->texture_set->setHeightMappingData(layer_index, source_layer.height_mapping);
+
+        if (source_layer.has_height_id_table || source_layer.disable_height_texture)
+        {
+          std::unique_ptr<scoped_blp_texture_reference> height_texture;
+          if (!source_layer.disable_height_texture && source_layer.height_file_data_id)
+          {
+            auto const height_path = client_data->listfile()->getPath(source_layer.height_file_data_id);
+            if (!height_path.empty())
+            {
+              BlizzardArchive::Listfile::FileKey const height_key(height_path,
+                                                                  source_layer.height_file_data_id);
+              height_texture = std::make_unique<scoped_blp_texture_reference>(height_key, context);
+            }
+            else
+            {
+              LogError << "[ModernADT] Unable to resolve height texture FileDataID "
+                       << source_layer.height_file_data_id
+                       << " through the project listfile." << std::endl;
+            }
+          }
+          chunk->texture_set->setHeightTextureOverride(layer_index, std::move(height_texture));
+        }
+      }
       ++bound;
 
       if (layer_index > 0 && (source_layer.flags & FLAG_USE_ALPHA))

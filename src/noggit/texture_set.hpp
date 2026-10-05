@@ -8,6 +8,8 @@
 
 #include <cstdint>
 #include <array>
+#include <memory>
+#include <vector>
 
 class Brush;
 class MapTile;
@@ -127,6 +129,12 @@ public:
 
   void updateDoodadMapping();
 
+  void setHeightTextureOverride(std::size_t layer, std::unique_ptr<scoped_blp_texture_reference> texture);
+  blp_texture* heightTexture(std::size_t layer);
+  void setHeightMappingData(std::size_t layer, texture_heightmapping_data data);
+  bool hasHeightMappingData(std::size_t layer) const;
+  texture_heightmapping_data getHeightMappingData(std::size_t layer) const;
+
 private:
 
   uint8_t sum_alpha(size_t offset) const;
@@ -142,8 +150,10 @@ private:
   std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS> alphamaps;
 
   // Mists Heightmapping
-  std::vector<scoped_blp_texture_reference> heightTextures;
+  std::array<std::unique_ptr<scoped_blp_texture_reference>, 4> heightTextures;
+  std::array<bool, 4> heightTextureOverrides{};
   std::array<texture_heightmapping_data, 4> heightMappingData;
+  std::array<bool, 4> heightMappingDataOverrides{};
 
   size_t nTextures;
 
