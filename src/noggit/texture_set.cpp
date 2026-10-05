@@ -88,6 +88,45 @@ TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t 
   }
 }
 
+void TextureSet::setHeightTextureOverride(std::size_t layer, std::unique_ptr<scoped_blp_texture_reference> texture)
+{
+  if (layer >= heightTextures.size())
+    return;
+
+  heightTextureOverrides[layer] = true;
+  heightTextures[layer] = std::move(texture);
+}
+
+blp_texture* TextureSet::heightTexture(std::size_t layer)
+{
+  if (layer >= heightTextures.size() || layer >= textures.size())
+    return nullptr;
+
+  if (heightTextureOverrides[layer])
+    return heightTextures[layer] ? heightTextures[layer]->get() : nullptr;
+
+  return textures[layer]->getHeightMap();
+}
+
+void TextureSet::setHeightMappingData(std::size_t layer, texture_heightmapping_data data)
+{
+  if (layer >= heightMappingData.size())
+    return;
+
+  heightMappingData[layer] = data;
+  heightMappingDataOverrides[layer] = true;
+}
+
+bool TextureSet::hasHeightMappingData(std::size_t layer) const
+{
+  return layer < heightMappingDataOverrides.size() && heightMappingDataOverrides[layer];
+}
+
+texture_heightmapping_data TextureSet::getHeightMappingData(std::size_t layer) const
+{
+  return layer < heightMappingData.size() ? heightMappingData[layer] : texture_heightmapping_data{};
+}
+
 int TextureSet::addTexture (scoped_blp_texture_reference texture)
 {
   int texLevel = -1;
