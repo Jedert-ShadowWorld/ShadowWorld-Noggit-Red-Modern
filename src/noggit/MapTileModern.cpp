@@ -17,6 +17,7 @@
 #include <cstring>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
