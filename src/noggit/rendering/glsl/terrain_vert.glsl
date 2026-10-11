@@ -27,6 +27,7 @@ struct ChunkInstanceData
   // Mists Heightmapping
 
   ivec4 ChunkHeightTextureSamplers;
+  ivec4 ChunkHeightTextureArrayIDs;
   ivec4 ChunkTextureUVScale;
   vec4 ChunkTextureHeightScale;
   vec4 ChunkTextureHeightOffset;

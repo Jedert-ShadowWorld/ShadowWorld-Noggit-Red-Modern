@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/formats/adt/ShadowlandsADTCodec.hpp>
+#include <noggit/formats/adt/TextureMetadata.hpp>
 
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapHeaders.h>
@@ -820,6 +821,64 @@ namespace Noggit::Formats::ADT
       return output;
     }
 
+    template<typename Entry>
+    bool same_placements(std::vector<std::uint8_t> const& original_obj0,
+                         std::vector<std::uint8_t> const& updated, std::uint32_t magic)
+    {
+      auto const chunks = parse_chunks(original_obj0, "original OBJ0");
+      auto const* source = find_chunk(chunks, magic);
+      auto original = source ? placement_records<Entry>(original_obj0, *source, "original placements")
+                             : std::vector<Entry>{};
+      ChunkView const payload{0, 0, 0, static_cast<std::uint32_t>(updated.size())};
+      auto edited = placement_records<Entry>(updated, payload, "updated placements");
+      if (original.size() != edited.size()) return false;
+      auto by_identity = [](Entry const& a, Entry const& b) {
+        return std::tie(a.uniqueID, a.nameID) < std::tie(b.uniqueID, b.nameID);
+      };
+      std::sort(original.begin(), original.end(), by_identity);
+      std::sort(edited.begin(), edited.end(), by_identity);
+      return std::equal(original.begin(), original.end(), edited.begin(), [](Entry const& a, Entry const& b) {
+        auto lhs = a;
+        auto rhs = b;
+        // Near 180 degrees, float rounding makes the editor's normalization
+        // non-idempotent. Accept its exact one-step result as well as equal
+        // normalized representations, without changing the on-disk angles.
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+          auto normalize = [](float angle) {
+            return angle - std::floor((angle + 180.f) / 360.f) * 360.f;
+          };
+          auto const original_angle = lhs.rot[axis];
+          auto const edited_angle = rhs.rot[axis];
+          if (original_angle != edited_angle
+              && normalize(original_angle) != edited_angle
+              && original_angle != normalize(edited_angle)
+              && normalize(original_angle) != normalize(edited_angle))
+            return false;
+          lhs.rot[axis] = rhs.rot[axis] = 0.f;
+        }
+        if constexpr (std::is_same_v<Entry, ENTRY_MODF>)
+        {
+          // Bounds are derived by the editor, not a user placement change.
+          // Unchanged transforms keep the original OBJ0 bounds together with OBJ1.
+          lhs.extents = {};
+          rhs.extents = {};
+        }
+        return std::memcmp(&lhs, &rhs, sizeof(Entry)) == 0;
+      });
+    }
+
+    std::vector<std::uint8_t> obj1_for_save(
+      std::vector<std::uint8_t> const& original_obj0, std::vector<std::uint8_t> const& obj1,
+      std::vector<std::uint8_t> const& mddf, std::vector<std::uint8_t> const& modf)
+    {
+      // Painting must not rebuild unrelated, potentially newer LOD placement layouts.
+      if (same_placements<ENTRY_MDDF>(original_obj0, mddf, fourcc('M','D','D','F'))
+          && same_placements<ENTRY_MODF>(original_obj0, modf, fourcc('M','O','D','F')))
+        return obj1;
+      return rewrite_obj1(obj1, mddf, modf);
+    }
+
     void validate_tex0_alpha_layout(std::vector<std::uint8_t> const& tex0)
     {
       auto const chunks = parse_chunks(tex0, "saved TEX0");
@@ -954,8 +1013,9 @@ namespace Noggit::Formats::ADT
           auto const key = (static_cast<std::uint64_t>(entry.uniqueID) << 32) | entry.nameID;
           if (auto const it = original_flags.find(key); it != original_flags.end())
             entry.flags = it->second;
-          // Retail OBJ0 stores FileDataIDs without this flag; Shadowlands uses it.
-          if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL)
+          // Existing Retail tiles also carry 0x40 (including 12.1 map 3075).
+          // Only apply defaults to new placements; never normalize shipped flags.
+          else if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL)
             entry.flags &= ~static_cast<std::uint16_t>(0x40);
           else
             entry.flags |= 0x40;
@@ -1151,6 +1211,32 @@ namespace Noggit::Formats::ADT
 
     auto const texture_paths = legacy_string_table(legacy_adt, fourcc('M','T','E','X'));
     auto const texture_ids = resolve_file_ids(texture_paths);
+    auto const& old_tex0 = backing.part(ShadowlandsADTPart::Tex0).bytes;
+    auto const old_chunks = parse_chunks(old_tex0, "original TEX0");
+    std::vector<std::uint32_t> old_texture_ids;
+    if (auto const* mdid = find_chunk(old_chunks, fourcc('M','D','I','D')))
+    {
+      if (mdid->size % sizeof(std::uint32_t))
+        throw std::runtime_error("Original TEX0 MDID is not uint32 aligned.");
+      old_texture_ids.resize(mdid->size / sizeof(std::uint32_t));
+      if (mdid->size)
+        std::memcpy(old_texture_ids.data(), old_tex0.data() + mdid->payload, mdid->size);
+    }
+    for (auto const magic : {fourcc('M','H','I','D'), fourcc('M','T','X','P')})
+    {
+      if (auto const* table = find_chunk(old_chunks, magic))
+      {
+        std::vector<std::uint8_t> default_record(magic == fourcc('M','H','I','D') ? 4 : 16, 0);
+        if (default_record.size() == 16)
+        {
+          float const height_offset = 1.0f;
+          std::memcpy(default_record.data() + 8, &height_offset, sizeof(height_offset));
+        }
+        auto const records = remapTextureMetadata(old_texture_ids, texture_ids,
+          std::span<std::uint8_t const>(old_tex0.data() + table->payload, table->size), default_record);
+        tex0 = replace_top_level_chunk(tex0, magic, make_chunk(magic, records));
+      }
+    }
     tex0 = replace_top_level_chunk(
       tex0, fourcc('M','D','I','D'), make_chunk(fourcc('M','D','I','D'), uint32_payload(texture_ids)));
 
@@ -1158,16 +1244,25 @@ namespace Noggit::Formats::ADT
       legacy_adt, fourcc('M','D','D','F'), fourcc('M','M','I','D'), fourcc('M','M','D','X'), obj0);
     auto const modf = modern_placements<ENTRY_MODF>(
       legacy_adt, fourcc('M','O','D','F'), fourcc('M','W','I','D'), fourcc('M','W','M','O'), obj0);
+    bool const doodads_unchanged = same_placements<ENTRY_MDDF>(obj0, mddf, fourcc('M','D','D','F'));
+    bool const wmos_unchanged = same_placements<ENTRY_MODF>(obj0, modf, fourcc('M','O','D','F'));
+    bool const placements_unchanged = doodads_unchanged && wmos_unchanged;
+    Log << "[ModernADT][Save] " << backing.source.root_path
+        << ": M2 unchanged=" << doodads_unchanged << ", WMO unchanged=" << wmos_unchanged
+        << ", preserving original objects=" << placements_unchanged << std::endl;
     std::vector<std::uint8_t> obj1;
     if (backing.has(ShadowlandsADTPart::Obj1))
-      obj1 = rewrite_obj1(backing.part(ShadowlandsADTPart::Obj1).bytes, mddf, modf);
-    obj0 = replace_top_level_chunk(
-      obj0, fourcc('M','D','D','F'), make_chunk(fourcc('M','D','D','F'), mddf));
-    obj0 = replace_top_level_chunk(
-      obj0, fourcc('M','O','D','F'), make_chunk(fourcc('M','O','D','F'), modf));
-    obj0 = rewrite_obj0_refs(obj0, legacy_adt,
-                             mddf.size() / sizeof(ENTRY_MDDF),
-                             modf.size() / sizeof(ENTRY_MODF));
+      obj1 = obj1_for_save(obj0, backing.part(ShadowlandsADTPart::Obj1).bytes, mddf, modf);
+    if (!placements_unchanged)
+    {
+      obj0 = replace_top_level_chunk(
+        obj0, fourcc('M','D','D','F'), make_chunk(fourcc('M','D','D','F'), mddf));
+      obj0 = replace_top_level_chunk(
+        obj0, fourcc('M','O','D','F'), make_chunk(fourcc('M','O','D','F'), modf));
+      obj0 = rewrite_obj0_refs(obj0, legacy_adt,
+                               mddf.size() / sizeof(ENTRY_MDDF),
+                               modf.size() / sizeof(ENTRY_MODF));
+    }
 
     validate_tex0_alpha_layout(tex0);
 

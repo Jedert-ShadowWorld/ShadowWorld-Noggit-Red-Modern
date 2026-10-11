@@ -14,7 +14,7 @@ FetchContent_MakeAvailable(casclib)
 
 execute_process(
   COMMAND "${CMAKE_COMMAND}" "-DCASC_SOURCE_ROOT=${casclib_SOURCE_DIR}/src"
-          -P "${CMAKE_SOURCE_DIR}/src/external/blizzard-archive-library/cmake-overrides/PreferLocalHighResCasc.cmake"
+          -P "${CMAKE_CURRENT_LIST_DIR}/PreferLocalHighResCasc.cmake"
   COMMAND_ERROR_IS_FATAL ANY
 )
 

@@ -11,6 +11,7 @@
 
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <string>
 
 
@@ -140,6 +141,29 @@ DBCFile DBCFile::createNew(std::string filename, std::uint32_t fieldCount, std::
   // / getLocalizedString() will assert when a field is empty.
   file.stringTable.push_back('\0');
   file.stringSize = 1;
+  return file;
+}
+
+DBCFile DBCFile::createNewWithIds(std::string filename, std::uint32_t fieldCount,
+                                std::uint32_t recordSize, std::vector<unsigned int> const& ids)
+{
+  if (!fieldCount || static_cast<std::uint64_t>(fieldCount) * 4 != recordSize)
+    throw std::invalid_argument("DBC bulk creation requires four-byte fields");
+  if (ids.size() > std::numeric_limits<std::uint32_t>::max()
+      || ids.size() > std::numeric_limits<size_t>::max() / recordSize)
+    throw std::length_error("DBC bulk record count is too large");
+
+  std::unordered_set<unsigned int> unique;
+  unique.reserve(ids.size());
+  for (auto id : ids)
+    if (!unique.insert(id).second) throw AlreadyExists();
+
+  // Allocate once: addRecord() scans existing rows and is quadratic for large DB2 views.
+  auto file = createNew(std::move(filename), fieldCount, recordSize);
+  file.data.resize(ids.size() * recordSize);
+  file.recordCount = static_cast<std::uint32_t>(ids.size());
+  for (size_t row = 0; row < ids.size(); ++row)
+    std::memcpy(file.data.data() + row * recordSize, &ids[row], sizeof(ids[row]));
   return file;
 }
 

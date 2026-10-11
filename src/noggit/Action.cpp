@@ -86,6 +86,7 @@ void Noggit::Action::undo(bool redo)
 
       std::memcpy(texture_set->getMCLYEntries(), &pair.second.layers_info, sizeof(layer_info) * MAX_TEXTURE_LAYERS);
       texture_set->setNTextures(pair.second.n_textures);
+      texture_set->restoreHeightMappingState(pair.second.height_mapping);
 
       auto textures = texture_set->getTextures();
       textures->clear();
@@ -433,6 +434,7 @@ void Noggit::Action::finish()
       auto texture_set = pre.first->getTextureSet();
 
       cache.n_textures = texture_set->num();
+      cache.height_mapping = texture_set->heightMappingState();
 
       const auto& sourceAlphamaps = *texture_set->getAlphamaps();
       for (size_t i = 0; i < MAX_ALPHAMAPS; ++i) {
@@ -678,6 +680,7 @@ void Noggit::Action::registerChunkTextureChange(MapChunk* chunk)
   auto texture_set = chunk->getTextureSet();
 
   cache.n_textures = texture_set->num();
+  cache.height_mapping = texture_set->heightMappingState();
   // cache.alphamaps = *texture_set->getAlphamaps();
   // cache.tmp_edit_values = *texture_set->getTempAlphamaps();
   const auto& sourceAlphamaps = *texture_set->getAlphamaps();

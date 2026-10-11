@@ -33,7 +33,11 @@ WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, ENT
 
   bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
-  if (modern_features)
+  auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+  bool const modern_client = client_data
+    && client_data->version() != BlizzardArchive::ClientVersion::WOTLK;
+  // The rendering toggle must not discard scale stored in modern placement data.
+  if (modern_features || modern_client)
   {
       scale = static_cast<float>(d->scale) / 1024.0f;
   }

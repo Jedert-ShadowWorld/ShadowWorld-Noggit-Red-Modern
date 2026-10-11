@@ -8,6 +8,9 @@
 
 #include <cstdint>
 #include <array>
+#include <memory>
+#include <optional>
+#include <vector>
 
 class Brush;
 class MapTile;
@@ -37,6 +40,14 @@ struct layer_info
     uint32_t  flags = 0;
     // uint32_t  ofsAlpha = 0;
     uint32_t  effectID = 0xFFFFFFFF; // default value, see https://wowdev.wiki/ADT/v18#MCLY_sub-chunk
+};
+
+struct TextureHeightMappingState
+{
+  std::array<std::optional<BlizzardArchive::Listfile::FileKey>, MAX_TEXTURE_LAYERS> textures;
+  std::array<bool, MAX_TEXTURE_LAYERS> texture_overrides{};
+  std::array<texture_heightmapping_data, MAX_TEXTURE_LAYERS> parameters;
+  std::array<bool, MAX_TEXTURE_LAYERS> parameter_overrides{};
 };
 
 class TextureSet
@@ -127,7 +138,18 @@ public:
 
   void updateDoodadMapping();
 
+  void setHeightTextureOverride(std::size_t layer, std::unique_ptr<scoped_blp_texture_reference> texture);
+  blp_texture* heightTexture(std::size_t layer);
+  void setHeightMappingData(std::size_t layer, texture_heightmapping_data data);
+  bool hasHeightMappingData(std::size_t layer) const;
+  texture_heightmapping_data getHeightMappingData(std::size_t layer) const;
+  TextureHeightMappingState heightMappingState() const;
+  void restoreHeightMappingState(TextureHeightMappingState const& state);
+
 private:
+
+  void resetHeightMapping(std::size_t layer);
+  void copyHeightMapping(std::size_t target, std::size_t source);
 
   unsigned sum_alpha(size_t offset) const;
 
@@ -142,8 +164,10 @@ private:
   std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS> alphamaps;
 
   // Mists Heightmapping
-  std::vector<scoped_blp_texture_reference> heightTextures;
-  std::array<texture_heightmapping_data, 4> heightMappingData;
+  std::array<std::unique_ptr<scoped_blp_texture_reference>, MAX_TEXTURE_LAYERS> heightTextures;
+  std::array<bool, MAX_TEXTURE_LAYERS> heightTextureOverrides{};
+  std::array<texture_heightmapping_data, MAX_TEXTURE_LAYERS> heightMappingData;
+  std::array<bool, MAX_TEXTURE_LAYERS> heightMappingDataOverrides{};
 
   size_t nTextures;
 

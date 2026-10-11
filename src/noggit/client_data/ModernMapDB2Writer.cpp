@@ -70,6 +70,7 @@ namespace
 
     explicit NativeTable(std::string tableName = "Map", bool readOnly = false) : name(std::move(tableName))
     {
+      Log << "[ModernDB2][Native] Loading " << name << std::endl;
       auto project = Noggit::Project::CurrentProject::get();
       if (!project || !project->ClientData || !scratch.isValid())
         throw std::runtime_error("No active modern client or temporary directory.");
@@ -109,10 +110,12 @@ namespace
       }
       if (!selection) throw std::runtime_error(error);
       schemaBuild = selection->selectedBuild.ToString();
+      Log << "[ModernDB2][Native] Decoding " << name << ", build=" << schemaBuild << std::endl;
       auto loaded = dbc::BinaryTableCodec::LoadWdc(path(input),
           dbc::FlattenForWdc5(*schema, selection->version), error);
       if (!loaded) throw std::runtime_error(error);
       table = std::move(*loaded);
+      Log << "[ModernDB2][Native] Loaded " << name << ", records=" << table.rows.size() << std::endl;
       if (!readOnly && !table.writable) throw std::runtime_error(table.readOnlyReason);
     }
 
@@ -668,23 +671,39 @@ void Noggit::ClientData::loadModernEditorSoundDB2()
     // A read-only compatibility view supplies SoundKit IDs to the existing
     // ambience/music pickers. It must never be written as SoundEntries.dbc.
     NativeTable kits("SoundKit", true);
-    auto out = DBCFile::createNew("DBFilesClient\\SoundEntries.dbc", 30, 120);
+    Log << "[ModernDB2][SoundKit] Building editor view" << std::endl;
+    std::vector<unsigned int> ids;
+    ids.reserve(kits.table.rows.size());
+    auto const id_column = kits.idColumn();
+    for (auto const& row : kits.table.rows)
+    {
+      auto const id = std::stoull(dbc::CellToString(row.cells.at(id_column)));
+      if (id > std::numeric_limits<unsigned int>::max())
+        throw std::out_of_range("SoundKit ID exceeds the legacy view's range");
+      ids.push_back(static_cast<unsigned int>(id));
+    }
+    auto out = DBCFile::createNewWithIds("DBFilesClient\\SoundEntries.dbc", 30, 120, ids);
     std::array<EditorField, 8> const fields = {{{1,"SoundType"},{24,"VolumeFloat",LegacyKind::Float},
         {25,"Flags"},{26,"MinDistance",LegacyKind::Float},{27,"DistanceCutoff",LegacyKind::Float},
         {28,"EAXDef"},{29,"SoundKitAdvancedID"},{0,"ID"}}};
-    for (auto const& row : kits.table.rows)
+    std::array<std::size_t, 8> columns;
+    for (std::size_t i = 0; i < fields.size(); ++i)
+      columns[i] = columnIndex(kits, fields[i].name);
+    for (std::size_t i = 0; i < kits.table.rows.size(); ++i)
     {
-      auto id = std::stoul(dbc::CellToString(row.cells[kits.idColumn()]));
-      auto record = out.addRecord(id);
-      record.writeString(2, "SoundKit " + std::to_string(id));
-      for (auto const& field : fields)
+      auto const& row = kits.table.rows[i];
+      auto record = out.getRecord(i);
+      record.writeString(2, "SoundKit " + std::to_string(ids[i]));
+      for (std::size_t f = 0; f < fields.size(); ++f)
       {
-        auto const value = dbc::CellToString(row.cells[columnIndex(kits, field.name)]);
+        auto const& field = fields[f];
+        auto const value = dbc::CellToString(row.cells.at(columns[f]));
         if (field.kind == LegacyKind::Float) record.write(field.offset, std::stof(value));
         else record.write(field.offset, static_cast<std::uint32_t>(std::stoul(value)));
       }
     }
     gSoundEntriesDB.overwriteWith(out);
+    Log << "[ModernDB2][SoundKit] Editor view ready" << std::endl;
   }
   catch (std::exception const& error)
   {

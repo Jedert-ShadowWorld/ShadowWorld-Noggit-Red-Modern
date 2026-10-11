@@ -88,6 +88,87 @@ TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t 
   }
 }
 
+void TextureSet::setHeightTextureOverride(std::size_t layer, std::unique_ptr<scoped_blp_texture_reference> texture)
+{
+  if (layer >= heightTextures.size())
+    return;
+
+  heightTextureOverrides[layer] = true;
+  heightTextures[layer] = std::move(texture);
+}
+
+blp_texture* TextureSet::heightTexture(std::size_t layer)
+{
+  if (layer >= BASE_RENDER_TEXTURE_LAYERS || layer >= textures.size())
+    return nullptr;
+
+  if (heightTextureOverrides[layer])
+  {
+    auto* texture = heightTextures[layer] ? heightTextures[layer]->get() : nullptr;
+    return texture && !texture->loading_failed() ? texture : nullptr;
+  }
+
+  return textures[layer]->getHeightMap();
+}
+
+void TextureSet::setHeightMappingData(std::size_t layer, texture_heightmapping_data data)
+{
+  if (layer >= heightMappingData.size())
+    return;
+
+  heightMappingData[layer] = data;
+  heightMappingDataOverrides[layer] = true;
+}
+
+bool TextureSet::hasHeightMappingData(std::size_t layer) const
+{
+  return layer < heightMappingDataOverrides.size() && heightMappingDataOverrides[layer];
+}
+
+texture_heightmapping_data TextureSet::getHeightMappingData(std::size_t layer) const
+{
+  return layer < heightMappingData.size() ? heightMappingData[layer] : texture_heightmapping_data{};
+}
+
+void TextureSet::resetHeightMapping(std::size_t layer)
+{
+  heightTextures[layer].reset();
+  heightTextureOverrides[layer] = false;
+  heightMappingData[layer] = texture_heightmapping_data{};
+  heightMappingDataOverrides[layer] = false;
+}
+
+TextureHeightMappingState TextureSet::heightMappingState() const
+{
+  TextureHeightMappingState state;
+  state.texture_overrides = heightTextureOverrides;
+  state.parameters = heightMappingData;
+  state.parameter_overrides = heightMappingDataOverrides;
+  for (std::size_t i = 0; i < heightTextures.size(); ++i)
+    if (heightTextures[i])
+      state.textures[i] = heightTextures[i]->get()->file_key();
+  return state;
+}
+
+void TextureSet::restoreHeightMappingState(TextureHeightMappingState const& state)
+{
+  heightTextureOverrides = state.texture_overrides;
+  heightMappingData = state.parameters;
+  heightMappingDataOverrides = state.parameter_overrides;
+  for (std::size_t i = 0; i < heightTextures.size(); ++i)
+    heightTextures[i] = state.textures[i]
+      ? std::make_unique<scoped_blp_texture_reference>(*state.textures[i], _context) : nullptr;
+}
+
+void TextureSet::copyHeightMapping(std::size_t target, std::size_t source)
+{
+  heightTextures[target] = heightTextures[source]
+    ? std::make_unique<scoped_blp_texture_reference>(*heightTextures[source]) : nullptr;
+  heightTextureOverrides[target] = heightTextureOverrides[source];
+  heightMappingData[target] = heightMappingData[source];
+  heightMappingDataOverrides[target] = heightMappingDataOverrides[source];
+}
+
 int TextureSet::addTexture (scoped_blp_texture_reference texture)
 {
   int texLevel = -1;
@@ -104,6 +185,7 @@ int TextureSet::addTexture (scoped_blp_texture_reference texture)
 
     textures.emplace_back (std::move (texture));
     _layers_info[texLevel] = layer_info();
+    resetHeightMapping(texLevel);
 
     if (texLevel)
     {
@@ -124,6 +206,9 @@ int TextureSet::addTexture (scoped_blp_texture_reference texture)
 
 bool TextureSet::replace_texture (scoped_blp_texture_reference const& texture_to_replace, scoped_blp_texture_reference replacement_texture)
 {
+  if (texture_to_replace == replacement_texture)
+    return true;
+
   int texture_to_replace_level = -1, replacement_texture_level = -1;
 
   for (int i = 0; i < nTextures; ++i)
@@ -142,6 +227,10 @@ bool TextureSet::replace_texture (scoped_blp_texture_reference const& texture_to
   {
     replacement_texture->wait_until_loaded();
     textures[texture_to_replace_level] = std::move (replacement_texture);
+    if (replacement_texture_level >= 0)
+      copyHeightMapping(texture_to_replace_level, replacement_texture_level);
+    else
+      resetHeightMapping(texture_to_replace_level);
 
     QSettings settings;
     bool do_merge_layers = settings.value("texture_merge_layers", true).toBool();
@@ -158,6 +247,7 @@ bool TextureSet::replace_texture (scoped_blp_texture_reference const& texture_to
         auto fallback = scoped_blp_texture_reference(fallback_tex_name, _context);
 
         textures[replacement_texture_level] = std::move(fallback);
+        resetHeightMapping(replacement_texture_level);
       }
       else
       {
@@ -194,6 +284,10 @@ void TextureSet::swap_layers(int layer_1, int layer_2)
 
     std::swap(textures[lower_texture_id], textures[upper_texture_id]);
     std::swap(_layers_info[lower_texture_id], _layers_info[upper_texture_id]);
+    std::swap(heightTextures[lower_texture_id], heightTextures[upper_texture_id]);
+    std::swap(heightTextureOverrides[lower_texture_id], heightTextureOverrides[upper_texture_id]);
+    std::swap(heightMappingData[lower_texture_id], heightMappingData[upper_texture_id]);
+    std::swap(heightMappingDataOverrides[lower_texture_id], heightMappingDataOverrides[upper_texture_id]);
 
     int a1 = lower_texture_id - 1, a2 = upper_texture_id - 1;
 
@@ -234,6 +328,7 @@ void TextureSet::eraseTextures()
       alphamaps[i - 1].reset();
     }
     _layers_info[i] = layer_info();
+    resetHeightMapping(i);
   }
 
   nTextures = 0;
@@ -268,6 +363,10 @@ void TextureSet::eraseTexture(size_t id)
     }
 
     _layers_info[i] = _layers_info[i + 1];
+    heightTextures[i] = std::move(heightTextures[i + 1]);
+    heightTextureOverrides[i] = heightTextureOverrides[i + 1];
+    heightMappingData[i] = heightMappingData[i + 1];
+    heightMappingDataOverrides[i] = heightMappingDataOverrides[i + 1];
   }
 
   if (nTextures > 1)
@@ -280,6 +379,7 @@ void TextureSet::eraseTexture(size_t id)
 
   // erase the old info as a precaution but it's overriden when adding a new texture
   _layers_info[nTextures] = layer_info();
+  resetHeightMapping(nTextures);
 
   // set the default values for the temporary alphamap too
   if (tmp_edit_values)

@@ -80,6 +80,7 @@ namespace OpenGL
 
     // Mists Heightmapping
     int ChunkHeightTextureSamplers[4];
+    int ChunkHeightTextureArrayIDs[4];
     int ChunkTextureUVScale[4];
     float ChunkTextureHeightScale[4];
     float ChunkTextureHeightOffset[4];

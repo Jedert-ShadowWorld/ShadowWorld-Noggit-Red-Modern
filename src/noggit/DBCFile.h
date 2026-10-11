@@ -28,6 +28,8 @@ public:
   std::shared_ptr<DBCFile> saveBaseline() const { return _saveBaseline; }
 
   static DBCFile createNew(std::string filename, std::uint32_t fieldCount, std::uint32_t recordSize);
+  static DBCFile createNewWithIds(std::string filename, std::uint32_t fieldCount,
+                                 std::uint32_t recordSize, std::vector<unsigned int> const& ids);
 
   class NotFound : public std::runtime_error
   {

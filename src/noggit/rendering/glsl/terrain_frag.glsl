@@ -54,6 +54,7 @@ struct ChunkInstanceData
   // Mists Heightmapping
 
   ivec4 ChunkHeightTextureSamplers;
+  ivec4 ChunkHeightTextureArrayIDs;
   ivec4 ChunkTextureUVScale;
   vec4 ChunkTextureHeightScale;
   vec4 ChunkTextureHeightOffset;
@@ -299,19 +300,28 @@ vec4 mists_texture_blend()
   // Mists HeightMapping: Multi Layer Blending.
   vec4 layer_weights = vec4(1.0 - clamp(dot(vec3(1.0),alpha), 0, 1), alpha);
 
-  vec4 t0h = get_tex_color(worldScaled_vary_t0_uv, instances[instanceID].ChunkHeightTextureSamplers.x, abs(instances[instanceID].ChunkTextureArrayIDs.x));
-  vec4 t1h = get_tex_color(worldScaled_vary_t1_uv, instances[instanceID].ChunkHeightTextureSamplers.y, abs(instances[instanceID].ChunkTextureArrayIDs.y));
-  vec4 t2h = get_tex_color(worldScaled_vary_t2_uv, instances[instanceID].ChunkHeightTextureSamplers.z, abs(instances[instanceID].ChunkTextureArrayIDs.z));
-  vec4 t3h = get_tex_color(worldScaled_vary_t3_uv, instances[instanceID].ChunkHeightTextureSamplers.w, abs(instances[instanceID].ChunkTextureArrayIDs.w));
+  vec4 t0h = get_tex_color(worldScaled_vary_t0_uv, instances[instanceID].ChunkHeightTextureSamplers.x, instances[instanceID].ChunkHeightTextureArrayIDs.x);
+  vec4 t1h = get_tex_color(worldScaled_vary_t1_uv, instances[instanceID].ChunkHeightTextureSamplers.y, instances[instanceID].ChunkHeightTextureArrayIDs.y);
+  vec4 t2h = get_tex_color(worldScaled_vary_t2_uv, instances[instanceID].ChunkHeightTextureSamplers.z, instances[instanceID].ChunkHeightTextureArrayIDs.z);
+  vec4 t3h = get_tex_color(worldScaled_vary_t3_uv, instances[instanceID].ChunkHeightTextureSamplers.w, instances[instanceID].ChunkHeightTextureArrayIDs.w);
 
   vec4 layer_pct = vec4 ( layer_weights.x * ( t0h.a * instances[instanceID].ChunkTextureHeightScale.x + instances[instanceID].ChunkTextureHeightOffset.x)
 					 , layer_weights.y * ( t1h.a * instances[instanceID].ChunkTextureHeightScale.y + instances[instanceID].ChunkTextureHeightOffset.y)
 					 , layer_weights.z * ( t2h.a * instances[instanceID].ChunkTextureHeightScale.z + instances[instanceID].ChunkTextureHeightOffset.z)
 					 , layer_weights.w * ( t3h.a * instances[instanceID].ChunkTextureHeightScale.w + instances[instanceID].ChunkTextureHeightOffset.w)
 					 );
-  vec4 layer_pct_max = vec4( max( max(layer_pct.x, layer_pct.y) , max(layer_pct.z, layer_pct.w) ) );
-  layer_pct = layer_pct * (vec4(1.0) - clamp(layer_pct_max - layer_pct, 0, 1));
-  layer_pct = layer_pct / vec4( dot(vec4(1.0),layer_pct) );    
+  if (all(equal(instances[instanceID].ChunkTextureHeightScale, vec4(0.0)))
+      && all(equal(instances[instanceID].ChunkTextureHeightOffset, vec4(1.0))))
+  {
+    layer_pct = layer_weights;
+  }
+  else
+  {
+    vec4 layer_pct_max = vec4(max(max(layer_pct.x, layer_pct.y), max(layer_pct.z, layer_pct.w)));
+    layer_pct = layer_pct * (vec4(1.0) - clamp(layer_pct_max - layer_pct, 0, 1));
+    float total = dot(vec4(1.0), layer_pct);
+    layer_pct = total > 0.00001 ? layer_pct / total : layer_weights;
+  }
 
   vec4 t0 = get_tex_color(worldScaled_vary_t0_uv, instances[instanceID].ChunkTextureSamplers.x, 
                           abs(instances[instanceID].ChunkTextureArrayIDs.x)) * layer_pct.x;

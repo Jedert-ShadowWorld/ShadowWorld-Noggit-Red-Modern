@@ -72,6 +72,7 @@ namespace Noggit
       std::array<std::unique_ptr<Alphamap>, MAX_ALPHAMAPS> alphamaps;
       std::unique_ptr<tmp_edit_alpha_values> tmp_edit_values;
       layer_info layers_info[MAX_TEXTURE_LAYERS];
+      TextureHeightMappingState height_mapping;
     };
 
     struct ObjectInstanceCache
