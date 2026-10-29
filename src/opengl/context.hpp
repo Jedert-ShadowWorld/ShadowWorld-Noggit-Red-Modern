@@ -66,6 +66,8 @@ namespace OpenGL
     NOGGIT_FORCEINLINE void depthFunc (GLenum);
     NOGGIT_FORCEINLINE void depthMask (GLboolean);
     NOGGIT_FORCEINLINE void blendFunc (GLenum, GLenum);
+    NOGGIT_FORCEINLINE void blendFuncSeparate (GLenum, GLenum, GLenum, GLenum);
+    NOGGIT_FORCEINLINE void blendColor (GLfloat, GLfloat, GLfloat, GLfloat);
 
     NOGGIT_FORCEINLINE void clear (GLenum);
     NOGGIT_FORCEINLINE void clearColor (GLfloat, GLfloat, GLfloat, GLfloat);

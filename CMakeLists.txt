@@ -422,6 +422,13 @@ COMMAND ${CMAKE_COMMAND} -E copy_directory
     "$<TARGET_FILE_DIR:noggit>"
 )
 
+# Include attribution for adapted Retail format handling in binary distributions.
+add_custom_command(TARGET noggit POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:noggit>/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PROJECT_SOURCE_DIR}/docs/third-party/wow.export-MIT.txt"
+        "$<TARGET_FILE_DIR:noggit>/licenses/wow.export-MIT.txt")
+
 #add distribution themes
 add_custom_command(TARGET noggit POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory

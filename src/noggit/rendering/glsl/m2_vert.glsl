@@ -18,6 +18,8 @@ uniform samplerBuffer bone_matrices;
 
 out vec2 uv1;
 out vec2 uv2;
+out vec2 uv3;
+out float edge_fade;
 out float camera_dist;
 out vec3 norm;
 
@@ -29,9 +31,13 @@ layout (std140) uniform matrices
 
 uniform int tex_unit_lookup_1;
 uniform int tex_unit_lookup_2;
+uniform int tex_unit_lookup_3;
+uniform bool retail_materials;
+uniform bool retail_edge_fade;
 
 uniform mat4 tex_matrix_1;
 uniform mat4 tex_matrix_2;
+uniform mat4 tex_matrix_3;
 
 uniform bool anim_bones;
 
@@ -63,6 +69,14 @@ vec2 get_texture_uv(int tex_unit_lookup, vec3 vert, vec3 norm)
   {
     return vec2(0.0);
   }
+}
+
+// Retail animation matrices belong to texture stages, not to the selected UV set.
+vec2 retail_texture_uv(int source, mat4 stage_matrix, vec3 vertex, vec3 normal_view)
+{
+  vec2 uv = source == 0 ? sphere_map(vertex, normal_view)
+      : source == 1 ? texcoord1 : source == 2 ? texcoord2 : vec2(0.0);
+  return (transpose(stage_matrix) * vec4(uv, 0.0, 1.0)).xy;
 }
 
 mat4 get_bone_matrix(uint bone_index)
@@ -101,8 +115,25 @@ void main()
   // important to normalize because of the scaling !!
   norm = normalize(normMatrix * normal);
 
-  uv1 = get_texture_uv(tex_unit_lookup_1, vertex.xyz, norm);
-  uv2 = get_texture_uv(tex_unit_lookup_2, vertex.xyz, norm);
+  edge_fade = 1.0;
+  uv3 = vec2(0.0);
+  if (retail_materials)
+  {
+    vec3 normal_view = normalize(mat3(model_view) * norm);
+    uv1 = retail_texture_uv(tex_unit_lookup_1, tex_matrix_1, vertex.xyz, normal_view);
+    uv2 = retail_texture_uv(tex_unit_lookup_2, tex_matrix_2, vertex.xyz, normal_view);
+    uv3 = retail_texture_uv(tex_unit_lookup_3, tex_matrix_3, vertex.xyz, normal_view);
+    if (retail_edge_fade)
+    {
+      float incidence = abs(dot(normal_view, normalize(-vertex.xyz)));
+      edge_fade = clamp(incidence * incidence, 0.0, 1.0);
+    }
+  }
+  else
+  {
+    uv1 = get_texture_uv(tex_unit_lookup_1, vertex.xyz, norm);
+    uv2 = get_texture_uv(tex_unit_lookup_2, vertex.xyz, norm);
+  }
 
   camera_dist = -vertex.z;
   gl_Position = projection * vertex;

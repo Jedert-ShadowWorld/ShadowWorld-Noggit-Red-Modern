@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/AsyncObject.h>
+#include <noggit/AsyncLoader.h>
 #include <noggit/Log.h>
 #include <noggit/MapHeaders.h>
 #include <noggit/MapTile.h>
@@ -101,6 +102,44 @@ namespace
       auto const file_size = obj0_file.getSize();
       std::vector<ENTRY_MDDF> m2_placements;
       std::vector<ENTRY_MODF> wmo_placements;
+      Noggit::Formats::ADT::RetailObjectTransfer::WmoSources retail_wmos;
+      if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL)
+      {
+        using namespace Noggit::Formats::ADT::RetailObjectTransfer;
+        auto const* first = reinterpret_cast<std::uint8_t const*>(data);
+        Bytes primary(first, first + file_size);
+        std::optional<Bytes> lod;
+        bool lod_known = true;
+        try
+        {
+          BlizzardArchive::Listfile::FileKey const lod_key(split_adt_path(root_path, "_obj1"));
+          if (client_data->exists(lod_key))
+          {
+            BlizzardArchive::ClientFile file(lod_key, client_data);
+            if (file.isEof()) throw std::runtime_error("Present OBJ1 is unreadable");
+            auto const* begin = reinterpret_cast<std::uint8_t const*>(file.getBuffer());
+            lod.emplace(begin, begin + file.getSize());
+          }
+        }
+        catch (std::exception const& error)
+        {
+          lod_known = false;
+          LogError << "[ModernADT][Objects] Cannot retain WMO LOD provenance for " << root_path
+                   << ": " << error.what() << std::endl;
+        }
+        try
+        {
+          retail_wmos = readWmoSources(primary, lod, lod_known);
+        }
+        catch (std::exception const& error)
+        {
+          // Placements stay loaded; saving validates the source tables separately.
+          LogError << "[ModernADT][Objects] Cannot retain WMO source metadata for " << root_path
+                   << ": " << error.what() << std::endl;
+          try { retail_wmos = readWmoSources(primary, {}, false); }
+          catch (std::exception const&) {}
+        }
+      }
 
       std::size_t pos = 0;
       while (pos + 8 <= file_size)
@@ -183,8 +222,11 @@ namespace
           placement.scale = 1024;
 
         BlizzardArchive::Listfile::FileKey key(path, placement.nameID);
+        WMOInstance instance(key, &placement, context);
+        if (auto it = retail_wmos.find(placement.uniqueID); it != retail_wmos.end())
+          instance.set_retail_source(std::move(it->second));
         tile->add_model(world->add_wmo_instance(
-          WMOInstance(key, &placement, context), tile->tile_is_being_reloaded(), false));
+          std::move(instance), tile->tile_is_being_reloaded(), false));
         ++loaded_wmo;
       }
 
@@ -449,6 +491,11 @@ void AsyncObject::wait_until_loaded()
 
   std::unique_lock<std::mutex> lock(_mutex);
   _state_changed.wait(lock, [&] { return finished.load(); });
+}
+
+AsyncObject::~AsyncObject()
+{
+  if (AsyncLoader::instance) AsyncLoader::instance->forget_failure(this);
 }
 
 void AsyncObject::error_on_loading()

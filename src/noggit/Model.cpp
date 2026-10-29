@@ -5,6 +5,7 @@
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Log.h>
 #include <noggit/Model.h>
+#include <noggit/RetailM2Animation.hpp>
 #include <noggit/Particle.h>
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/scoped_blp_texture_reference.hpp>
@@ -29,13 +30,16 @@ namespace
   bool unwrap_md21_container(BlizzardArchive::ClientFile& file,
                              std::string const& name,
                              std::vector<std::uint32_t>& texture_file_ids,
-                             std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t>& animation_file_ids)
+                             std::vector<std::uint32_t>& skin_file_ids,
+                             std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t>& animation_file_ids,
+                             std::uint32_t& skeleton_file_id, bool retail)
   {
     auto const* buffer = file.getBuffer();
     auto const size = file.getSize();
     if (!has_fourcc(buffer, size, "MD21"))
       return true;
 
+    if (size < 8) return false;
     std::uint32_t payload_size = 0;
     std::memcpy(&payload_size, buffer + 4, sizeof(payload_size));
 
@@ -57,14 +61,28 @@ namespace
 
       auto const chunk_payload = chunk_offset + 8;
       if (chunk_size > size - chunk_payload)
+      {
+        if (retail) throw std::runtime_error("Truncated MD21 chunk in " + name);
         break;
+      }
 
-      if (std::memcmp(buffer + chunk_offset, "TXID", 4) == 0)
+      if (retail && std::memcmp(buffer + chunk_offset, "SKID", 4) == 0)
+      {
+        if (chunk_size != 4) throw std::runtime_error("Invalid SKID chunk in " + name);
+        std::memcpy(&skeleton_file_id, buffer + chunk_payload, 4);
+      }
+      else if (std::memcmp(buffer + chunk_offset, "TXID", 4) == 0)
       {
         auto const texture_count = chunk_size / sizeof(std::uint32_t);
         texture_file_ids.resize(texture_count);
         std::memcpy(texture_file_ids.data(), buffer + chunk_payload,
                     texture_count * sizeof(std::uint32_t));
+      }
+      else if (std::memcmp(buffer + chunk_offset, "SFID", 4) == 0
+               && chunk_size % sizeof(std::uint32_t) == 0)
+      {
+        skin_file_ids.resize(chunk_size / sizeof(std::uint32_t));
+        std::memcpy(skin_file_ids.data(), buffer + chunk_payload, chunk_size);
       }
       else if (std::memcmp(buffer + chunk_offset, "AFID", 4) == 0
                && chunk_size % 8 == 0)
@@ -101,13 +119,30 @@ Model::Model(const std::string& filename, Noggit::NoggitRenderContext context)
   , _context(context)
   , _renderer(this)
 {
-  // memset(&header, 0, sizeof(ModelHeader));
+  anim_calculated = false;
+  _anim_time = 0;
+  _global_animtime = 0;
+}
+
+Model::Model(BlizzardArchive::Listfile::FileKey const& key, Noggit::NoggitRenderContext context)
+  : Model(key.hasFilepath()
+            || Noggit::Application::NoggitApplication::instance()->clientData()->version()
+               != BlizzardArchive::ClientVersion::RETAIL
+          ? key.filepath() : key.stringRepr(), context)
+{
+  auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+  if (client->version() == BlizzardArchive::ClientVersion::RETAIL)
+  {
+    _file_key = key;
+    _file_key.deduceOtherComponent(client->listfile());
+  }
 }
 
 void Model::finishLoading()
 {
   BlizzardArchive::ClientFile f(_file_key, Noggit::Application::NoggitApplication::instance()->clientData());
   std::vector<std::uint32_t> modern_texture_file_ids;
+  std::vector<std::uint32_t> modern_skin_file_ids;
   std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> modern_animation_file_ids;
 
   if (f.isEof() || f.getSize() < 8)
@@ -117,11 +152,29 @@ void Model::finishLoading()
     throw std::runtime_error("Error loading file \"" + _file_key.stringRepr() + "\". Aborting to load model.");
   }
 
-  if (!unwrap_md21_container(f, _file_key.stringRepr(), modern_texture_file_ids,
-                             modern_animation_file_ids)
+  bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+    == BlizzardArchive::ClientVersion::RETAIL;
+  std::uint32_t skeleton_file_id = 0;
+  if (!unwrap_md21_container(f, _file_key.stringRepr(), modern_texture_file_ids, modern_skin_file_ids,
+                             modern_animation_file_ids, skeleton_file_id, retail)
       || f.getSize() < sizeof(ModelHeader))
   {
     throw std::runtime_error("Error loading file \"" + _file_key.stringRepr() + "\". Aborting to load model.");
+  }
+
+  Animation::TrackModes skeleton_track_modes;
+  if (retail && skeleton_file_id)
+  {
+    Noggit::RetailM2::Bytes model(f.getBuffer(), f.getBuffer() + f.getSize());
+    Noggit::RetailM2::applySkeleton(model, skeleton_file_id, [](std::uint32_t id)
+    {
+      BlizzardArchive::ClientFile source(BlizzardArchive::Listfile::FileKey(id),
+        Noggit::Application::NoggitApplication::instance()->clientData());
+      if (source.isEof()) throw std::runtime_error("Cannot load skeleton/animation FileDataID " + std::to_string(id));
+      return Noggit::RetailM2::Bytes(source.getBuffer(), source.getBuffer() + source.getSize());
+    }, &skeleton_track_modes);
+    f.setBuffer(model);
+    modern_animation_file_ids.clear(); // Bone tracks have been materialized from the skeleton's AFID.
   }
 
   ModelHeader header;
@@ -171,6 +224,36 @@ void Model::finishLoading()
     blend_override = M2Array<uint16_t>(f, ofs_blend_override, n_blend_override);
   }
 
+  if (retail)
+  {
+    auto valid = [&f](std::size_t offset, std::size_t count, std::size_t stride)
+    { return offset <= f.getSize() && count <= (f.getSize() - offset) / stride; };
+    if (!valid(header.ofsBones, header.nBones, sizeof(ModelBoneDef))
+        || !valid(header.ofsAnimations, header.nAnimations, sizeof(ModelAnimation))
+        || !valid(header.ofsGlobalSequences, header.nGlobalSequences, sizeof(std::int32_t))
+        || !valid(header.ofsVertices, header.nVertices, sizeof(ModelVertex)))
+      throw std::runtime_error("Invalid Retail M2 bone/vertex array: " + _file_key.stringRepr());
+    auto bs = reinterpret_cast<ModelBoneDef const*>(f.getBuffer() + header.ofsBones);
+    for (std::size_t i = 0; i < header.nBones; ++i)
+    {
+      for (auto const* track : {&bs[i].translation, &bs[i].rotation, &bs[i].scaling})
+        if (track->seq < -1 || (track->seq >= 0 && static_cast<std::uint32_t>(track->seq) >= header.nGlobalSequences))
+          throw std::runtime_error("Retail bone refers to a missing global sequence: " + _file_key.stringRepr());
+      std::set<std::size_t> seen;
+      int current = static_cast<int>(i);
+      while (current >= 0)
+      {
+        if (current >= static_cast<int>(header.nBones) || !seen.insert(current).second)
+          throw std::runtime_error("Invalid or cyclic Retail bone hierarchy: " + _file_key.stringRepr());
+        current = bs[current].parent;
+      }
+    }
+    auto vs = reinterpret_cast<ModelVertex const*>(f.getBuffer() + header.ofsVertices);
+    for (std::size_t i = 0; i < header.nVertices; ++i)
+      for (unsigned j = 0; j < 4; ++j)
+        if (vs[i].weights[j] && vs[i].bones[j] >= header.nBones)
+          throw std::runtime_error("Retail vertex refers to a missing bone: " + _file_key.stringRepr());
+  }
   animated = isAnimated(f, header);  // isAnimated will set animGeometry and animTextures
 
   trans = 1.0f;
@@ -193,7 +276,9 @@ void Model::finishLoading()
   }
 
   //! \todo  This takes a biiiiiit long. Have a look at this.
-  initCommon(f, header);
+  initCommon(f, header, modern_skin_file_ids.empty() ? 0 : modern_skin_file_ids.front());
+  if (Noggit::Application::NoggitApplication::instance()->clientData()->version() == BlizzardArchive::ClientVersion::RETAIL)
+    _renderer.configurePreviewSkins(modern_skin_file_ids, header.nViews);
 
   if (!modern_texture_file_ids.empty())
   {
@@ -229,7 +314,7 @@ void Model::finishLoading()
 
   if (animated)
   {
-    initAnimated(f, header, modern_animation_file_ids);
+    initAnimated(f, header, modern_animation_file_ids, skeleton_track_modes);
 
     mesh_bounds_ratio = calcMeshBoundsRatio();
   }
@@ -418,7 +503,7 @@ namespace
 }
 
 
-void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header)
+void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header, std::uint32_t skinFileId)
 {
   // vertices, normals, texcoords
   _vertices = M2Array<ModelVertex>(f, header.ofsVertices, header.nVertices);
@@ -453,7 +538,8 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
 
   // textures
   ModelTextureDef const* texdef = reinterpret_cast<ModelTextureDef const*>(f.getBuffer() + header.ofsTextures);
-  _textureFilenames.resize(header.nTextures);
+  _textureFilenames.assign(header.nTextures, std::string{});
+  _textureFileDataIds.clear();
   _specialTextures.resize(header.nTextures);
 
   for (size_t i = 0; i < header.nTextures; ++i)
@@ -525,9 +611,16 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
 
   if (header.nViews > 0) {
     // indices - allocate space, too
-    std::string lodname = _file_key.filepath().substr(0, _file_key.filepath().length() - 3);
-    lodname.append("00.skin");
-    BlizzardArchive::ClientFile g(lodname, Noggit::Application::NoggitApplication::instance()->clientData());
+    auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+    bool const retailSkin = client->version() == BlizzardArchive::ClientVersion::RETAIL
+      && skinFileId != 0;
+    if (client->version() == BlizzardArchive::ClientVersion::RETAIL && !retailSkin && !_file_key.hasFilepath())
+      throw std::runtime_error("M2 has no SFID or known filename for its skin: " + _file_key.stringRepr());
+    auto const skinKey = retailSkin
+      ? BlizzardArchive::Listfile::FileKey(skinFileId)
+      : BlizzardArchive::Listfile::FileKey(_file_key.filepath().substr(0, _file_key.filepath().length() - 3) + "00.skin");
+    std::string const lodname = skinKey.stringRepr();
+    BlizzardArchive::ClientFile g(skinKey, client);
     if (g.isEof()) {
       LogError << "loading skinfile " << lodname << std::endl;
       _skin_load_failed = true;
@@ -543,6 +636,9 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
       return;
     }
 
+    if (client->version() == BlizzardArchive::ClientVersion::RETAIL
+        && std::memcmp(g.getBuffer(), "SKIN", 4))
+      throw std::runtime_error("Invalid Retail SKIN magic: " + lodname);
     auto view = reinterpret_cast<ModelView const*>(g.getBuffer());
     auto const skin_size = g.getSize();
     auto valid_skin_array = [skin_size](std::size_t offset, std::size_t count, std::size_t element_size)
@@ -577,6 +673,9 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
         g.close();
         return;
       }
+      if (client->version() == BlizzardArchive::ClientVersion::RETAIL
+          && indexLookup[triangles[i]] >= header.nVertices)
+        throw std::runtime_error("Retail SKIN refers to a missing model vertex: " + lodname);
       _indices[i] = indexLookup[triangles[i]];
     }
 
@@ -632,7 +731,8 @@ FakeGeometry::FakeGeometry(Model* m)
 void Model::initAnimated(
     const BlizzardArchive::ClientFile& f,
     ModelHeader& header,
-    std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> const& animation_file_ids)
+    std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> const& animation_file_ids,
+    Animation::TrackModes const& track_modes)
 {
   std::vector<std::unique_ptr<BlizzardArchive::ClientFile>> animation_files;
 
@@ -644,24 +744,52 @@ void Model::initAnimated(
     memcpy(animations.data(), f.getBuffer() + header.ofsAnimations, header.nAnimations * sizeof(ModelAnimation));
 
     auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+    bool const retail = client_data->version() == BlizzardArchive::ClientVersion::RETAIL;
     for (std::size_t animation_index = 0; animation_index < animations.size(); ++animation_index)
     {
-      auto& anim = animations[animation_index];
+      auto& original = animations[animation_index];
+      original.length = std::max(original.length, 1U);
+      auto anim = original;
+      if (retail)
+      {
+        std::set<std::size_t> visited;
+        std::size_t resolved = animation_index;
+        while (animations[resolved].loopType & 0x40)
+        {
+          if (!visited.insert(resolved).second)
+            throw std::runtime_error("Cyclic Retail M2 animation alias");
+          resolved = static_cast<std::uint16_t>(animations[resolved].Index);
+          if (resolved >= animations.size()) throw std::runtime_error("Retail animation alias out of range");
+        }
+        if (resolved > 32767) throw std::runtime_error("Retail animation index exceeds renderer capacity");
+        anim.Index = static_cast<std::int16_t>(resolved);
+        anim.length = animations[resolved].length;
+      }
       anim.length = std::max(anim.length, 1U);
 
       _animation_length[anim.animID] += anim.length;
       _animations_seq_per_id[anim.animID][anim.subAnimID] = anim;
 
+      // Aliases play the resolved sequence's tracks and share its AFID load.
+      if (retail && static_cast<std::size_t>(anim.Index) != animation_index) continue;
       auto const modern_file = animation_file_ids.find({anim.animID, anim.subAnimID});
-      if (modern_file != animation_file_ids.end())
+      if (modern_file != animation_file_ids.end() && (!retail || !(anim.loopType & 0x20)))
       {
         BlizzardArchive::Listfile::FileKey key(modern_file->second);
         auto external_file = std::make_unique<BlizzardArchive::ClientFile>(key, client_data);
         if (!external_file->isEof())
+        {
+          if (retail)
+          {
+            auto payload = Noggit::RetailM2::animationPayload(
+              Noggit::RetailM2::Bytes(external_file->getBuffer(), external_file->getBuffer() + external_file->getSize()), "AFM2");
+            external_file->setBuffer(payload);
+          }
           animation_files[animation_index] = std::move(external_file);
+        }
       }
 
-      if (!animation_files[animation_index])
+      if (!animation_files[animation_index] && (!retail || (_file_key.hasFilepath() && !(anim.loopType & 0x20))))
       {
         std::string lodname = _file_key.filepath().substr(0, _file_key.filepath().length() - 3);
         std::stringstream tempname;
@@ -670,6 +798,13 @@ void Model::initAnimated(
         {
           animation_files[animation_index] =
             std::make_unique<BlizzardArchive::ClientFile>(tempname.str(), client_data);
+          if (retail)
+          {
+            auto& source = *animation_files[animation_index];
+            auto payload = Noggit::RetailM2::animationPayload(
+              Noggit::RetailM2::Bytes(source.getBuffer(), source.getBuffer() + source.getSize()), "AFM2");
+            source.setBuffer(payload);
+          }
         }
       }
     }
@@ -680,7 +815,7 @@ void Model::initAnimated(
     ModelBoneDef const* mb = reinterpret_cast<ModelBoneDef const*>(f.getBuffer() + header.ofsBones);
     for (size_t i = 0; i<header.nBones; ++i)
     {
-      bones.emplace_back(f, mb[i], _global_sequences.data(), animation_files);
+      bones.emplace_back(f, mb[i], _global_sequences.data(), animation_files, track_modes);
     }
 
     bone_matrices.resize(bones.size());
@@ -819,7 +954,7 @@ void Model::animate(glm::mat4x4 const& model_view, int anim_id, int anim_time)
       bone_counter++;
     }
 
-    _renderer.updateBoneMatrices();
+    _renderer.markBoneMatricesDirty();
 
 
     // transform vertices
@@ -1032,10 +1167,11 @@ TextureAnim::TextureAnim (const BlizzardArchive::ClientFile& f, const ModelTexAn
 Bone::Bone( const BlizzardArchive::ClientFile& f,
             const ModelBoneDef &b,
             int *global,
-            const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files)
-  : trans (b.translation, f, global, animation_files)
-  , rot (b.rotation, f, global, animation_files)
-  , scale (b.scaling, f, global, animation_files)
+            const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files,
+            Animation::TrackModes const& track_modes)
+  : trans (b.translation, f, global, animation_files, Animation::modesFor(track_modes, b.translation.ofsTimes))
+  , rot (b.rotation, f, global, animation_files, Animation::modesFor(track_modes, b.rotation.ofsTimes))
+  , scale (b.scaling, f, global, animation_files, Animation::modesFor(track_modes, b.scaling.ofsTimes))
   , pivot (fixCoordSystem (b.pivot))
   , parent (b.parent)
 {

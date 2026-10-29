@@ -77,15 +77,17 @@ namespace Noggit::Rendering
     ModelRenderPass(ModelTexUnit const& tex_unit, Model* m);
 
     float ordering_thingy = 0.f;
-    uint16_t index_start = 0, index_count = 0, vertex_start = 0, vertex_end = 0;
+    uint32_t index_start = 0, index_count = 0, vertex_start = 0, vertex_end = 0;
     uint16_t blend_mode = 0;
-    texture_unit_lookup tu_lookups[2];
-    uint16_t textures[2];
-    uint16_t uv_animations[2];
+    texture_unit_lookup tu_lookups[3]{};
+    uint16_t textures[3]{};
+    uint16_t uv_animations[3]{};
     std::optional<ModelPixelShader> pixel_shader;
 
 
-    bool prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state);
+    bool surface_decal = false;
+    bool layered_geometry = false;
+    bool prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state, int preview_decals = 0);
     void afterDraw();
     void bindTexture(size_t index, Model* m, OpenGL::M2RenderState& model_render_state, OpenGL::Scoped::use_program& m2_shader);
     void initUVTypes(Model* m);
@@ -134,6 +136,9 @@ namespace Noggit::Rendering
         , bool animate
         , bool draw_fake_geometry_box
         , bool draw_animation_box
+        , int preview_lod = 0
+        , bool preview_animation = false
+        , int preview_decals = 0
     );
 
     void drawParticles(glm::mat4x4 const& model_view
@@ -150,11 +155,32 @@ namespace Noggit::Rendering
     [[nodiscard]]
     std::vector<ModelRenderPass> const& renderPasses() const;;
 
+    void markBoneMatricesDirty() { _bone_matrices_dirty = true; }
     void updateBoneMatrices();
 
-    void initRenderPasses(ModelView const* view, ModelTexUnit const* tex_unit, ModelGeoset const* model_geosets);
+    void initRenderPasses(ModelView const* view, ModelTexUnit const* tex_unit, ModelGeoset const* model_geosets, std::size_t indexCount = 0);
+    static void beginPreviewFrame() { _preview_skin_load_budget = 2; }
+    void configurePreviewSkins(std::vector<std::uint32_t> const& fileIds, std::size_t viewCount);
 
   private:
+
+    struct PreviewSkin
+    {
+      bool attempted = false;
+      bool valid = false;
+      std::vector<uint16_t> indices;
+      std::vector<ModelRenderPass> passes;
+    };
+    void loadPreviewSkin(int choice);
+    void classifyPreviewDecals(std::vector<ModelRenderPass>& passes);
+    inline static int _preview_skin_load_budget = 0;
+    std::array<std::uint32_t, 2> _preview_skin_ids{};
+    std::vector<uint16_t> _primary_geoset_ids;
+    std::vector<std::vector<std::size_t>> _shared_geosets;
+    std::array<PreviewSkin, 2> _preview_skins;
+    OpenGL::Scoped::deferred_upload_buffers<2> _preview_index_buffers;
+    int _last_preview_animtime = -1;
+    bool _bone_matrices_dirty = false;
 
     void setupVAO(OpenGL::Scoped::use_program& m2_shader);
     void fixShaderIdBlendOverride();

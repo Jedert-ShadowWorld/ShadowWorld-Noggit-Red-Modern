@@ -102,7 +102,8 @@ public:
   Bone ( const BlizzardArchive::ClientFile& f,
          const ModelBoneDef &b,
          int *global,
-         const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files
+         const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files,
+         Animation::TrackModes const& track_modes
        );
 
 };
@@ -169,6 +170,7 @@ public:
   }
 
   Model(const std::string& name, Noggit::NoggitRenderContext context );
+  Model(BlizzardArchive::Listfile::FileKey const& key, Noggit::NoggitRenderContext context);
 
   std::vector<std::pair<float, std::tuple<int, int, int>>> intersect (
     glm::mat4x4 const& model_view
@@ -300,12 +302,13 @@ private:
 
   Noggit::NoggitRenderContext _context;
 
-  void initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header);
+  void initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header, std::uint32_t skinFileId);
   bool isAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header);
   void initAnimated(
       const BlizzardArchive::ClientFile& f,
       ModelHeader& header,
-      std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> const& animation_file_ids);
+      std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> const& animation_file_ids,
+      Animation::TrackModes const& track_modes);
 
   void animate(glm::mat4x4 const& model_view, int anim_id, int anim_time);
   void calcBones(glm::mat4x4 const& model_view, int anim, int time, int animation_time);

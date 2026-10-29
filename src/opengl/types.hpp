@@ -132,7 +132,7 @@ namespace OpenGL
     bool unfogged = false;
     bool unlit = false;
     std::array<GLuint, 2> tex_arrays;
-    std::array<GLuint, 2> tex_indices;
+    std::array<GLuint, 3> tex_indices;
     std::array<GLint, 2> tex_unit_lookups;
     GLint pixel_shader = 0;
 

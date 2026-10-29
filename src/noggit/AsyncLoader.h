@@ -3,6 +3,7 @@
 #pragma once
 
 #include <noggit/async_priority.hpp>
+#include <noggit/LoadFailures.hpp>
 
 #include <array>
 #include <atomic>
@@ -41,9 +42,13 @@ public:
 
   bool important_object_failed_loading() const;
   void reset_object_fail();
+  std::vector<LoadFailure> loading_failures() const;
+  void forget_failure(AsyncObject const*);
+  std::string failure_report_path() const;
 
 private:
   void process();
+  void record_failure(AsyncObject const*, std::string const& reason, bool retail);
 
   std::mutex _guard;
   std::condition_variable _state_changed;
@@ -51,5 +56,6 @@ private:
   std::array<std::list<AsyncObject*>, (size_t)async_priority::count> _to_load;
   std::list<AsyncObject*> _currently_loading;
   std::list<std::thread> _threads;
-  bool _important_object_failed_loading = false;
+  std::atomic<bool> _important_object_failed_loading = false;
+  LoadFailures _failures;
 };

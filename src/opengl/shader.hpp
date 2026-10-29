@@ -11,7 +11,6 @@
 #include <glm/vec4.hpp>
 
 #include <initializer_list>
-#include <set>
 #include <string>
 #include <vector>
 #include <array>
@@ -147,7 +146,6 @@ namespace OpenGL
       GLuint attrib_location (std::string const& name);
 
       program const& _program;
-      std::set<GLuint> _enabled_vertex_attrib_arrays;
 
       GLuint _old;
     };

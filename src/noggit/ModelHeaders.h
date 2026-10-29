@@ -180,7 +180,7 @@ struct ModelView {
 /// One material + render operation
 struct ModelGeoset {
   uint16_t id; // mesh part id?
-  uint16_t d2; // ?
+  uint16_t d2; // Retail: high 16 bits of the triangle start (section level).
   uint16_t vstart; // first vertex
   uint16_t vcount; // num vertices
   uint16_t istart; // first index

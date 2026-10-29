@@ -1,6 +1,8 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <ClientFile.hpp>
+#include <noggit/formats/WmoPlaneGroup.hpp>
+#include <noggit/formats/WmoGroupIds.hpp>
 #include <math/frustum.hpp>
 #include <math/ray.hpp>
 #include <noggit/application/NoggitApplication.hpp>
@@ -10,6 +12,8 @@
 #include <noggit/ModelManager.h> // ModelManager
 #include <noggit/TextureManager.h> // TextureManager, Texture
 #include <noggit/WMO.h>
+#include <noggit/formats/WmoVertexColors.hpp>
+#include <noggit/formats/WmoMaterial.hpp>
 #include <noggit/wmo_liquid.hpp>
 
 #include <algorithm>
@@ -17,6 +21,7 @@
 #include <iomanip>
 #include <map>
 #include <sstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -34,13 +39,18 @@ WMO::~WMO()
 
 void WMO::finishLoading ()
 {
-  BlizzardArchive::ClientFile f(_file_key.filepath(), Noggit::Application::NoggitApplication::instance()->clientData());
+  auto* source = Noggit::Application::NoggitApplication::instance()->clientData();
+  bool const retail = source->version() == BlizzardArchive::ClientVersion::RETAIL;
+  BlizzardArchive::ClientFile f(retail ? _file_key : BlizzardArchive::Listfile::FileKey(_file_key.filepath()), source);
   if (f.isEof()) {
     // mark as failed instead of leaving the object un-finished forever, which
     // silently skips every instance and hangs wait_until_loaded()
     error_on_loading();
     return;
   }
+
+  if (retail)
+    _primary_group_ids = Noggit::Format::primaryWmoGroupIds({f.getBuffer(), f.getSize()});
 
   struct RootChunk
   {
@@ -155,6 +165,7 @@ void WMO::finishLoading ()
 
   std::size_t const num_materials (size / 0x40);
   materials.resize (num_materials);
+  material_textures.resize(num_materials);
 
   // note: used to map to size_t, but our other values don't support that.
   //std::map<std::uint32_t, std::size_t> texture_offset_to_inmem_index;
@@ -202,23 +213,17 @@ void WMO::finishLoading ()
     f.read(&materials[i], sizeof(WMOMaterial));
 
     uint32_t shader = materials[i].shader;
-    bool use_second_texture = (shader == 6 || shader == 5 || shader == 3 || shader == 21 || shader == 23);
-
-    materials[i].texture1 = load_texture(materials[i].texture_offset_1);
-    if (use_second_texture)
-    {
-      materials[i].texture2 = load_texture(materials[i].texture_offset_2);
-    }
-  }
-
-  if (_file_key.stringRepr().find("12xp_eversongtree_yellow") != std::string::npos)
-  {
-    for (size_t i = 0; i < num_materials; ++i)
-      Log << "[EversongTreeWMO] material=" << i
-          << " shader=" << materials[i].shader
-          << " texture_ref1=" << materials[i].texture_offset_1
-          << " texture_ref2=" << materials[i].texture_offset_2
-          << " texture_ref3=" << materials[i].texture_offset_3 << std::endl;
+    // Retail shader 23 repurposes color/runtime fields as FileDataIDs. Capture
+    // them before the legacy texture1/texture2 runtime aliases overwrite them.
+    auto const& m = materials[i];
+    std::array<std::uint32_t, 9> const refs{m.texture_offset_1, m.texture_offset_2,
+        m.texture_offset_3, m.color_2, m.flag_2, m.runtime_data[0], m.runtime_data[1], m.texture1, m.texture2};
+    auto const count = Noggit::Format::wmo_texture_count(shader, retail && uses_file_data_ids);
+    for (unsigned slot = 0; slot < count; ++slot)
+      material_textures[i][slot] = load_texture(refs[slot]);
+    materials[i].texture1 = material_textures[i][0];
+    if (count > 1) materials[i].texture2 = material_textures[i][1];
+    else material_textures[i][1] = materials[i].texture1;
   }
 
   if (uses_file_data_ids)
@@ -660,6 +665,31 @@ std::map<uint32_t, std::vector<wmo_doodad_instance>> WMO::doodads_per_group(uint
   return doodads;
 }
 
+std::map<uint32_t, std::vector<wmo_doodad_instance>> WMO::doodads_per_group(std::vector<uint16_t> const& selected_sets) const
+{
+  std::map<uint32_t, std::vector<wmo_doodad_instance>> doodads;
+  if (doodadsets.empty()) return doodads;
+  auto selected = [&](std::uint32_t ref)
+  {
+    auto contains = [&](std::uint16_t set)
+    {
+      if (set >= doodadsets.size()) return false;
+      auto const& range = doodadsets[set];
+      return ref >= range.start && ref - range.start < range.size;
+    };
+    if (contains(0)) return true;
+    return std::any_of(selected_sets.begin(), selected_sets.end(), contains);
+  };
+  for (std::size_t i = 0; i < groups.size(); ++i)
+  {
+    std::set<std::uint16_t> emitted;
+    for (auto ref : groups[i].doodad_ref())
+      if (ref < modelis.size() && selected(ref) && emitted.insert(ref).second)
+        doodads[static_cast<uint32_t>(i)].push_back(modelis[ref]);
+  }
+  return doodads;
+}
+
 [[nodiscard]]
 bool WMO::is_hidden() const
 {
@@ -781,10 +811,14 @@ WMOGroup::WMOGroup(WMOGroup const& other)
   , fog(other.fog)
   , _doodad_ref(other._doodad_ref)
   , _batches(other._batches)
+  , _material_blend_alpha(other._material_blend_alpha)
   , _vertices(other._vertices)
   , _normals(other._normals)
   , _texcoords(other._texcoords)
   , _texcoords_2(other._texcoords_2)
+  , _texcoords_3(other._texcoords_3)
+  , _texcoords_4(other._texcoords_4)
+  , _material_weights(other._material_weights)
   , _vertex_colors(other._vertex_colors)
   , _indices(other._indices)
   , _renderer(this)
@@ -811,18 +845,68 @@ namespace
 
 void WMOGroup::load()
 {
-  // open group file
-  std::stringstream curNum;
-  curNum << "_" << std::setw (3) << std::setfill ('0') << num;
+  auto* source = Noggit::Application::NoggitApplication::instance()->clientData();
+  bool const retail = source->version() == BlizzardArchive::ClientVersion::RETAIL;
+  std::string fname;
+  BlizzardArchive::Listfile::FileKey group_key;
+  if (!retail)
+  {
+    // open group file
+    std::stringstream curNum;
+    curNum << "_" << std::setw (3) << std::setfill ('0') << num;
 
-  std::string fname = wmo->file_key().filepath();
-  fname.insert (fname.find (".wmo"), curNum.str ());
-
-  BlizzardArchive::ClientFile f(fname, Noggit::Application::NoggitApplication::instance()->clientData());
+    fname = wmo->file_key().filepath();
+    fname.insert (fname.find (".wmo"), curNum.str ());
+    group_key = BlizzardArchive::Listfile::FileKey(fname);
+  }
+  else
+  {
+    auto const group_id = wmo->primary_group_file_id(num);
+    group_key = [&]() -> BlizzardArchive::Listfile::FileKey {
+      if (group_id)
+        return BlizzardArchive::Listfile::FileKey(group_id);
+      std::stringstream suffix;
+      suffix << "_" << std::setw(3) << std::setfill('0') << num;
+      if (!wmo->file_key().hasFilepath())
+        throw std::runtime_error("WMO has no GFID or known group filename: " + wmo->file_key().stringRepr());
+      std::string path = wmo->file_key().filepath();
+      auto extension = path.rfind(".wmo");
+      if (extension == std::string::npos)
+        throw std::runtime_error("WMO has no GFID or group filename: " + wmo->file_key().stringRepr());
+      path.insert(extension, suffix.str());
+      return BlizzardArchive::Listfile::FileKey(path);
+    }();
+    fname = group_key.stringRepr();
+  }
+  BlizzardArchive::ClientFile f(group_key, source);
   if (f.isEof()) {
+    if (retail)
+      throw std::runtime_error("Error loading WMO group \"" + fname + "\".");
     LogError << "Error loading WMO \"" << fname << "\"." << std::endl;
     return;
   }
+
+  if (retail)
+    Noggit::Format::validateRetailWmoGroup({f.getBuffer(), f.getSize()});
+
+  // load() also runs again for a cached group after its GPU resources were freed;
+  // optional chunks must not keep streams from the previous load.
+  _vertices.clear();
+  _normals.clear();
+  _texcoords.clear();
+  _indices.clear();
+  _batches.clear();
+  _doodad_ref.clear();
+  _material_infos.clear();
+  _texcoords_2.clear();
+  _texcoords_3.clear();
+  _texcoords_4.clear();
+  _vertex_colors.clear();
+  _material_weights.clear();
+  _material_blend_alpha.clear();
+  _bsp_tree_nodes.reset();
+  _bsp_indices.reset();
+  lq.reset();
 
   uint32_t fourcc;
   uint32_t size;
@@ -891,6 +975,24 @@ void WMOGroup::load()
         matches.push_back(&chunk);
     return matches;
   };
+
+  if (Noggit::Format::isPlaneOnlyGroup(
+        Noggit::Application::NoggitApplication::instance()->clientData()->version()
+          == BlizzardArchive::ClientVersion::RETAIL,
+        header.flags.value,
+        header.transparency_batches_count + header.interior_batch_count + header.exterior_batch_count
+          + header.padding_or_batch_type_d,
+        {f.getBuffer() + f.getPos(), f.getSize() - f.getPos()}))
+  {
+    VertexBoxMin = glm::min(BoundingBoxMin, BoundingBoxMax);
+    VertexBoxMax = glm::max(BoundingBoxMin, BoundingBoxMax);
+    center = (VertexBoxMin + VertexBoxMax) * 0.5f;
+    rad = glm::distance(center, VertexBoxMax);
+    use_outdoor_lights = !header.flags.indoor;
+    _renderer.initRenderBatches();
+    LogDebug << "[ModernWMOGroup] Loaded plane-only group \"" << fname << "\"." << std::endl;
+    return;
+  }
 
   bool const modern_chunk_layout = wmo->uses_file_data_ids()
     || !find_group_chunks('MOBS').empty()
@@ -1007,6 +1109,26 @@ void WMOGroup::load()
       _texcoords.resize(_vertices.size(), glm::vec2(0.f));
     }
 
+    // Additional authored UV sets are used by Retail's four-layer materials.
+    auto read_extra_uv = [&](std::size_t index, std::vector<glm::vec2>& target)
+    {
+      if (index >= motv_chunks.size()) { target = _texcoords; return; }
+      auto const& chunk = *motv_chunks[index];
+      if (chunk.size < _vertices.size() * sizeof(glm::vec2))
+        throw std::runtime_error("Truncated modern WMO material UV set in \"" + fname + "\".");
+      target.resize(_vertices.size());
+      f.seek(chunk.payload_offset);
+      f.read(target.data(), target.size() * sizeof(glm::vec2));
+    };
+    if (retail)
+    {
+      read_extra_uv(2, _texcoords_3);
+      read_extra_uv(3, _texcoords_4);
+      if (_texcoords_2.empty()) _texcoords_2 = _texcoords;
+      else _texcoords_2.resize(_vertices.size(), glm::vec2(0.f));
+      header.flags.has_two_motv = true;
+    }
+
     auto const invalid_index = std::find_if(_indices.begin(), _indices.end(), [this](std::uint16_t index)
     {
       return index >= _vertices.size();
@@ -1029,17 +1151,6 @@ void WMOGroup::load()
       LogError << "[ModernWMOGroup] Dropped " << (old_batch_count - _batches.size())
                << " invalid render batches from \"" << fname << "\"." << std::endl;
 
-    if (fname.find("12xp_eversongtree_yellow") != std::string::npos)
-    {
-      Log << "[EversongTreeWMO] group=" << fname
-          << " batches=" << _batches.size() << std::endl;
-      for (auto const& batch : _batches)
-        Log << "[EversongTreeWMO] batch_flags=" << static_cast<unsigned>(batch.flags)
-            << " texture=" << batch.texture
-            << " alternate_material=" << static_cast<unsigned>(batch.unused[5])
-            << " indices=" << batch.index_count << std::endl;
-    }
-
     _renderer.initRenderBatches();
 
     auto const modr_chunks = find_group_chunks('MODR');
@@ -1054,23 +1165,51 @@ void WMOGroup::load()
     }
 
     auto const mocv_chunks = find_group_chunks('MOCV');
-    if (!mocv_chunks.empty())
+    if (retail) _material_blend_alpha.assign(_vertices.size(), 1.f);
+    if (retail && header.flags.has_vertex_color)
+      _vertex_colors.assign(_vertices.size(), glm::vec4(0.f, 0.f, 0.f, 1.f));
+    if (retail)
+      for (auto const* chunk : mocv_chunks)
+        if (chunk->size < _vertices.size() * sizeof(CImVector))
+          throw std::runtime_error("Truncated modern WMO MOCV in \"" + fname + "\".");
+    // With CVERTS2 and no lighting colors, the first MOCV is already the
+    // material blend stream. Its alpha must not undergo lighting fixups.
+    auto const color_streams = Noggit::Format::wmo_color_streams(
+        !retail || header.flags.has_vertex_color,
+        !retail || header.flags.use_mocv2_for_texture_blending, mocv_chunks.size());
+    if (color_streams.lighting)
     {
       f.seek(mocv_chunks.front()->payload_offset);
       load_mocv(f, mocv_chunks.front()->size);
     }
-    if (mocv_chunks.size() > 1)
+    if (color_streams.blending)
     {
-      auto const& blend_colors = *mocv_chunks[1];
+      auto const& blend_colors = *mocv_chunks[*color_streams.blending];
       if (blend_colors.size % sizeof(CImVector) != 0)
         throw std::runtime_error("Invalid modern WMO secondary MOCV in \"" + fname + "\".");
       auto const* colors = reinterpret_cast<CImVector const*>(f.getBuffer() + blend_colors.payload_offset);
       auto const color_count = blend_colors.size / sizeof(CImVector);
-      if (_vertex_colors.empty())
+      if (!retail && _vertex_colors.empty())
         _vertex_colors.resize(color_count, glm::vec4(0.f));
-      auto const count = std::min(_vertex_colors.size(), color_count);
+      auto const count = std::min(retail ? _material_blend_alpha.size() : _vertex_colors.size(), color_count);
       for (std::size_t i = 0; i < count; ++i)
-        _vertex_colors[i].w = static_cast<float>(colors[i].a) / 255.f;
+        if (retail)
+          _material_blend_alpha[i] = static_cast<float>(colors[i].a) / 255.f;
+        else
+          _vertex_colors[i].w = static_cast<float>(colors[i].a) / 255.f;
+    }
+
+    // MOC2 stores material blend weights, independent of vertex lighting MOCV.
+    if (retail) _material_weights.assign(_vertices.size(), glm::vec4(0.f));
+    auto const moc2_chunks = find_group_chunks('MOC2');
+    if (retail && !moc2_chunks.empty())
+    {
+      auto const& chunk = *moc2_chunks.front();
+      if (chunk.size < _vertices.size() * sizeof(CImVector))
+        throw std::runtime_error("Truncated modern WMO MOC2 in \"" + fname + "\".");
+      auto const* colors = reinterpret_cast<CImVector const*>(f.getBuffer() + chunk.payload_offset);
+      for (std::size_t i = 0; i < _vertices.size(); ++i)
+        _material_weights[i] = glm::vec4(colors[i].r, colors[i].g, colors[i].b, colors[i].a) / 255.f;
     }
 
     auto const mliq_chunks = find_group_chunks('MLIQ');

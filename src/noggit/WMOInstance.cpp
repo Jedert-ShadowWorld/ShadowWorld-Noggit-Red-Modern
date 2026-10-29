@@ -51,7 +51,7 @@ WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, ENT
 
   _need_recalc_extents = true;
   updateTransformMatrix();
-  change_doodadset(_doodadset);
+  refresh_doodadset();
 }
 
 WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, Noggit::NoggitRenderContext context)
@@ -61,7 +61,7 @@ WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, Nog
   , mNameset(0)
   , _doodadset(0)
 {
-  change_doodadset(_doodadset);
+  refresh_doodadset();
   pos = glm::vec3(0.0f, 0.0f, 0.0f);
   dir = math::degrees::vec3(math::degrees(0)._, math::degrees(0)._, math::degrees(0)._);
   uid = 0;
@@ -78,6 +78,7 @@ WMOInstance::WMOInstance(WMOInstance&& other) noexcept
   , mFlags(other.mFlags)
   , mNameset(other.mNameset)
   , _doodadset(other._doodadset)
+  , _retail_source(std::move(other._retail_source))
   , _doodads_per_group(other._doodads_per_group)
   , _need_doodadset_update(other._need_doodadset_update)
   , _update_group_extents(other._update_group_extents)
@@ -109,6 +110,7 @@ WMOInstance& WMOInstance::operator= (WMOInstance&& other) noexcept
   std::swap(mFlags, other.mFlags);
   std::swap(mNameset, other.mNameset);
   std::swap(_doodadset, other._doodadset);
+  std::swap(_retail_source, other._retail_source);
   std::swap(_doodads_per_group, other._doodads_per_group);
   std::swap(_need_doodadset_update, other._need_doodadset_update);
   std::swap(_transform_mat, other._transform_mat);
@@ -440,21 +442,70 @@ uint16_t WMOInstance::doodadset() const
 
 void WMOInstance::change_doodadset(uint16_t doodad_set)
 {
+  // An explicit MODS set replaces the Retail multi-set selection.
+  if (_retail_source)
+  {
+    mFlags &= ~uint16_t(0x80);
+    _retail_source->primary.sets.clear();
+  }
+  if (!wmo->finishedLoading()
+      && Noggit::Application::NoggitApplication::instance()->clientData()->version()
+         != BlizzardArchive::ClientVersion::RETAIL)
+  {
+    _need_doodadset_update = true;
+    return;
+  }
+  _doodadset = doodad_set;
+  refresh_doodadset();
+}
+
+void WMOInstance::set_retail_source(Noggit::Formats::ADT::RetailObjectTransfer::WmoSource source)
+{
+  _retail_source = std::move(source);
+  if ((mFlags & 0x80) && !_retail_source->primary.sets.empty())
+    _doodadset = _retail_source->primary.sets.front();
+  refresh_doodadset();
+}
+
+std::optional<Noggit::Formats::ADT::RetailObjectTransfer::WmoState> WMOInstance::retail_state() const
+{
+  if (Noggit::Application::NoggitApplication::instance()->clientData()->version() != BlizzardArchive::ClientVersion::RETAIL)
+    return {};
+  return Noggit::Formats::ADT::RetailObjectTransfer::WmoState{mFlags, mNameset, _doodadset, _retail_source};
+}
+
+void WMOInstance::apply_retail_state(Noggit::Formats::ADT::RetailObjectTransfer::WmoState const& state)
+{
+  mFlags = state.flags;
+  mNameset = state.nameSet;
+  _doodadset = state.doodadSet;
+  _retail_source = state.source;
+  refresh_doodadset();
+}
+
+void WMOInstance::refresh_doodadset()
+{
   if (!wmo->finishedLoading())
   {
     _need_doodadset_update = true;
     return;
   }
 
-  // out-of-range set indices (bad MODF data) fall back to the default set
-  // instead of leaving the instance doodad-less and re-resolving every frame
-  if (doodad_set >= wmo->doodadsets.size())
+  if (_retail_source && (mFlags & 0x80))
   {
-    doodad_set = 0;
+    _doodads_per_group = wmo->doodads_per_group(_retail_source->primary.sets);
   }
-
-  _doodadset = doodad_set;
-  _doodads_per_group = wmo->doodads_per_group(_doodadset);
+  else
+  {
+    // out-of-range set indices (bad MODF data) fall back to the default set
+    // instead of leaving the instance doodad-less and re-resolving every frame.
+    // Retail keeps the stored index for saving and only displays the fallback.
+    auto const visibleSet = _doodadset < wmo->doodadsets.size() ? _doodadset : uint16_t(0);
+    if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
+        != BlizzardArchive::ClientVersion::RETAIL)
+      _doodadset = visibleSet;
+    _doodads_per_group = wmo->doodads_per_group(visibleSet);
+  }
   _need_doodadset_update = false;
 
   ensureExtents();
@@ -500,7 +551,7 @@ std::vector<wmo_doodad_instance*> WMOInstance::get_visible_doodads
 
   if (_need_doodadset_update)
   {
-    change_doodadset(_doodadset);
+    refresh_doodadset();
   }
 
   if (!wmo->is_hidden() || draw_hidden_models)
@@ -535,7 +586,7 @@ std::map<uint32_t, std::vector<wmo_doodad_instance>>* WMOInstance::get_doodads(b
 
   if (_need_doodadset_update)
   {
-    change_doodadset(_doodadset);
+    refresh_doodadset();
   }
 
   if (wmo->is_hidden() && !draw_hidden_models)

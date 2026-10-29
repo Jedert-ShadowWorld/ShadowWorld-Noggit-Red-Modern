@@ -9,6 +9,7 @@
 #include <noggit/tool_enums.hpp>
 #include <noggit/wmo_liquid.hpp>
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -226,11 +227,14 @@ private:
 
   std::vector <wmo_triangle_material_info> _material_infos;
   std::vector<wmo_batch> _batches;
+  std::vector<float> _material_blend_alpha;
 
   std::vector<::glm::vec3> _vertices;
   std::vector<::glm::vec3> _normals;
   std::vector<glm::vec2> _texcoords;
   std::vector<glm::vec2> _texcoords_2;
+  std::vector<glm::vec2> _texcoords_3, _texcoords_4;
+  std::vector<glm::vec4> _material_weights;
   std::vector<glm::vec4> _vertex_colors;
   std::vector<uint16_t> _indices;
 
@@ -317,9 +321,12 @@ public:
 
   [[nodiscard]]
   std::map<uint32_t, std::vector<wmo_doodad_instance>> doodads_per_group(uint16_t doodadset) const;
+  std::map<uint32_t, std::vector<wmo_doodad_instance>> doodads_per_group(std::vector<uint16_t> const& selected_sets) const;
 
   std::vector<WMOGroup> groups;
   std::vector<WMOMaterial> materials;
+  // Runtime texture indices, kept separate from the 64-byte MOMT disk layout.
+  std::vector<std::array<std::uint32_t, 9>> material_textures;
   glm::vec3 extents[2]; // local extents, not axis aligned
   std::vector<scoped_blp_texture_reference> textures;
   std::vector<std::string> models;
@@ -358,9 +365,15 @@ public:
   [[nodiscard]]
   bool uses_file_data_ids() const { return _uses_file_data_ids; }
 
+  std::uint32_t primary_group_file_id(std::size_t index) const
+  {
+    return _primary_group_ids.empty() ? 0 : _primary_group_ids.at(index);
+  }
+
 private:
   bool _hidden = false;
   bool _uses_file_data_ids = false;
+  std::vector<std::uint32_t> _primary_group_ids;
 
   Noggit::Rendering::WMORender _renderer;
 };

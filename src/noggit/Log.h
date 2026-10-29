@@ -13,3 +13,5 @@ std::ostream& _Log(const char * pFile, int pLine);
 #define Log _Log( __FILE__, __LINE__ )
 
 void InitLogging();
+// Archive the previous session for Retail, otherwise discard the startup snapshot.
+void ConfigureProjectLogging(bool retail);

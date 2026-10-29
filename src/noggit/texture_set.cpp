@@ -14,6 +14,7 @@
 #include <QSettings>
 
 #include <algorithm>    // std::min
+#include <set>
 #include <sstream>
 
 TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base
@@ -31,13 +32,6 @@ TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t 
              << " has " << header.nLayers
              << " texture layers (max " << MAX_TEXTURE_LAYERS << "). Only the first " << MAX_TEXTURE_LAYERS << " will be loaded." << std::endl;
   }
-  {
-    LogError << "Chunk (" << chunk->px << ", " << chunk->py << ") in "
-             << chunk->mt->file_key().stringRepr()
-             << " has " << header.nLayers
-             << " texture layers (max 4). Only the first 4 will be loaded." << std::endl;
-  }
-
   std::copy(header.doodadMapping, header.doodadMapping + 8, _doodadMapping.begin());
   std::copy(header.doodadStencil, header.doodadStencil + 8, _doodadStencil.begin());
 

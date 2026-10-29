@@ -10,6 +10,8 @@
 #include <QtGui/QOpenGLContext>
 #include <QtGui/QOpenGLFramebufferObjectFormat>
 #include <QtGui/QSurfaceFormat>
+#include <opengl/ScopedTextureArrayBinding.hpp>
+#include <noggit/formats/BlpBgra.hpp>
 
 #include <algorithm>
 #include <glm/vec2.hpp>
@@ -55,6 +57,7 @@ void TextureManager::unload_all(Noggit::NoggitRenderContext context)
   {
     gl.deleteTextures(static_cast<GLuint>(pair.second.arrays.size()), pair.second.arrays.data());
   }
+  arrays_for_context.clear();
 }
 
 TexArrayParams& TextureManager::get_tex_array(int width, int height, int mip_level,
@@ -221,6 +224,11 @@ void blp_texture::upload()
   {
     return;
   }
+
+  // Uploads use the active texture unit, which may hold another stage of a Retail material.
+  auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+  bool const preserve_binding = client->version() == BlizzardArchive::ClientVersion::RETAIL;
+  OpenGL::Scoped::texture_array_binding_restore const restore_binding(gl, preserve_binding);
 
   int width = _width, height = _height;
 
@@ -568,11 +576,22 @@ void blp_texture::finishLoading()
   }
 
   char const* lData = f.getPointer();
+  if (f.getSize() < sizeof(BLPHeader))
+    throw std::runtime_error("Truncated BLP header: " + _file_key.stringRepr());
   BLPHeader const* lHeader = reinterpret_cast<BLPHeader const*>(lData);
   _width = lHeader->resx;
   _height = lHeader->resy;
 
-  if (lHeader->attr_0_compression == 1)
+  if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL && lHeader->attr_0_compression == 3)
+  {
+    auto decoded = Noggit::Format::read_bgra_blp(lData, f.getSize());
+    _width = static_cast<int>(decoded.width);
+    _height = static_cast<int>(decoded.height);
+    _compression_format.reset();
+    _compressed_data.clear();
+    _data = std::move(decoded.mipmaps);
+  }
+  else if (lHeader->attr_0_compression == 1)
   {
     loadFromUncompressedData(lHeader, lData);
   }

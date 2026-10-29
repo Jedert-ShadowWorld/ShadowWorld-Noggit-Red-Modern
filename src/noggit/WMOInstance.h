@@ -3,6 +3,7 @@
 #include <noggit/SceneObject.hpp>
 #include <noggit/WMO.h>
 #include <noggit/ContextObject.hpp>
+#include <noggit/formats/adt/RetailObjectTransfer.hpp>
 
 #include <cstdint>
 
@@ -30,12 +31,18 @@ public:
 
   uint16_t doodadset() const;
   void change_doodadset(uint16_t doodad_set);
+  void set_retail_source(Noggit::Formats::ADT::RetailObjectTransfer::WmoSource source);
+  std::optional<Noggit::Formats::ADT::RetailObjectTransfer::WmoSource> const& retail_source() const { return _retail_source; }
+  std::optional<Noggit::Formats::ADT::RetailObjectTransfer::WmoState> retail_state() const;
+  void apply_retail_state(Noggit::Formats::ADT::RetailObjectTransfer::WmoState const& state);
 
   [[nodiscard]]
   std::map<int, std::pair<glm::vec3, glm::vec3>> const& getGroupExtents();
 
 private:
   void update_doodads();
+  void refresh_doodadset();
+  std::optional<Noggit::Formats::ADT::RetailObjectTransfer::WmoSource> _retail_source;
 
   uint16_t _doodadset;
   std::map<int, std::pair<glm::vec3, glm::vec3>> group_extents;

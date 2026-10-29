@@ -14,6 +14,13 @@
 #include <util/exception_to_string.hpp>
 
 #include <QtCore/QSettings>
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QCoreApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <algorithm>
 #include <cstdint>
@@ -24,6 +31,13 @@
 
 namespace
 {
+  bool uses_retail_load_reports()
+  {
+    auto* application = Noggit::Application::NoggitApplication::instance();
+    return application->hasClientData()
+      && application->clientData()->version() == BlizzardArchive::ClientVersion::RETAIL;
+  }
+
   std::string async_object_name(AsyncObject const* object)
   {
     if (!object)
@@ -320,6 +334,7 @@ void AsyncLoader::process()
       }
     }
 
+    bool const retail = uses_retail_load_reports();
     try
     {
       if (additional_log)
@@ -337,8 +352,7 @@ void AsyncLoader::process()
           LogError << "[ModernADT] Refusing to pass an unverified Shadowlands ADT to the legacy loader: '"
                    << object_name << "'." << std::endl;
 
-          if (object->is_required_when_saving())
-            _important_object_failed_loading = true;
+          record_failure(object, "Split ADT validation failed; see terrain diagnostics in log.txt.", retail);
 
           _currently_loading.remove(object);
           object->error_on_loading();
@@ -369,6 +383,7 @@ void AsyncLoader::process()
           std::lock_guard<std::mutex> const lock(_guard);
           LogError << "[ModernADT] Verified Shadowlands root ADT was not a MapTile object: '"
                    << object_name << "'." << std::endl;
+          if (retail) record_failure(object, "Validated root ADT is not a MapTile object.", true);
           _currently_loading.remove(object);
           object->error_on_loading();
           _state_changed.notify_all();
@@ -377,8 +392,13 @@ void AsyncLoader::process()
       }
 
       object->finishLoading();
+      if (retail && object->loading_failed())
+      {
+        std::lock_guard<std::mutex> const lock(_guard);
+        record_failure(object, "Loader marked this object as failed without an exception.", true);
+      }
 
-      if (additional_log)
+      if (additional_log && (!retail || !object->loading_failed()))
       {
         std::lock_guard<std::mutex> const lock(_guard);
         LogDebug << "Loaded  file '" << object_name << "'" << std::endl;
@@ -396,10 +416,7 @@ void AsyncLoader::process()
 
       LogError << "Caught file read error while loading '" << object_name << "': " << e.what() << std::endl;
 
-      if (object->is_required_when_saving())
-      {
-        _important_object_failed_loading = true;
-      }
+      record_failure(object, e.what(), retail);
 
       _currently_loading.remove(object);
       object->error_on_loading();
@@ -412,10 +429,7 @@ void AsyncLoader::process()
       std::string const reason{ util::exception_to_string(std::current_exception()) };
       LogError << "Caught unknown error while loading '" << object_name << "': " << reason <<  std::endl;
 
-      if (object->is_required_when_saving())
-      {
-        _important_object_failed_loading = true;
-      }
+      record_failure(object, reason, retail);
 
       _currently_loading.remove(object);
       object->error_on_loading();
@@ -474,14 +488,57 @@ AsyncLoader::~AsyncLoader()
   {
     thread.join();
   }
+  if (instance == this) instance = nullptr;
 }
 
 bool AsyncLoader::important_object_failed_loading() const
 {
-  return _important_object_failed_loading;
+  return uses_retail_load_reports() ? !_failures.required().empty() : _important_object_failed_loading.load();
 }
 
 void AsyncLoader::reset_object_fail()
 {
   _important_object_failed_loading = false;
+}
+
+std::vector<LoadFailure> AsyncLoader::loading_failures() const
+{
+  return _failures.required();
+}
+
+void AsyncLoader::forget_failure(AsyncObject const* object)
+{
+  _failures.forget(object);
+}
+
+std::string AsyncLoader::failure_report_path() const
+{
+  static auto const path = QDir::current().absoluteFilePath(
+    "logs/load-errors-" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-")
+    + QString::number(QCoreApplication::applicationPid()) + ".jsonl").toStdString();
+  return path;
+}
+
+void AsyncLoader::record_failure(AsyncObject const* object, std::string const& reason, bool retail)
+{
+  if (!retail)
+  {
+    if (object->is_required_when_saving()) _important_object_failed_loading = true;
+    return;
+  }
+  auto const name = async_object_name(object);
+  bool const required = object->is_required_when_saving();
+  _failures.record(object, {name, reason, required});
+  auto const path = QString::fromStdString(failure_report_path());
+  QJsonObject entry{
+    {"timeUtc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+    {"asset", QString::fromStdString(name)},
+    {"reason", QString::fromStdString(reason)},
+    {"requiredForSaving", required}
+  };
+  QFile file(path);
+  auto const bytes = QJsonDocument(entry).toJson(QJsonDocument::Compact) + '\n';
+  if (!QDir().mkpath(QFileInfo(path).absolutePath()) || !file.open(QIODevice::WriteOnly | QIODevice::Append)
+      || file.write(bytes) != bytes.size() || !file.flush())
+    LogError << "Cannot persist load error report: " << path.toStdString() << std::endl;
 }
