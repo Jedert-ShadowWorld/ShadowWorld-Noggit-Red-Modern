@@ -101,6 +101,7 @@ public:
                              , const bool opaque_only_tris = false
                              , const float obj_distance_max = 0.0f
                              , const bool do_wmo_interiors = true
+                             , const int model_preview_time = -1
                              );
 
   MapChunk* getChunkAt(glm::vec3 const& pos);
@@ -308,6 +309,7 @@ public:
       , math::degrees::vec3 rotation
       , float scale
       , bool action
+      , Noggit::Formats::ADT::RetailObjectTransfer::WmoState const* retail_state = nullptr
   );
 
   auto stamp(glm::vec3 const& pos, float dt, QImage const* img, float radiusOuter

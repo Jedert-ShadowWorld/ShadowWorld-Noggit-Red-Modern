@@ -267,7 +267,8 @@ unsigned Noggit::Action::handleObjectAdded(unsigned uid, bool redo)
       unsigned old_uid = pair.first;
       SceneObject* obj;
       if (pair.second.type == ActionObjectTypes::WMO)
-        obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir, pair.second.scale, false);
+        obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir, pair.second.scale, false,
+          pair.second.retail_wmo ? &*pair.second.retail_wmo : nullptr);
       else
         obj = _map_view->getWorld()->addM2AndGetInstance(pair.second.file_key, pair.second.pos,
                                                          pair.second.scale,  pair.second.dir, nullptr, false, false);
@@ -331,7 +332,8 @@ unsigned Noggit::Action::handleObjectRemoved(unsigned uid, bool redo)
       unsigned old_uid = pair.first;
       SceneObject* obj;
       if (pair.second.type == ActionObjectTypes::WMO)
-        obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir, pair.second.scale, false);
+        obj = _map_view->getWorld()->addWMOAndGetInstance(pair.second.file_key, pair.second.pos, pair.second.dir, pair.second.scale, false,
+          pair.second.retail_wmo ? &*pair.second.retail_wmo : nullptr);
       else
         obj = _map_view->getWorld()->addM2AndGetInstance(pair.second.file_key, pair.second.pos,
                                                          pair.second.scale,  pair.second.dir, nullptr, false, false);
@@ -765,7 +767,8 @@ void Noggit::Action::registerObjectAdded(SceneObject* obj)
                                                            , type
                                                            , obj->pos
                                                            , obj->dir
-                                                           , obj->scale}
+                                                           , obj->scale
+                                                           , type == ActionObjectTypes::WMO ? static_cast<WMOInstance*>(obj)->retail_state() : std::nullopt}
                                                            ));
 }
 
@@ -787,7 +790,8 @@ void Noggit::Action::registerObjectRemoved(SceneObject* obj)
                                                              , type
                                                              , obj->pos
                                                              , obj->dir
-                                                             , obj->scale}
+                                                             , obj->scale
+                                                             , type == ActionObjectTypes::WMO ? static_cast<WMOInstance*>(obj)->retail_state() : std::nullopt}
                                                              ));
 }
 

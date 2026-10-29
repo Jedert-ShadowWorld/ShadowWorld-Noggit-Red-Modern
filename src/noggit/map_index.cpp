@@ -5,6 +5,7 @@
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/Log.h>
+#include <noggit/DerivedMapState.hpp>
 #include <noggit/Misc.h>
 #include <noggit/World.h>
 #include <noggit/ActionManager.hpp>
@@ -12,15 +13,29 @@
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/map_index.hpp>
 #include <noggit/uid_storage.hpp>
+#include <noggit/formats/RetailWorldTables.hpp>
 #include <noggit/application/NoggitApplication.hpp>
 #include <ClientFile.hpp>
 #include <noggit/database/SqlUIDStorage.h>
+#include <noggit/formats/adt/UidRepair.hpp>
+#include <noggit/formats/adt/UidRepairGeometry.hpp>
+#include <noggit/formats/adt/ShadowlandsADTCodec.hpp>
+#include <noggit/ui/UidRepairReview.hpp>
+#include <QApplication>
+#include <QOpenGLContext>
+#include <QSurface>
+#include <QCryptographicHash>
+#include <QSaveFile>
+#include <QDir>
+#include <QDateTime>
+#include <QUuid>
 
 #include <QtCore/QSettings>
 #include <QByteArray>
 #include <QTextStream>
 #include <QRegExp>
 #include <QFile>
+#include <QFileInfo>
 
 #include <forward_list>
 #include <cstring>
@@ -294,6 +309,29 @@ void MapIndex::save()
 {
   std::stringstream filename;
   filename << "World\\Maps\\" << basename << "\\" << basename << ".wdt";
+
+  if (auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+      client->version() == BlizzardArchive::ClientVersion::RETAIL)
+  {
+    if (mHasAGlobalWMO || _needs_wdt_creation)
+      throw std::runtime_error("Retail WDT creation/global WMO rewriting is unsupported; existing file was preserved");
+    BlizzardArchive::ClientFile source(filename.str(), client);
+    std::vector<std::uint32_t> tiles;
+    tiles.reserve(4096);
+    for (int y = 0; y < 64; ++y)
+      for (int x = 0; x < 64; ++x) tiles.push_back(mTiles[y][x].flags);
+    auto flags = FLAG_SHADING | (mBigAlpha ? FLAG_BIG_ALPHA : 0)
+      | (_sort_models_by_size_class ? FLAG_DOODADS_SORT : 0);
+    auto bytes = Noggit::Formats::RetailWorldTables::updateWdt(
+      {source.getBuffer(), source.getBuffer() + source.getSize()}, flags, tiles);
+    auto path = QString::fromStdString(client->getDiskPath(filename.str()));
+    if (!QDir().mkpath(QFileInfo(path).absolutePath())) throw std::runtime_error("Cannot create WDT directory");
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly) || output.write(bytes.data(), bytes.size()) != qint64(bytes.size()) || !output.commit())
+      throw std::runtime_error("Cannot atomically save Retail WDT");
+    changed = false;
+    return;
+  }
 
   //Log << "Saving WDT \"" << filename << "\"." << std::endl;
 
@@ -880,8 +918,12 @@ uint32_t MapIndex::newGUID()
   return ++highestGUID;
 }
 
-uid_fix_status MapIndex::fixUIDs (World* world, bool cancel_on_model_loading_error)
+uid_fix_status MapIndex::fixUIDs (World* world, bool cancel_on_model_loading_error, bool projectOnly)
 {
+  if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL)
+    return reviewAndFixUIDs(world, projectOnly);
+
   // clear all selection groups since UIDs will change.
   // TODO : update them instead.
     _world->clear_selection_groups();
@@ -1197,6 +1239,224 @@ uid_fix_status MapIndex::fixUIDs (World* world, bool cancel_on_model_loading_err
   world->unload_every_model_and_wmo_instance();
 
   return loading_error ? uid_fix_status::done_with_errors : uid_fix_status::done;
+}
+
+
+uid_fix_status MapIndex::reviewAndFixUIDs(World* world, bool projectOnly)
+{
+  using namespace Noggit::Formats::ADT;
+  using Bytes = UidRepair::Bytes;
+  auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+  bool const modern = true; // Retail split ADTs only.
+  QString project = QString::fromStdString(Noggit::Project::CurrentProject::get()->ProjectPath);
+  struct Original { std::string source; QString target; Bytes bytes; bool existed; };
+  std::map<std::string, Original> originals;
+  std::map<std::string, Bytes> updates;
+  QVector<Noggit::Ui::UidRepairIssue> issues;
+  QStringList report;
+  UidGeometryPlan plan;
+  std::map<std::string, std::pair<UidRepair::Reference,QByteArray>> assetStates;
+  auto readAsset = [&](UidRepair::Reference const& asset, QByteArray& state)
+  {
+    try
+    {
+      auto key = asset.path.empty() ? BlizzardArchive::Listfile::FileKey(asset.fileId)
+                                   : BlizzardArchive::Listfile::FileKey(asset.path);
+      if (!client->exists(key)) { state="missing"; throw std::runtime_error("Asset is missing"); }
+      BlizzardArchive::ClientFile file(key,client);
+      if(file.isEof() || !file.getSize()) { state="unreadable"; throw std::runtime_error("Asset cannot be read"); }
+      if(file.getSize()>INT_MAX) throw std::runtime_error("Asset exceeds supported size");
+      state=QCryptographicHash::hash(QByteArray::fromRawData(file.getBuffer(),static_cast<int>(file.getSize())),QCryptographicHash::Sha256);
+      return Bytes(file.getBuffer(),file.getBuffer()+file.getSize());
+    }
+    catch(...) { if(state.isEmpty())state="unreadable"; throw; }
+  };
+  bool ready = false;
+  // Preflight must not write files or change UIDs, loaded models or selection groups.
+  auto load = [&](std::string const& name)
+  {
+    BlizzardArchive::ClientFile file(name, client);
+    if (file.isEof() || !file.getSize()) throw std::runtime_error("Empty/unreadable file: " + name);
+    Bytes bytes(file.getBuffer(), file.getBuffer() + file.getSize());
+    auto target = QString::fromStdString(client->getDiskPath(BlizzardArchive::Listfile::FileKey(name)));
+    originals.emplace(name, Original{name,target,bytes,QFile::exists(target)});
+    return bytes;
+  };
+  try
+  {
+    if (mHasAGlobalWMO) throw std::runtime_error("Global-WMO maps are not supported by terrain UID repair.");
+    auto const projectTiles = Noggit::DerivedMapState::projectTiles(project.toStdString(), basename);
+    if (projectOnly && projectTiles.empty())
+      throw std::runtime_error("No edited tiles in the project. Use Get max UID to start editing a client map.");
+    std::vector<UidTile> tiles;
+    for (int z=0; z<64; ++z) for (int x=0; x<64; ++x)
+    {
+      if (!(mTiles[z][x].flags & 1)) continue;
+      auto stem = "world/maps/"+basename+"/"+basename+"_"+std::to_string(x)+"_"+std::to_string(z);
+      auto root = stem+".adt";
+      if (!client->exists(root)) throw std::runtime_error("Required terrain is missing: "+root);
+      auto name = modern ? stem+"_obj0.adt" : root;
+      if (!client->exists(name)) throw std::runtime_error("Required object file is missing: "+name);
+      UidTile tile;
+      tile.x=x; tile.z=z; tile.path=name; tile.objects=load(name);
+      tile.editable = !projectOnly || std::find(projectTiles.begin(), projectTiles.end(), TileIndex(x,z)) != projectTiles.end();
+      if (modern && client->exists(stem+"_obj1.adt"))
+      { tile.hasLod=true; tile.lod=load(stem+"_obj1.adt"); }
+      tiles.push_back(std::move(tile));
+    }
+    if (tiles.empty()) throw std::runtime_error("No terrain tiles to repair.");
+    auto reader = [&](UidRepair::Reference const& asset)
+    {
+      auto key=asset.path.empty()?"filedataid:"+std::to_string(asset.fileId):asset.path;
+      auto& entry=assetStates[key];entry.first=asset;
+      return readAsset(asset,entry.second);
+    };
+    auto canonical = [&](UidRepair::Record& record)
+    {
+      if (modern && !record.asset.path.empty())
+        if (auto id=client->listfile()->getFileDataID(record.asset.path))
+        {
+          record.asset.fileId=id;
+          record.identity.replace(2,record.identity.find('\0')-2,"#"+std::to_string(id));
+        }
+    };
+    plan=planUidGeometry(std::move(tiles),modern,modern || Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features,
+      reader,canonical,ShadowlandsADTCodec::repairObjectLod,projectOnly);
+    for(auto const& problem:plan.problems)
+    {
+      issues.push_back({QString::fromStdString(problem.asset),QString::fromStdString(problem.source),
+        QString::number(problem.uid),QString::fromStdString(problem.reason)});
+      report << QString("REMOVE: %1 | %2 | UID %3 | %4").arg(issues.back().asset,issues.back().source,issues.back().uid,issues.back().reason);
+    }
+    for(auto& tile:plan.tiles)
+    {
+      if(tile.objects!=originals.at(tile.path).bytes)updates.emplace(tile.path,std::move(tile.objects));
+      if(tile.hasLod)
+      {
+        auto name=tile.path;name.replace(name.size()-9,9,"_obj1.adt");
+        if(tile.lod!=originals.at(name).bytes)updates.emplace(name,std::move(tile.lod));
+      }
+    }
+    if (projectOnly)
+      for (auto const& tile : plan.tiles)
+        if (!tile.editable)
+          for (auto name : {tile.path, tile.path.substr(0, tile.path.size()-9) + "_obj1.adt"})
+            if (updates.count(name))
+            {
+              auto path = QString::fromStdString(name);
+              issues.push_back({"", path, "", "Neighbour OBJ reference update; no placements removed."});
+              report << "NEIGHBOUR: " + path;
+            }
+    ready=true;
+  }
+  catch(std::exception const& error)
+  {
+    issues.push_back({"",QString::fromStdString(basename),"",QString::fromUtf8(error.what())});
+    LogError << "[UID repair] Preflight: " << error.what() << std::endl;
+  }
+  QString summary = ready
+    ? QString("Placements to remove: %1. Placements to update (UIDs, bounds, tile/chunk references): %2. LOD and instance data are kept.\n%3 files will change. Original files, the UID mapping and a report are backed up to the project's uid-repair folder. Cancel leaves the project unchanged.")
+        .arg(plan.removed).arg(plan.sourceUids.size()).arg(updates.size())
+    : QString("Repair is blocked by invalid or missing map data. No files were changed. Fix the listed problem and run the repair again.");
+  if (projectOnly) summary.prepend("Scope: project tiles. Existing UIDs are kept unless they conflict. Required neighbour OBJ0/OBJ1 reference updates are listed below. ROOT/TEX files and unrelated placements are not changed.\n\n");
+  else summary.prepend("Scope: whole map.\n\n");
+  // Must not run inside initializeGL/paintGL; the GL context is restored after the modal review.
+  auto context=QOpenGLContext::currentContext();
+  auto surface=context?context->surface():nullptr;
+  Noggit::Ui::UidRepairReview review(summary,issues,
+    plan.removed ? "Remove listed placements and repair" : "Repair UIDs, bounds and tile references",ready,
+    QApplication::activeWindow());
+  if (review.exec()!=QDialog::Accepted || !ready) return uid_fix_status::cancelled;
+  if(context && surface && !context->makeCurrent(surface))
+  { LogError << "[UID repair] Could not restore OpenGL context after review." << std::endl; return uid_fix_status::failed; }
+
+  auto backup=QDir(project).filePath("uid-repair/"+QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-")+QUuid::createUuid().toString(QUuid::WithoutBraces));
+  auto write=[](QString const& target,Bytes const& bytes)
+  {
+    if(!QDir().mkpath(QFileInfo(target).absolutePath()))throw std::runtime_error("Cannot create backup/output directory");
+    QSaveFile file(target);file.setDirectWriteFallback(false);
+    if(!file.open(QIODevice::WriteOnly) || file.write(reinterpret_cast<char const*>(bytes.data()),bytes.size())!=static_cast<qint64>(bytes.size()) || !file.commit())
+      throw std::runtime_error("Cannot write "+target.toStdString()+": "+file.errorString().toStdString());
+  };
+  auto saveReport=[&]() {auto text=report.join('\n').toUtf8();write(QDir(backup).filePath("report.txt"),Bytes(text.begin(),text.end()));};
+  std::vector<std::string> written;
+  written.reserve(updates.size());
+  auto oldHighest=highestGUID;
+  bool counterTouched=false;
+  std::vector<TileIndex> dependencies;
+  if (projectOnly)
+    for (auto const& tile : plan.tiles)
+      if (!tile.editable)
+        for (auto name : {tile.path, tile.path.substr(0, tile.path.size()-9) + "_obj1.adt"})
+          if (updates.count(name) && !originals.at(name).existed)
+          { dependencies.emplace_back(tile.x, tile.z); break; }
+  auto const projectPath = project.toStdString();
+  try
+  {
+    // Dependencies are recorded before any OBJ file is written.
+    if (!dependencies.empty())
+    {
+      auto const flagged = Noggit::DerivedMapState::pending(projectPath, basename,
+        Noggit::DerivedMapState::ObjectDependency);
+      std::erase_if(dependencies, [&](TileIndex const& tile)
+        { return std::find(flagged.begin(), flagged.end(), tile) != flagged.end(); });
+      Noggit::DerivedMapState::mark(projectPath, basename, dependencies,
+        Noggit::DerivedMapState::ObjectDependency);
+    }
+    for(auto const& [name,asset]:assetStates)
+    {
+      QByteArray current;
+      try { readAsset(asset.first,current); } catch(std::exception const&) {}
+      if(current!=asset.second)throw std::runtime_error("Asset changed during review: "+name);
+    }
+    // All examined ADTs must be unchanged since preflight.
+    for(auto const& [name,original]:originals)
+    {
+      BlizzardArchive::ClientFile current(name,client);
+      if(current.getSize()!=original.bytes.size() || std::memcmp(current.getBuffer(),original.bytes.data(),original.bytes.size()) || QFile::exists(original.target)!=original.existed)
+        throw std::runtime_error("Source changed during review: "+name);
+    }
+    for(auto const& [name,bytes]:updates)
+    {
+      write(QDir(backup).filePath(QString::fromStdString(name)),originals.at(name).bytes);
+      report << QString::fromStdString("BACKUP: "+name+(originals.at(name).existed?" [existing override]":" [client original]"));
+    }
+    QByteArray uidMapping("old_uid,new_uid\n");
+    for (std::size_t i=0;i<plan.sourceUids.size();++i)
+      uidMapping += QByteArray::number(plan.sourceUids[i])+','+QByteArray::number(plan.targetUids[i])+'\n';
+    write(QDir(backup).filePath("uid-mapping.csv"),Bytes(uidMapping.begin(),uidMapping.end()));
+    report << "UID mapping: uid-mapping.csv";
+    report << QString("Confirmed: projectOnly=%1, removed=%2, valid placements=%3, tile references=%4")
+      .arg(projectOnly).arg(plan.removed).arg(plan.sourceUids.size()).arg(plan.references);
+    saveReport();
+    _uid_fix_all_in_progress=true;
+    for(int z=0;z<64;++z)for(int x=0;x<64;++x)if(mTiles[z][x].tile)
+    {mTiles[z][x].tile->wait_until_loaded();unloadTile(mTiles[z][x].tile->index);}
+    world->unload_every_model_and_wmo_instance();
+    for(auto const& [name,bytes]:updates){write(originals.at(name).target,bytes);written.push_back(name);}
+    highestGUID=projectOnly ? std::max(oldHighest,plan.highest) : plan.highest;
+    counterTouched=true;saveMaxUID();
+    if (plan.removed || plan.sourceUids != plan.targetUids) world->clear_selection_groups();
+    _uid_fix_all_in_progress=false;
+    report << "Complete.";
+    try{saveReport();}catch(std::exception const& e){LogError << e.what() << std::endl;}
+    Log << "[UID repair] Complete. Report/backups: " << backup.toStdString() << std::endl;
+    return uid_fix_status::done;
+  }
+  catch(std::exception const& error)
+  {
+    _uid_fix_all_in_progress=false;highestGUID=oldHighest;
+    for(auto it=written.rbegin();it!=written.rend();++it)
+      try{auto const& original=originals.at(*it);if(original.existed)write(original.target,original.bytes);else if(!QFile::remove(original.target))throw std::runtime_error("Cannot remove new override");}
+      catch(std::exception const& e){report << QString("ROLLBACK FAILED: ")+QString::fromStdString(*it)+": "+e.what();}
+    if(counterTouched)try{saveMaxUID();}catch(std::exception const& e){report << QString("COUNTER RESTORE FAILED: ")+e.what();}
+    try{Noggit::DerivedMapState::clear(projectPath,basename,dependencies,Noggit::DerivedMapState::ObjectDependency);}
+    catch(std::exception const& e){report << QString("PROVENANCE RESTORE FAILED: ")+e.what();}
+    report << QString("FAILED: ")+error.what();
+    try{saveReport();}catch(std::exception const& e){LogError << e.what() << std::endl;}
+    LogError << "[UID repair] " << error.what() << "; backup/report: " << backup.toStdString() << std::endl;
+    return uid_fix_status::failed;
+  }
 }
 
 void MapIndex::searchMaxUID()

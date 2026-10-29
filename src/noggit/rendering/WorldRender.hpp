@@ -4,6 +4,7 @@
 #define NOGGIT_WORLDRENDER_HPP
 
 #include <noggit/rendering/BaseRender.hpp>
+#include <noggit/rendering/MapPreviewQuality.hpp>
 
 #include <external/glm/glm.hpp>
 
@@ -76,6 +77,7 @@ namespace Noggit::Rendering
   class WorldRender : public BaseRender
   {
   public:
+    int modelPreviewTime() const { return _model_preview_time; }
     WorldRender(World* world);
 
     void upload() override;
@@ -118,6 +120,9 @@ namespace Noggit::Rendering
 
   private:
 
+    bool saveMinimapLegacy(TileIndex const& tile_idx, MinimapRenderSettings* settings,
+                           std::optional<QImage>& combined_image);
+
     void drawMinimap ( MapTile *tile
         , glm::mat4x4 const& model_view
         , glm::mat4x4 const& projection
@@ -139,6 +144,8 @@ namespace Noggit::Rendering
     float _cull_distance;
 
     // clock for the per-instance particle/ribbon sims (real elapsed time)
+    ModelPreviewClock _model_preview_clock;
+    int _model_preview_time = 0;
     std::chrono::steady_clock::time_point _last_fx_update = std::chrono::steady_clock::now();
 
     // shaders

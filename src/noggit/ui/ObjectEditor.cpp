@@ -885,7 +885,9 @@ namespace Noggit
             rotation = obj->dir;
           }
 
-          auto new_obj = world->addWMOAndGetInstance(obj->instance_model()->file_key(), pos, rotation, scale, true);
+          auto const appearance = static_cast<WMOInstance*>(obj)->retail_state();
+          auto new_obj = world->addWMOAndGetInstance(obj->instance_model()->file_key(), pos, rotation, scale, true,
+            appearance ? &*appearance : nullptr);
           new_obj->wmo->wait_until_loaded();
           new_obj->wmo->waitForChildrenLoaded();
           new_obj->recalcExtents();
@@ -922,7 +924,7 @@ namespace Noggit
         auto selectedObject = _model_instance_created.front();
         if (selectedObject.index() == eEntry_Object)
         {
-          ss << std::get<selected_object_type>(selectedObject)->instance_model()->file_key().filepath();
+          ss << std::get<selected_object_type>(selectedObject)->instance_model()->file_key().stringRepr();
         }
         else
         {
@@ -999,7 +1001,7 @@ namespace Noggit
         if (obj->which() == eMODEL)
         {
           auto original = static_cast<ModelInstance*>(obj);
-          auto clone = new ModelInstance(original->model->file_key().filepath(), _map_view->getRenderContext());
+          auto clone = new ModelInstance(original->model->file_key(), _map_view->getRenderContext());
           
           clone->scale = original->scale;
           clone->dir = original->dir;
@@ -1011,7 +1013,9 @@ namespace Noggit
         else if (obj->which() == eWMO)
         {
           auto original = static_cast<WMOInstance*>(obj);
-          auto clone = new WMOInstance(original->wmo->file_key().filepath(), _map_view->getRenderContext());
+          auto clone = new WMOInstance(original->wmo->file_key(), _map_view->getRenderContext());
+          if (auto const appearance = original->retail_state())
+            clone->apply_retail_state(*appearance);
 
           clone->scale = original->scale;
           clone->dir = original->dir;

@@ -127,7 +127,9 @@ private:
 
   int _liquid_id;
   int _liquid_type;
-  int _liquid_vertex_format;
+  int _liquid_vertex_format = LVF_HEIGHT_DEPTH;
+  // Retail LiquidObject is distinct from the vertex layout resolved via DB2.
+  std::uint16_t _liquid_object = 0;
   int _mclq_liquid_type;
   float _minimum;
   float _maximum;

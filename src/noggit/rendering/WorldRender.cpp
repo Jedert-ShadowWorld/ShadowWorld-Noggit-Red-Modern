@@ -1,7 +1,10 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "WorldRender.hpp"
+#include <noggit/rendering/MapPreviewQuality.hpp>
+#include <noggit/rendering/SurfaceDecalPreview.hpp>
 #include <external/PNG2BLP/Png2Blp.h>
+#include <noggit/formats/RetailMapTexture.hpp>
 #include <external/tracy/Tracy.hpp>
 #include <math/frustum.hpp>
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
@@ -16,6 +19,7 @@
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
 #include <noggit/project/CurrentProject.hpp>
+#include <noggit/texture_set.hpp>
 #include <noggit/World.h>
 
 #include <noggit/ui/MinimapCreator.hpp>
@@ -30,14 +34,66 @@
 #include <QListWidget>
 #include <QOpenGLFramebufferObjectFormat>
 #include <QSettings>
+#include <QSaveFile>
+#include <memory>
+#include <cstdlib>
 
 #include <algorithm>
 #include <chrono>
+#include <stdexcept>
 
 using namespace Noggit::Rendering;
 
 namespace
 {
+  bool isMapTexture(MinimapRenderSettings const& settings)
+  {
+    return settings.export_mode == LOD_MAPTEXTURES || settings.export_mode == LOD_MAPTEXTURES_N;
+  }
+
+  bool isBlankImage(QImage const& image)
+  {
+    for (int y = 0; y < image.height(); y += 4)
+    {
+      auto const* row = reinterpret_cast<std::uint8_t const*>(image.constScanLine(y));
+      for (int x = 0; x < image.width(); x += 4)
+        if (row[x * 4] + row[x * 4 + 1] + row[x * 4 + 2] >= 30)
+          return false;
+    }
+    return true;
+  }
+
+  void requireTerrainTextures(MapTile* tile)
+  {
+    if (tile->loading_failed())
+      throw std::runtime_error("Terrain tile failed to load: " + tile->file_key().stringRepr());
+    // One deadline for the tile, not a separate timeout for every texture.
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    auto require = [&](blp_texture* texture)
+    {
+      while (!texture->finishedLoading() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (!texture->finishedLoading() || texture->loading_failed())
+        throw std::runtime_error("Terrain texture failed to load: " + texture->file_key().stringRepr());
+    };
+    for (unsigned z = 0; z < 16; ++z)
+      for (unsigned x = 0; x < 16; ++x)
+      {
+        auto chunk = tile->getChunk(x, z);
+        if (!chunk || !chunk->texture_set)
+          throw std::runtime_error("Terrain tile has an incomplete chunk table.");
+        auto& textures = *chunk->texture_set->getTextures();
+        for (std::size_t layer = 0; layer < textures.size(); ++layer)
+        {
+          require(textures[layer].get());
+          // TileRender skips the whole tile while any layer height texture
+          // (MTXP _h.blp or MHID override) is still loading.
+          if (auto* height = chunk->texture_set->heightTexture(layer))
+            require(height);
+        }
+      }
+  }
+
   // WMO F_SIDN emissive pulse from 3.3.5 client DayNight::SetColors (0x007F3230) 
   // interpolates the SIDN emissive scalar from the fixed 4-key table at
   // 0x00AF4C80: 06:00=1, 07:00=0, 20:30=0, 21:30=1.
@@ -338,6 +394,8 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       gl.bindBuffer(GL_ELEMENT_ARRAY_BUFFER, _mapchunk_index);
 
       int num_chunks_uploaded_alphamap = 0;
+      bool const retail_client = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+          == BlizzardArchive::ClientVersion::RETAIL;
 
       for (auto const& pair : _world->_loaded_tiles_buffer)
       {
@@ -360,8 +418,9 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
         // Limit rate uploading alphamap data to avoid long frame times (causes freezes)
         // TODO make it dynamic based on target frame time and last frame times
+        // A Retail export renders a single frame, so a skipped tile would be written empty.
         bool skip_updates = false;
-        if (num_chunks_uploaded_alphamap > _frame_max_chunk_updates)
+        if (!(retail_client && render_settings.minimap_render) && num_chunks_uploaded_alphamap > _frame_max_chunk_updates)
           skip_updates = true;
 
         tile->renderer()->draw(
@@ -428,7 +487,24 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   // visible placements with emitters: their per-instance sims are ticked and
   // drawn (one concatenated batch per emitter) after the m2 pass
   std::unordered_map<Model*, std::vector<ModelInstance*>> model_with_particles;
-  bool const collect_fx = render_settings.draw_model_animations && !render_settings.minimap_render;
+  bool const retailPreview = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL && !render_settings.minimap_render;
+  auto const quality = MapPreviewQuality::resolve(retailPreview, render_settings.minimap_render,
+      retailPreview ? _world->_settings->value("retail/model_preview_quality", 3).toInt() : 3,
+      _cull_distance, _detail_doodad_distance,
+      retailPreview ? _world->_settings->value("retail/model_preview_lod", 0).toInt() : 0);
+  int const decalMode = surfaceDecalMode(retailPreview, render_settings.minimap_render,
+      retailPreview ? _world->_settings->value("retail/model_preview_decals", 0).toInt() : 0);
+  int animationMode = retailPreview ? _world->_settings->value("retail/model_preview_animation", 0).toInt() : 0;
+  if (animationMode < 0 || animationMode > 2)
+    animationMode = 0;
+  int const modelAnimationTime = retailPreview
+      ? _model_preview_clock.update(_world->animtime, animationMode, render_settings.draw_model_animations, quality.animationFps)
+      : static_cast<int>(_world->animtime);
+  _model_preview_time = modelAnimationTime;
+  bool const advanceModelEffects = render_settings.draw_model_animations && (!retailPreview || animationMode == 0);
+  bool const collect_fx = !render_settings.minimap_render && quality.particles
+      && (retailPreview ? animationMode != 2 : render_settings.draw_model_animations);
 
   tsl::robin_map<Model*, std::vector<glm::mat4x4>> models_to_draw;
   std::vector<WMOInstance*> wmos_to_draw;
@@ -485,7 +561,9 @@ void WorldRender::draw (glm::mat4x4 const& model_view
           mark_failed_placement(doodad.world_pos);
         }
 
-        if (!doodad.isInRenderDist(_cull_distance, camera_pos, render_settings.display_mode))
+        if (!doodad.isInRenderDist(
+                quality.doodadDistance,
+                camera_pos, render_settings.display_mode))
           continue;
         // TODO can check if in indoor group & exterior not hidden for further optimization. possibly check portals relations
 
@@ -587,14 +665,16 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
           bool render = false;
           // experimental : if camera and object haven't moved/changed since last frame, we don't need to do frustum culling again
-          if (!render_settings.camera_moved && !m2_instance->extentsDirty()/* && not_moved*/)
+          if (!retailPreview && !render_settings.camera_moved && !m2_instance->extentsDirty()/* && not_moved*/)
           {
             if (m2_instance->_rendered_last_frame)
             {
               render = true; // skip frustum check
             }
           }
-          if (!render && m2_instance->isInRenderDist(_cull_distance, camera_pos, render_settings.display_mode)
+          if (!render && m2_instance->isInRenderDist(
+                quality.modelDistance,
+                camera_pos, render_settings.display_mode)
             && (tile->renderer()->objectsFrustumCullTest() > 1 || m2_instance->isInFrustum(frustum)))
           {
             render = true;
@@ -719,7 +799,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
 
     OpenGL::Scoped::use_program shader {*_detail_doodads_program.get()};
-    shader.uniform("fade_dist", _detail_doodad_distance);
+    shader.uniform("fade_dist", quality.detailDistance);
 
     // the client draws these without backface culling, depth-writing, alpha-keyed
     gl.disable(GL_CULL_FACE);
@@ -736,7 +816,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       }
 
       if (!tile->finishedLoading()
-        || tile->camDist() - static_cast<float>(TILE_RADIUS) / 2.f > _detail_doodad_distance)
+        || tile->camDist() - static_cast<float>(TILE_RADIUS) / 2.f > quality.detailDistance)
       {
         continue;
       }
@@ -747,7 +827,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
         {
           MapChunk* chunk = tile->getChunk(cx, cz);
 
-          if (glm::distance(chunk->vcenter, camera_pos) > _detail_doodad_distance)
+          if (glm::distance(chunk->vcenter, camera_pos) > quality.detailDistance)
           {
             continue;
           }
@@ -777,6 +857,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     {
       OpenGL::Scoped::use_program wmo_program{*_wmo_program.get()};
 
+      wmo_program.uniform("preview_texture_lod_bias", quality.textureLodBias);
       wmo_program.uniform("camera", glm::vec3(camera_pos.x, camera_pos.y, camera_pos.z));
       wmo_program.uniform("sidn_intensity", compute_wmo_sidn_pulse(_world->time));
 
@@ -867,7 +948,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
             , camera_pos
             , false
             , render_settings.draw_fog
-            , _world->animtime
+            , modelAnimationTime
             , _skies->hasSkies()
             , render_settings.display_mode
             , !render_settings.draw_wmo_exterior
@@ -945,7 +1026,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
               , render_settings.draw_wmo_doodads
               , render_settings.draw_fog
               , is_selected
-              , _world->animtime
+              , modelAnimationTime
               , _skies->hasSkies()
               , render_settings.display_mode
               , disable_cull
@@ -1027,8 +1108,9 @@ void WorldRender::draw (glm::mat4x4 const& model_view
   if (render_settings.draw_models || draw_doodads_wmo || (render_settings.minimap_render && minimap_render_settings->use_filters))
   {
     ZoneScopedN("World::draw() : Draw M2s");
+    ModelRender::beginPreviewFrame();
 
-    if (render_settings.draw_model_animations)
+    if (retailPreview || render_settings.draw_model_animations)
     {
       ModelManager::resetAnim();
     }
@@ -1051,6 +1133,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
         gl.disable(GL_BLEND);
         gl.depthMask(GL_TRUE);
         gl.enable(GL_CULL_FACE);
+        m2_shader.uniform("preview_texture_lod_bias", quality.textureLodBias);
         m2_shader.uniform("blend_mode", 0);
         m2_shader.uniform("unfogged", static_cast<int>(model_render_state.unfogged));
         m2_shader.uniform("unlit",  static_cast<int>(model_render_state.unlit));
@@ -1060,6 +1143,8 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
         for (auto const& pair : models_to_draw)
         {
+          if (retailPreview && pair.second.empty())
+            continue;
           bool is_inclusion_filtered = false;
 
           // minimap render inclusion filters
@@ -1098,14 +1183,17 @@ void WorldRender::draw (glm::mat4x4 const& model_view
                 , frustum
                 , _cull_distance
                 , camera_pos
-                , _world->animtime
+                , modelAnimationTime
                 , render_settings.draw_models_with_box
                 , model_boxes_to_draw
                 , render_settings.display_mode
                 , false
-                , render_settings.draw_model_animations
+                , retailPreview || render_settings.draw_model_animations
                 , render_settings.editing_mode == editing_mode::object
                 , draw_animated_boxes
+                , quality.skinLod
+                , retailPreview
+                , decalMode
             );
             _world->_n_rendered_objects += pair.second.size();
           }
@@ -1290,14 +1378,15 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     float const fx_dt = std::chrono::duration<float>(fx_now - _last_fx_update).count();
     _last_fx_update = fx_now;
 
-    if (render_settings.draw_model_animations && !model_with_particles.empty())
+    if (collect_fx && !model_with_particles.empty())
     {
       // only instances that survived culling this frame tick their emitters
       for (auto& it : model_with_particles)
       {
         for (ModelInstance* instance : it.second)
         {
-          instance->updateEmitters(fx_dt);
+          if (advanceModelEffects)
+            instance->updateEmitters(fx_dt);
         }
       }
 
@@ -2201,14 +2290,23 @@ void WorldRender::drawMinimap ( MapTile *tile
   TileIndex m_tile = TileIndex(camera_pos);
   m_tile.z -= 1;
 
-  bool unload = !_world->mapIndex.has_unsaved_changes(m_tile);
+  bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL;
+  bool unload = !_world->mapIndex.has_unsaved_changes(m_tile)
+      && (!retail || (!_world->mapIndex.tileLoaded(m_tile) && !_world->mapIndex.tileAwaitingLoading(m_tile)));
 
-  MapTile* mTile = _world->mapIndex.loadTile(m_tile);
+  bool const terrainOnly = retail && isMapTexture(*settings);
+  MapTile* mTile = _world->mapIndex.loadTile(m_tile, false, !terrainOnly);
+  auto releaseNeighbour = [&, unload](MapTile*) { if (unload) _world->mapIndex.unloadTile(m_tile); };
+  std::unique_ptr<MapTile, decltype(releaseNeighbour)> neighbourCleanup(retail ? mTile : nullptr, releaseNeighbour);
 
   if (mTile)
   {
     mTile->wait_until_loaded();
-    mTile->waitForChildrenLoaded();
+    if (terrainOnly)
+      requireTerrainTextures(mTile);
+    else
+      mTile->waitForChildrenLoaded();
 
   }
 
@@ -2251,14 +2349,239 @@ void WorldRender::drawMinimap ( MapTile *tile
   draw(model_view, projection, glm::vec3(), glm::vec4(),
   glm::vec3(), camera_pos, settings, renderParams);
 
+  // A tile drawn for the first time uploads its textures during the draw and
+  // skips itself in that pass; a skipped tile must not be exported as black.
+  if (retail && !tile->renderer()->texturesReady())
+  {
+    gl.clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    draw(model_view, projection, glm::vec3(), glm::vec4(),
+    glm::vec3(), camera_pos, settings, renderParams);
+    if (!tile->renderer()->texturesReady())
+      throw std::runtime_error("Terrain textures are not resident; tile "
+        + std::to_string(tile->index.x) + "_" + std::to_string(tile->index.z) + " was not rendered.");
+  }
 
-  if (unload)
+  if (unload && !retail)
   {
     _world->mapIndex.unloadTile(m_tile);
   }
 }
 
 bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* settings, std::optional<QImage>& combined_image)
+{
+  if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      != BlizzardArchive::ClientVersion::RETAIL)
+    return saveMinimapLegacy(tile_idx, settings, combined_image);
+  ZoneScoped;
+  QOpenGLFramebufferObjectFormat fmt;
+  fmt.setSamples(0);
+  fmt.setInternalTextureFormat(GL_RGBA8);
+  fmt.setAttachment(QOpenGLFramebufferObject::Depth);
+
+  QOpenGLFramebufferObject pixel_buffer(settings->resolution, settings->resolution, fmt);
+  if (!pixel_buffer.isValid() || !pixel_buffer.bind())
+    return false;
+
+  gl.viewport(0, 0, settings->resolution, settings->resolution);
+  gl.clearColor(.0f, .0f, .0f, 1.f);
+  gl.clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+  bool unload = !_world->mapIndex.has_unsaved_changes(tile_idx)
+      && !_world->mapIndex.tileLoaded(tile_idx) && !_world->mapIndex.tileAwaitingLoading(tile_idx);
+
+  MapTile* mTile = _world->mapIndex.loadTile(tile_idx, false, !isMapTexture(*settings));
+  auto release_tile = [&, unload](MapTile*) { if (unload) _world->mapIndex.unloadTile(tile_idx); pixel_buffer.release(); };
+  std::unique_ptr<MapTile, decltype(release_tile)> tile_cleanup(mTile, release_tile);
+  if (!mTile)
+    return false;
+  mTile->wait_until_loaded();
+  if (mTile->loading_failed())
+    return false;
+  _world->wait_for_all_tile_updates();
+  if (!isMapTexture(*settings))
+    mTile->waitForChildrenLoaded();
+
+  if (mTile)
+  {
+    unsigned counter = 0;
+    constexpr unsigned TIMEOUT = 5000;
+
+    while (AsyncLoader::instance->is_loading() || !mTile->finishedLoading())
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      counter++;
+
+      if (counter >= TIMEOUT)
+        return false;
+    }
+    if (isMapTexture(*settings))
+      requireTerrainTextures(mTile);
+
+    float max_height = std::max(_world->getMaxTileHeight(tile_idx), 200.f);
+
+    // setup view matrices
+    auto projection = glm::ortho( -TILESIZE / 2.0f,TILESIZE / 2.0f,-TILESIZE / 2.0f,TILESIZE / 2.0f,0.f,100000.0f);
+
+    auto eye = glm::vec3(TILESIZE * tile_idx.x + TILESIZE / 2.0f, max_height + 10.0f, TILESIZE * tile_idx.z + TILESIZE / 2.0f);
+    auto center = glm::vec3(TILESIZE * tile_idx.x + TILESIZE / 2.0f, max_height + 5.0f, TILESIZE * tile_idx.z + TILESIZE / 2.0 - 0.005f);
+    auto up = glm::vec3(0.f, 1.f, 0.f);
+
+    glm::vec3 const z = glm::normalize(eye - center);
+    glm::vec3 const x = glm::normalize(glm::cross(up, z));
+    glm::vec3 const y = glm::normalize(glm::cross(z, x));
+
+    auto look_at = glm::transpose(glm::mat4x4(x.x, x.y, x.z, glm::dot(x, glm::vec3(-eye.x, -eye.y, -eye.z))
+        , y.x, y.y, y.z, glm::dot(y, glm::vec3(-eye.x, -eye.y, -eye.z))
+        , z.x, z.y, z.z, glm::dot(z, glm::vec3(-eye.x, -eye.y, -eye.z))
+        , 0.f, 0.f, 0.f, 1.f
+    ));
+
+    auto const render_image = [&]
+    {
+      gl.viewport(0, 0, settings->resolution, settings->resolution);
+      gl.clearColor(.0f, .0f, .0f, 1.f);
+      gl.clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glFinish();
+
+      drawMinimap(mTile
+          , look_at
+          , projection
+          , glm::vec3(TILESIZE * tile_idx.x + TILESIZE / 2.0f
+              , max_height + 15.0f, TILESIZE * tile_idx.z + TILESIZE / 2.0f)
+          , settings);
+
+      // Clearing alpha from image
+      gl.colorMask(false, false, false, true);
+      gl.clearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      gl.clear(GL_COLOR_BUFFER_BIT);
+      gl.colorMask(true, true, true, true);
+
+      assert(pixel_buffer.isValid() && pixel_buffer.isBound());
+
+      return pixel_buffer.toImage().convertToFormat(QImage::Format_RGBA8888);
+    };
+
+    QImage image = render_image();
+
+    // Terrain always has colour and its normals are never zero, so an empty
+    // frame means nothing was rendered and must not replace a map texture.
+    if (isMapTexture(*settings) && isBlankImage(image))
+    {
+      LogError << "[Map texture] Blank render for tile " << tile_idx.x << "_" << tile_idx.z
+               << " mode=" << static_cast<int>(settings->export_mode)
+               << " textures_ready=" << mTile->renderer()->texturesReady()
+               << "; retrying once." << std::endl;
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      image = render_image();
+      if (isBlankImage(image))
+      {
+        LogError << "[Map texture] Tile " << tile_idx.x << "_" << tile_idx.z
+                 << " rendered blank twice; the existing map texture was kept." << std::endl;
+        return false;
+      }
+    }
+
+    QString str = QString(Noggit::Project::CurrentProject::get()->ProjectPath.c_str());
+    if (!(str.endsWith('\\') || str.endsWith('/')))
+    {
+      str += "/";
+    }
+
+    // Map textures are listfile paths (lowercase); minimap names keep the
+    // map's internal name as used by md5translate.
+    std::string const map_name = isMapTexture(*settings)
+      ? BlizzardArchive::ClientData::normalizeFilenameInternal(_world->basename) : _world->basename;
+
+    QString target_dir = QString("/textures/minimap/");
+    if (isMapTexture(*settings))
+	{
+	  target_dir = QString::fromStdString("/world/maptextures/" + map_name + "/");
+	}
+
+    QDir dir(str + target_dir);
+    if (!dir.exists() && !dir.mkpath("."))
+      return false;
+
+    std::string tex_name = std::string(map_name + "_" + std::to_string(tile_idx.x) + "_" + std::to_string(tile_idx.z) + ".blp");
+    if (settings->export_mode == MinimapGenMode::LOD_MAPTEXTURES_N)
+    {
+        tex_name = std::string(map_name + "_" + std::to_string(tile_idx.x) + "_" + std::to_string(tile_idx.z) + "_n.blp");
+    }
+
+    if (settings->file_format == ".png")
+    {
+      QSaveFile file(dir.filePath(std::string(map_name + "_" + std::to_string(tile_idx.x) + "_" + std::to_string(tile_idx.z) + ".png").c_str()));
+      if (!file.open(QIODevice::WriteOnly) || !image.save(&file, "PNG") || !file.commit())
+        return false;
+    }
+    else if (settings->file_format == ".blp (DXT1)" || settings->file_format == ".blp (DXT5)")
+    {
+      QByteArray bytes;
+      QBuffer buffer( &bytes );
+      buffer.open( QIODevice::WriteOnly );
+
+      if (!image.save(&buffer, "PNG"))
+        return false;
+
+      auto blp = Png2Blp();
+      blp.load(reinterpret_cast<const void*>(bytes.constData()), bytes.size());
+
+      uint32_t file_size;
+      void* blp_image = blp.createBlpDxtInMemory(settings->generate_mipmaps || settings->file_format == ".blp (DXT5)",
+          settings->file_format == ".blp (DXT5)" ? FORMAT_DXT5 : FORMAT_DXT1, file_size);
+      std::unique_ptr<void, decltype(&std::free)> blp_cleanup(blp_image, &std::free);
+      if (!blp_image || !file_size)
+        return false;
+      if (isMapTexture(*settings))
+        Noggit::Formats::finalizeRetailMapTexture(blp_image, file_size);
+
+      QSaveFile file(dir.filePath(tex_name.c_str()));
+      if (!file.open(QIODevice::WriteOnly)
+          || file.write(reinterpret_cast<const char*>(blp_image), file_size) != file_size
+          || !file.commit())
+        return false;
+    }
+
+    // Write combined file
+    if (settings->combined_minimap && combined_image.has_value())
+    {
+      QImage scaled_image = image.scaled(128, 128,  Qt::KeepAspectRatio);
+
+      for (int i = 0; i < 128; ++i)
+      {
+        for (int j = 0; j < 128; ++j)
+        {
+          combined_image->setPixelColor(static_cast<int>(tile_idx.x) * 128 + j, static_cast<int>(tile_idx.z) * 128 + i, scaled_image.pixelColor(j, i));
+        }
+      }
+
+    }
+
+    // Map textures are not minimaps and must not overwrite minimap lookup entries.
+    if (settings->export_mode != LOD_MAPTEXTURES && settings->export_mode != LOD_MAPTEXTURES_N)
+    try
+    {
+        std::string map_name = gMapDB.getByID(_world->mapIndex._map_id).getString(MapDB::InternalName);
+        auto sstream = std::stringstream();
+        sstream << map_name << "\\map" << tile_idx.x << "_" << std::setfill('0') << std::setw(2) << tile_idx.z << ".blp";
+        std::string tilename_left = sstream.str();
+        auto& minimap_md5translate = Noggit::Application::NoggitApplication::instance()->clientData()->_minimap_md5translate;
+        minimap_md5translate[map_name][tilename_left] = tex_name;
+    }
+    catch(MapDB::NotFound)
+    {
+        LogError << "SaveMinimap : Couldn't find entry " << _world->mapIndex._map_id << std::endl;
+        assert(false);
+    }
+
+  }
+
+  pixel_buffer.release();
+
+  return true;
+}
+
+bool WorldRender::saveMinimapLegacy(TileIndex const& tile_idx, MinimapRenderSettings* settings, std::optional<QImage>& combined_image)
 {
   ZoneScoped;
   // Setup framebuffer

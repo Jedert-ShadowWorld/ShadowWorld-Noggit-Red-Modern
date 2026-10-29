@@ -70,6 +70,8 @@ namespace Noggit::Ui::Windows
     setWindowTitle(QString::fromStdString(title.str()));
     setWindowIcon(QIcon(":/icon"));
 
+    ConfigureProjectLogging(project->projectVersion == Project::ProjectVersion::RETAIL);
+
     Log << "Project version : " << Noggit::Project::ClientVersionFactory::MapToStringVersion(project->projectVersion).c_str() << std::endl;
 
     if (project->projectVersion == Project::ProjectVersion::WOTLK
@@ -255,6 +257,20 @@ namespace Noggit::Ui::Windows
     _map_view = (new MapView(camera_yaw, camera_pitch, pos, this, _project, std::move(_map_creation_wizard->_world), uid_fix, from_bookmark));
     connect(_map_view, &MapView::uid_fix_failed, [this]()
     { promptUidFixFailure(); });
+    if (_project->projectVersion == Project::ProjectVersion::RETAIL)
+    {
+      connect(_map_view, &MapView::uid_fix_cancelled, this, [this]()
+      {
+        _stack_widget->setCurrentIndex(0);
+        _minimap->world(nullptr);
+        QSignalBlocker blocker(_continents_table);
+        _continents_table->setCurrentRow(-1);
+        map_loaded = false;
+      });
+      auto view = _map_view;
+      connect(view, &QObject::destroyed, this, [this, view]()
+      { if (_map_view == view) _map_view = nullptr; });
+    }
     connect(_settings, &settings::saved, [this]()
     { if (_map_view) _map_view->onSettingsSave(); });
 
@@ -659,11 +675,23 @@ namespace Noggit::Ui::Windows
   void NoggitWindow::promptUidFixFailure()
   {
     _stack_widget->setCurrentIndex(0);
-
-    QMessageBox::critical
-        (nullptr, "UID fix failed", "The UID fix couldn't be done because some models were missing or fucked up.\n"
-                                    "The models are listed in the log file.", QMessageBox::Ok
-        );
+    if (_project->projectVersion == Project::ProjectVersion::RETAIL)
+    {
+      _minimap->world(nullptr);
+      QSignalBlocker blocker(_continents_table);
+      _continents_table->setCurrentRow(-1);
+      map_loaded = false;
+      QMessageBox::critical(nullptr, "UID fix failed",
+        "UID repair could not complete because of missing files, invalid ADT data or a write error.\n"
+        "Details and backups are in log.txt and the project's uid-repair folder.\n"
+        "The map was not loaded.", QMessageBox::Ok);
+    }
+    else
+    {
+      QMessageBox::critical(nullptr, "UID fix failed",
+        "The UID fix could not complete because some models were missing or invalid.\n"
+        "The models are listed in the log file.", QMessageBox::Ok);
+    }
   }
   void NoggitWindow::startWowClient()
   {

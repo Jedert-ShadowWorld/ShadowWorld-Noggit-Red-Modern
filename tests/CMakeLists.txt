@@ -13,11 +13,15 @@ function(noggit_test name)
 endfunction()
 
 foreach(name IN ITEMS
-    load_failures retail_asset_loading blp_bgra
+    load_failures uid_repair retail_liquid_lod retail_asset_loading blp_bgra
     retail_skin wmo_group_ids map_preview_quality retail_m2_animation
+    retail_world_tables retail_map_texture retail_root_layout
     retail_object_tables retail_object_transfer)
   noggit_test(${name} ${name}.cpp)
 endforeach()
+noggit_test(uid_geometry uid_geometry.cpp "${NOGGIT_SOURCE}/noggit/formats/adt/UidRepairGeometry.cpp")
+noggit_test(terrain_lod_updater terrain_lod_updater.cpp
+  "${NOGGIT_SOURCE}/noggit/formats/adt/TerrainLodUpdater.cpp")
 
 find_package(Qt5 QUIET COMPONENTS Core Widgets)
 if(Qt5_FOUND)
@@ -42,6 +46,12 @@ if(Qt5_FOUND)
     "${NOGGIT_SOURCE}/opengl/context.cpp" "${NOGGIT_SOURCE}/noggit/Log.cpp")
   noggit_test(log_archive log_archive.cpp "${NOGGIT_SOURCE}/noggit/Log.cpp")
   target_link_libraries(log_archive PRIVATE Qt5::Core)
+  noggit_test(uid_repair_review uid_repair_review.cpp)
+  target_link_libraries(uid_repair_review PRIVATE Qt5::Widgets)
+  set_tests_properties(uid_repair_review PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  noggit_test(derived_map_state derived_map_state.cpp
+    "${NOGGIT_SOURCE}/noggit/DerivedMapState.cpp" "${NOGGIT_SOURCE}/noggit/TileIndex.cpp")
+  target_link_libraries(derived_map_state PRIVATE Qt5::Core)
 else()
   message(STATUS "Qt5 Core/Widgets SDK not found: Qt and OpenGL regressions are unavailable.")
 endif()
@@ -64,4 +74,15 @@ if(WIN32)
     "${NOGGIT_SOURCE}/noggit/rendering/WMOGroupRender.cpp"
     "${NOGGIT_SOURCE}/noggit/rendering/WMOGroupRender.hpp"
     "${NOGGIT_SOURCE}/noggit/TextureManager.cpp")
+  noggit_method_test(object_clipboard object-clipboard "${NOGGIT_SOURCE}/noggit/ui/ObjectEditor.cpp")
+  # The existing OBJ1 fixture uses a separate main include.
+  set(output "${CMAKE_CURRENT_BINARY_DIR}/obj1-regression.cpp")
+  add_custom_command(OUTPUT "${output}"
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+      "${CMAKE_CURRENT_LIST_DIR}/../tools/prepare-obj1-regression.ps1" -OutputPath "${output}"
+    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../tools/prepare-obj1-regression.ps1"
+      "${NOGGIT_SOURCE}/noggit/formats/adt/ShadowlandsADTCodec.cpp"
+      "${CMAKE_CURRENT_LIST_DIR}/obj1-regression-main.inc"
+    VERBATIM)
+  noggit_test(retail_obj1_writer "${output}")
 endif()

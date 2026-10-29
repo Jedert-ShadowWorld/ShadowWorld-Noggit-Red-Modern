@@ -7,6 +7,7 @@
 #include <noggit/tool_enums.hpp>
 #include <noggit/WMO.h>
 #include <noggit/MapHeaders.h>
+#include <noggit/TileIndex.hpp>
 
 #include <opengl/texture.hpp>
 #include <opengl/scoped.hpp>
@@ -94,7 +95,7 @@ public:
 
   void update_horizon_tile(MapTile* mTile);
 
-  void save_wdl(World* world, bool regenerate = false);
+  void save_wdl(World* world, bool regenerate = false, std::vector<TileIndex> const* scope = nullptr);
 
   bool wmoHasLowRes(WMOInstance* instance);
   // void updateWmoLowRes(WMOInstance* instance);

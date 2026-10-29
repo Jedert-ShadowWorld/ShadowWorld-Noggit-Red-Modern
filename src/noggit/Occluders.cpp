@@ -1,4 +1,5 @@
 #include "Occluders.h"
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
 
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
@@ -48,26 +49,10 @@ namespace Noggit
 
   void OccluderStorage::loadOccludersFromCSV(int map_id)
   {
-    std::string occluder_db_path = Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationNoggitDefinitionsPath
-      + "\\Occluder.8.1.0.29139.csv";
-    QString qPath = QString::fromStdString(occluder_db_path);
-    QFile file(qPath);
-
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text))
+    try
     {
-      QTextStream in(&file);
-
-      // Skip the header line
-      std::string headerLine = in.readLine().toStdString();
-      // assert(headerLine == "ID, MapID, Type, SplineType, Red, Green, Blue, Alpha, Flags");
-
-      while (!in.atEnd())
+      for (auto fields : Noggit::ClientData::supplementalRows("Occluder", "Occluder.8.1.0.29139.csv", {"ID", "MapID", "Type", "SplineType", "Red", "Green", "Blue", "Alpha", "Flags"}))
       {
-        QString line = in.readLine();
-
-        // Split the line by comma
-        QStringList fields = line.split(',');
-
         assert(fields.size() == 9);
 
         bool ok;
@@ -88,36 +73,20 @@ namespace Noggit
         occludersWotlk.push_back(occluder_entry);
 
       }
-      file.close();
     }
-    else
+    catch (std::exception const& error)
     {
+      LogError << "[Occluder] " << error.what() << std::endl;
       return;
     }
   }
 
   void OccluderStorage::loadOccluderNodesFromCSV(int map_id)
   {
-    std::string occluder_db_path = Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationNoggitDefinitionsPath
-      + "\\OccluderNode.8.0.1.26970.csv";
-    QString qPath = QString::fromStdString(occluder_db_path);
-    QFile file(qPath);
-
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text))
+    try
     {
-      QTextStream in(&file);
-
-      // Skip the header line
-      std::string headerLine = in.readLine().toStdString();
-      // assert(headerLine == "ID, MapID, Type, SplineType, Red, Green, Blue, Alpha, Flags");
-
-      while (!in.atEnd())
+      for (auto fields : Noggit::ClientData::supplementalRows("OccluderNode", "OccluderNode.8.0.1.26970.csv", {"ID", "OccluderID", "Sequence", "LocationID"}))
       {
-        QString line = in.readLine();
-
-        // Split the line by comma
-        QStringList fields = line.split(',');
-
         assert(fields.size() == 4);
 
         bool ok;
@@ -147,36 +116,20 @@ namespace Noggit
         parent.nodes.push_back(occluder_node_entry);
 
       }
-      file.close();
     }
-    else
+    catch (std::exception const& error)
     {
+      LogError << "[OccluderNode] " << error.what() << std::endl;
       return;
     }
   }
 
   void OccluderStorage::loadOccluderLocationsFromCSV(int map_id)
   {
-    std::string occluder_db_path = Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationNoggitDefinitionsPath
-      + "\\OccluderLocation.8.0.1.27075.csv";
-    QString qPath = QString::fromStdString(occluder_db_path);
-    QFile file(qPath);
-
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text))
+    try
     {
-      QTextStream in(&file);
-
-      // Skip the header line
-      std::string headerLine = in.readLine().toStdString();
-      // assert(headerLine == "Pos_0, Pos_1, Pos_2, ID, MapID");
-
-      while (!in.atEnd())
+      for (auto fields : Noggit::ClientData::supplementalRows("OccluderLocation", "OccluderLocation.8.0.1.27075.csv", {"Pos[0]", "Pos[1]", "Pos[2]", "ID", "MapID"}))
       {
-        QString line = in.readLine();
-
-        // Split the line by comma
-        QStringList fields = line.split(',');
-
         assert(fields.size() == 5);
 
         bool ok;
@@ -231,10 +184,10 @@ namespace Noggit
           assert(false);
 
       }
-      file.close();
     }
-    else
+    catch (std::exception const& error)
     {
+      LogError << "[OccluderLocation] " << error.what() << std::endl;
       return;
     }
   }

@@ -6,6 +6,8 @@
 #include <noggit/MapTile.h>
 #include <noggit/Misc.h>
 #include <noggit/TileWater.hpp>
+#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/formats/adt/RetailLiquidLod.hpp>
 #include <ClientFile.hpp>
 
 #include <limits>
@@ -29,6 +31,19 @@ TileWater::TileWater(MapTile *pTile, float pXbase, float pZbase, bool use_mclq_g
 
 void TileWater::readFromFile(BlizzardArchive::ClientFile &theFile, size_t basePos)
 {
+  if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL)
+  {
+    if (basePos < 8 || basePos > theFile.getSize())
+      throw std::runtime_error("Invalid Retail MH2O chunk offset.");
+    std::uint32_t size;
+    std::memcpy(&size,theFile.getBuffer()+basePos-4,4);
+    if (size < 256*12 || size > theFile.getSize()-basePos)
+      throw std::runtime_error("Retail MH2O extends beyond ADT.");
+    using namespace Noggit::Formats::ADT;
+    (void)RetailLiquid::read(RetailLiquid::Bytes(theFile.getBuffer()+basePos,
+                                               theFile.getBuffer()+basePos+size));
+  }
   for (int z = 0; z < 16; ++z)
   {
     for (int x = 0; x < 16; ++x)

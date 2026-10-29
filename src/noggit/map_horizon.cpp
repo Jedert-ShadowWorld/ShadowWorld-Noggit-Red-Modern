@@ -4,6 +4,10 @@
 
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Log.h>
+#include <noggit/formats/RetailWorldTables.hpp>
+#include <QSaveFile>
+#include <QFileInfo>
+#include <QDir>
 #include <noggit/map_index.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
@@ -404,12 +408,58 @@ void map_horizon::update_horizon_tile(MapTile* mTile)
     update_minimap_tile(tile_index.z, tile_index.x, true);
 }
 
-void map_horizon::save_wdl(World* world, bool regenerate)
+void map_horizon::save_wdl(World* world, bool regenerate, std::vector<TileIndex> const* scope)
 {
     world->wait_for_all_tile_updates();
 
     std::stringstream filename;
     filename << "World\\Maps\\" << world->basename << "\\" << world->basename << ".wdl";
+    auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+    if (client->version() == BlizzardArchive::ClientVersion::RETAIL)
+    {
+      if (scope && scope->empty()) return;
+      BlizzardArchive::ClientFile source(filename.str(), client);
+      Noggit::Formats::RetailWorldTables::Bytes bytes(source.getBuffer(), source.getBuffer() + source.getSize());
+      auto offsets = Noggit::Formats::RetailWorldTables::wdlOffsets(bytes);
+      for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 64; ++x)
+        {
+          TileIndex index(x, y);
+          if (scope && std::find(scope->begin(), scope->end(), index) == scope->end()) continue;
+          if (!world->mapIndex.hasTile(index)) continue;
+          if (regenerate)
+          {
+            bool unload = !world->mapIndex.tileLoaded(index) && !world->mapIndex.tileAwaitingLoading(index);
+            auto* tile = world->mapIndex.loadTile(index, false, false, false);
+            if (!tile) throw std::runtime_error("Cannot load tile for Retail WDL");
+            try
+            {
+              tile->wait_until_loaded();
+              if (tile->loading_failed())
+                throw std::runtime_error("Tile " + std::to_string(x) + "_" + std::to_string(y)
+                  + " failed to load; Retail WDL heights were not updated");
+              update_horizon_tile(tile);
+            }
+            catch (...)
+            {
+              if (unload) world->mapIndex.unloadTile(index);
+              throw;
+            }
+            if (unload) world->mapIndex.unloadTile(index);
+          }
+          if (auto* tile = get_horizon_tile(y, x))
+            Noggit::Formats::RetailWorldTables::updateWdlTile(bytes, offsets, y*64+x, tile->height_17, tile->height_16);
+        }
+      if (bytes.size() == source.getSize()
+          && std::memcmp(bytes.data(), source.getBuffer(), bytes.size()) == 0) return;
+      auto path = QString::fromStdString(client->getDiskPath(filename.str()));
+      if (!QDir().mkpath(QFileInfo(path).absolutePath())) throw std::runtime_error("Cannot create WDL directory");
+      QSaveFile output(path);
+      if (!output.open(QIODevice::WriteOnly) || output.write(bytes.data(), bytes.size()) != qint64(bytes.size()) || !output.commit())
+        throw std::runtime_error("Cannot atomically save Retail WDL");
+      set_minimap(&world->mapIndex);
+      return;
+    }
     //Log << "Saving WDL \"" << filename << "\"." << std::endl;
 
     util::sExtendableArray wdlFile;
