@@ -1,6 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #include <noggit/formats/adt/TerrainLodUpdater.hpp>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +13,7 @@
 
 using Bytes = std::vector<std::uint8_t>;
 using Noggit::Formats::ADT::TerrainLodUpdater;
+using Noggit::Formats::ADT::TerrainLodLayout;
 namespace
 {
   void require(bool ok, char const* message) { if (!ok) throw std::runtime_error(message); }
@@ -102,6 +104,81 @@ namespace
     }
     return result;
   }
+  std::size_t body_offset(Bytes const& b, char const* name)
+  {
+    for (std::size_t p = 0; p < b.size(); p += 8 + get(b, p + 4))
+      if (b[p] == name[3] && b[p+1] == name[2] && b[p+2] == name[1] && b[p+3] == name[0])
+        return p + 8;
+    throw std::runtime_error("Missing test chunk.");
+  }
+  Bytes noisy_flat_root(float amplitude)
+  {
+    auto b = root(true);
+    for (int cy = 0; cy < 16; ++cy)
+      for (int cx = 0; cx < 16; ++cx)
+        for (int row = 0, v = 0; row < 17; ++row)
+          for (int col = 0; col < (row % 2 ? 8 : 9); ++col, ++v)
+          {
+            auto const x = cx * 16 + col * 2 + row % 2, y = cy * 16 + row;
+            // Shared chunk-border samples agree; noise is asymmetric in X/Y.
+            auto const noise = amplitude * (float((x + 3*y) % 11) / 5.f - 1.f);
+            putf(b, 92 + (cy * 16 + cx) * 724 + 128 + 8 + v * 4, noise);
+          }
+    return b;
+  }
+  void reference_tests()
+  {
+    for (int layout = 0; layout < 4; ++layout)
+    {
+      auto const inspection = TerrainLodUpdater::inspectReference(root(false), lod(false, layout));
+      require(inspection.usable && !inspection.equivalent_layouts
+           && inspection.unique_layout == static_cast<TerrainLodLayout>(layout)
+           && inspection.candidate_layouts == (1u << layout), "Unique reference layout not identified");
+    }
+    auto const flat = TerrainLodUpdater::inspectReference(root(true), lod(true));
+    require(flat.usable && flat.equivalent_layouts && !flat.unique_layout && flat.candidate_layouts == 15,
+            "Flat reference must not claim a unique orientation");
+
+    auto const stale = TerrainLodUpdater::inspectReference(root(false, 1000000), lod(false));
+    require(!stale.usable && !stale.unique_layout && !stale.candidate_layouts
+         && stale.diagnostics.find("below 50%") != std::string::npos,
+            "Stale ROOT/LOD pair was accepted as a usable reference");
+
+    // The largest score alone is insufficient: a wrong orientation can win
+    // while no candidate matches even half of a stale/corrupted height table.
+    auto wrong = lod(false, 2);
+    auto const start = body_offset(wrong, "MLVH");
+    auto const count = get(wrong, start - 4) / 4;
+    for (std::size_t i = count * 2 / 5; i < count; ++i)
+      putf(wrong, start + i * 4, 1000000.f);
+    auto const low = TerrainLodUpdater::inspectReference(root(false), wrong);
+    require(!low.usable && !low.unique_layout && low.matches[2] > low.matches[0]
+         && low.matches[2] > low.matches[1] && low.matches[2] > low.matches[3],
+            "Wrong best layout bypassed the minimum confidence threshold");
+    rejects([&] { (void)TerrainLodUpdater::update(root(false), wrong, root(false)); });
+
+    auto const noise = noisy_flat_root(0.00025f);
+    auto const noisy = TerrainLodUpdater::inspectReference(noise, lod(true));
+    require(noisy.usable && noisy.equivalent_layouts && !noisy.unique_layout,
+            "Sub-tolerance flat noise should remain equivalent, not unique");
+    require(TerrainLodUpdater::update(noise, lod(true), noise) == lod(true),
+            "Unchanged equivalent noisy reference rewrote MLVH bytes");
+    auto const updated = TerrainLodUpdater::update(root(true), lod(true), noise);
+    require(TerrainLodUpdater::update(noise, updated, noise) == updated,
+            "Equivalent noisy update is not byte-idempotent");
+    auto const excessive_noise = noisy_flat_root(0.002f);
+    require(!TerrainLodUpdater::inspectReference(excessive_noise, lod(true)).usable,
+            "Different tied reference heights were accepted");
+    rejects([&] { (void)TerrainLodUpdater::update(root(true), lod(true), excessive_noise); });
+
+    auto asymmetric_holes = noise;
+    put(asymmetric_holes, 92 + 60, 1);
+    require(!TerrainLodUpdater::inspectReference(asymmetric_holes, lod(true)).usable,
+            "Flat height tolerance must not permit different hole masks");
+    auto nonfinite = noise;
+    put(nonfinite, 92 + 128 + 8, 0x7fc00000);
+    rejects([&] { (void)TerrainLodUpdater::inspectReference(nonfinite, lod(true)); });
+  }
   using HoleCells = std::array<bool,128*128>;
   void check_bounds(Bytes const& lod)
   {
@@ -133,9 +210,19 @@ namespace
       }
     return b;
   }
-  Bytes mesh_lod(HoleCells const& holes, int layout = 0)
+  Bytes mesh_lod(HoleCells const& holes, int layout = 0, bool complete_skirts = false, int requested_step = 4)
   {
     Bytes b=lod(false,layout), nodes(85*24), levels(80), indices;
+    if (complete_skirts)
+    {
+      auto parts=bodies(b);
+      auto& heights=parts["MLVH"];
+      heights.resize(heights.size()+4);
+      putf(heights,heights.size()-4,height(0,8)-32);
+      parts["MLSI"].insert(parts["MLSI"].end(),{4,2}); // base vertex 516
+      b.clear();
+      for(auto name:{"MLHD","MLVH","MLSI","TEST"}) append(b,name,parts[name]);
+    }
     struct Node { int x,y,size,level; };
     std::vector<Node> regions{{0,0,128,0}};
     for (std::size_t i=0;i<21;++i)
@@ -148,6 +235,7 @@ namespace
     for (std::size_t i=0;i<85;++i)
     {
       auto n=regions[i];
+      auto step=std::min(requested_step,n.size);
       if (i==0 || i==1 || i==5 || i==21)
       {
         putf(levels,n.level*20,32.0f/(1<<n.level));
@@ -155,12 +243,12 @@ namespace
       }
       auto first=indices.size()/2;
       put(nodes,i*24,static_cast<std::uint32_t>(first));
-      for(int y=n.y;y<n.y+n.size;y+=4)
-        for(int x=n.x;x<n.x+n.size;x+=4)
+      for(int y=n.y;y<n.y+n.size;y+=step)
+        for(int x=n.x;x<n.x+n.size;x+=step)
           if (!holes[y*128+x])
           {
             // Long edges at hole boundaries exercise boundary subdivision.
-            std::uint16_t a=y*129+x, b=a+4, c=a+4*129, d=c+4;
+            std::uint16_t a=y*129+x, b=a+step, c=a+step*129, d=c+step;
             for(auto v:{a,c,b,b,c,d}) emit(v);
           }
       put(nodes,i*24+4,static_cast<std::uint32_t>(indices.size()/2-first));
@@ -174,15 +262,16 @@ namespace
         auto p=n.level*20;
         put(levels,p+8,static_cast<std::uint32_t>(indices.size()/2-get(levels,p+4)));
         // A separate skirt list must move along with the terrain range.
-        put(levels,p+12,3);
+        put(levels,p+12,complete_skirts?6:3);
         put(levels,p+16,static_cast<std::uint32_t>(indices.size()/2));
         emit(0);emit(33025);emit(129*4);
+        if(complete_skirts) { emit(129*4);emit(33025);emit(33026); }
       }
     }
     append(b,"MLLL",levels);append(b,"MLND",nodes);append(b,"MLVI",indices);
     return b;
   }
-  void check_mesh(Bytes const& b, HoleCells const& holes)
+  void check_mesh(Bytes const& b, HoleCells const& holes, bool original_skirts = true)
   {
     auto c=bodies(b);
     auto const& ix=c.at("MLVI"); auto const& levels=c.at("MLLL");
@@ -228,11 +317,216 @@ namespace
       for(int i=0;i<128*128;++i)
         require(covered[i]==(holes[i]?0u:1u),"Overlapping terrain or incorrect remaining hole");
       auto skirt=get(levels,level*20+16);
-      require(get(levels,level*20+12)>=3 && index(skirt)==0 && index(skirt+1)==33025
-        && index(skirt+2)==129*4,"Skirt list changed during hole repair");
+      if(original_skirts)
+        require(get(levels,level*20+12)>=3 && index(skirt)==0 && index(skirt+1)==33025
+          && index(skirt+2)==129*4,"Skirt list changed during hole repair");
       for (std::size_t i=skirt;i<skirt+get(levels,level*20+12);++i)
         require(index(i)<c.at("MLVH").size()/4,"Skirt index outside height table");
     }
+  }
+  void calibration_tests()
+  {
+    auto const reference_root=root(false), reference=mesh_lod({});
+    auto current=reference;
+    auto hp=body_offset(current,"MLVH"),header=body_offset(current,"MLHD");
+    for(std::size_t i=0;i<bodies(current)["MLVH"].size()/4;++i)putf(current,hp+i*4,1000000.f);
+    for(unsigned i=4;i<28;i+=4)putf(current,header+i,500.f+i);
+    current[body_offset(current,"TEST")]=42;
+    auto calibrated=TerrainLodUpdater::calibrateReference(reference_root,reference,current);
+    auto expected=current;
+    std::copy_n(reference.begin()+hp,bodies(reference)["MLVH"].size(),expected.begin()+hp);
+    require(calibrated==expected,"Calibration changed non-height template bytes");
+    require(TerrainLodUpdater::inspectReference(reference_root,calibrated).usable,
+            "Calibrated template is not coherent with its reference ROOT");
+    require(bodies(TerrainLodUpdater::update(reference_root,calibrated,root(false,5)))["MLVH"]
+            ==bodies(lod(false,0,5))["MLVH"],"Calibrated template did not update from the current ROOT");
+    auto liquid=current;
+    append(liquid,"MLLN",{1,2,3});append(liquid,"MLLN",{4,5,6});
+    auto with_liquid=TerrainLodUpdater::calibrateReference(reference_root,reference,liquid);
+    auto liquid_expected=liquid;
+    std::copy_n(reference.begin()+hp,bodies(reference)["MLVH"].size(),liquid_expected.begin()+hp);
+    require(with_liquid==liquid_expected,"Calibration altered repeated liquid chunks");
+    for(auto const* name:{"MLVI","MLND","MLLL","MLSI","MLHD"})
+    {
+      auto bad=current;bad[body_offset(bad,name)]^=1;
+      rejects([&]{(void)TerrainLodUpdater::calibrateReference(reference_root,reference,bad);});
+    }
+    rejects([&]{(void)TerrainLodUpdater::calibrateReference(root(false,1000000),reference,current);});
+    auto versioned=reference,versioned_current=current;Bytes version(4);put(version,0,18);
+    append(versioned,"MVER",version);put(version,0,19);append(versioned_current,"MVER",version);
+    rejects([&]{(void)TerrainLodUpdater::calibrateReference(reference_root,versioned,versioned_current);});
+    auto changed_count=bodies(current);changed_count["MLVH"].resize(changed_count["MLVH"].size()+4);
+    changed_count["MLSI"].resize(changed_count["MLSI"].size()+2);Bytes extra;
+    for(auto const& [name,bytes]:changed_count)append(extra,name.c_str(),bytes);
+    rejects([&]{(void)TerrainLodUpdater::calibrateReference(reference_root,reference,extra);});
+  }
+  void sparse_refinement_tests()
+  {
+    auto before=root(false),after=before,original=mesh_lod({},0,true,128);
+    for(int cy=0;cy<16;++cy) for(int cx=0;cx<16;++cx)
+      for(int row=0,v=0;row<17;++row)
+        for(int col=0;col<(row%2?8:9);++col,++v)
+        {
+          int x=cx*16+col*2+row%2,y=cy*16+row;
+          putf(before,92+(cy*16+cx)*724+136+v*4,float(x+3*y));
+          float h=float(x+3*y)+120.f*std::sin(x*.04f)*std::cos(y*.03f)+14.f*std::sin(x*.21f+y*.09f);
+          putf(after,92+(cy*16+cx)*724+136+v*4,h);
+        }
+    auto hp=body_offset(original,"MLVH"),header=body_offset(original,"MLHD");
+    for(unsigned i=0;i<33025;++i)
+    {
+      auto v=i<16641?i:i-16641;unsigned side=i<16641?129:128,center=i<16641?0:1;
+      putf(original,hp+i*4,float(2*(v%side)+center+3*(2*(v/side)+center)));
+    }
+    putf(original,hp+33025*4,-32);putf(original,hp+33026*4,24-32);
+    putf(original,header+4,-32);putf(original,header+8,1024);
+    auto result=TerrainLodUpdater::update(before,original,after);
+    check_mesh(result,{},false);check_bounds(result);
+    require(TerrainLodUpdater::update(after,result,after,nullptr,true)==result,
+            "Sparse multi-pass terrain refinement is not byte-idempotent");
+  }
+  void refinement_tests()
+  {
+    sparse_refinement_tests();
+    auto make_root=[](bool peaks, bool rough=false) {
+      auto b=root(false);
+      for(int cy=0;cy<16;++cy) for(int cx=0;cx<16;++cx)
+        for(int row=0,v=0;row<17;++row)
+          for(int col=0;col<(row%2?8:9);++col,++v)
+          {
+            int x=cx*16+col*2+row%2,y=cy*16+row;
+            float h=float(x+3*y);
+            if(peaks)
+              for(auto center:{std::array<int,2>{32,16},std::array<int,2>{128,16},std::array<int,2>{0,4}})
+              {
+                auto weight=std::max(0.f,1.f-float(std::abs(x-center[0])+std::abs(y-center[1]))/6.f);
+                h+=40.f*weight*weight;
+              }
+            if(rough) h+=(x&1)?128.f:-128.f;
+            putf(b,92+(cy*16+cx)*724+136+v*4,h);
+          }
+      return b;
+    };
+    auto before=make_root(false), current=make_root(true), original=mesh_lod({},0,true);
+    auto hp=body_offset(original,"MLVH"), sp=body_offset(original,"MLSI"), header=body_offset(original,"MLHD");
+    auto affine=[](unsigned i) {
+      if(i<16641) return float(2*(i%129)+6*(i/129));
+      i-=16641; return float(2*(i%128)+1+3*(2*(i/128)+1));
+    };
+    for(unsigned i=0;i<33025;++i) putf(original,hp+i*4,affine(i));
+    for(unsigned i=0;i<2;++i)
+    {
+      auto base=unsigned(original[sp+i*2])|(unsigned(original[sp+i*2+1])<<8);
+      putf(original,hp+(33025+i)*4,affine(base)-32);
+    }
+    putf(original,header+4,-32); putf(original,header+8,1024);
+    require(TerrainLodUpdater::update(before,original,before)==original,"Unchanged mesh was refined");
+    std::string diagnostics;
+    auto result=TerrainLodUpdater::update(before,original,current,&diagnostics);
+    check_mesh(result,{},false); check_bounds(result);
+    auto parts=bodies(result), old=bodies(original);
+    require(parts["MLVI"].size()>old["MLVI"].size(),"Changed coast was not refined");
+    require(parts["MLSI"].size()>old["MLSI"].size(),"Refined border did not split its skirts");
+    require(parts["TEST"]==old["TEST"],"Refinement modified an opaque chunk");
+    require(TerrainLodUpdater::update(current,result,current)==result,"Refinement is not byte-idempotent");
+    require(TerrainLodUpdater::update(current,result,current,nullptr,true)==result,
+            "Repeated explicit refinement is not byte-idempotent");
+    auto height_patched=original;
+    std::copy_n(parts["MLVH"].begin(),old["MLVH"].size(),height_patched.begin()+hp);
+    std::copy(parts["MLHD"].begin(),parts["MLHD"].end(),height_patched.begin()+header);
+    require(TerrainLodUpdater::update(current,height_patched,current)==height_patched,
+            "Ordinary save changed already coherent authored topology");
+    require(TerrainLodUpdater::update(current,height_patched,current,nullptr,true)==result,
+            "Explicit repair did not refine an already height-updated sparse mesh");
+    require(diagnostics.find("height refinement added triangles=")!=std::string::npos,"Missing refinement diagnostic");
+    auto real=[](Bytes const& bytes,std::size_t p) { auto bits=get(bytes,p);float f;std::memcpy(&f,&bits,4);return f; };
+    auto point=[](unsigned i) -> std::array<int,2> {
+      return i<16641?std::array<int,2>{int(i%129)*2,int(i/129)*2}
+          :std::array<int,2>{int((i-16641)%128)*2+1,int((i-16641)/128)*2+1};
+    };
+    auto const& ix=parts["MLVI"];auto const& levels=parts["MLLL"];auto const& heights=parts["MLVH"];
+    auto index=[&](std::size_t p){return unsigned(ix.at(p*2))|(unsigned(ix.at(p*2+1))<<8);};
+    auto cross=[](auto a,auto b,auto p){return (b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0]);};
+    for(unsigned level=0;level<4;++level)
+    {
+      constexpr double tolerances[]{8,4,2,1};
+      auto start=get(levels,level*20+4),count=get(levels,level*20+8);
+      require(count/3<=8192,"Adaptive fixture exceeded its triangle budget");
+      for(unsigned i=start;i<start+count;i+=3)
+      {
+        auto a=point(index(i)),b=point(index(i+1)),c=point(index(i+2));
+        for(int y=std::min({a[1],b[1],c[1]});y<=std::max({a[1],b[1],c[1]});++y)
+          for(int x=std::min({a[0],b[0],c[0]});x<=std::max({a[0],b[0],c[0]});++x)
+          {
+            if((x&1)!=(y&1))continue;
+            std::array<int,2> p{x,y};
+            if(cross(a,b,p)>0||cross(b,c,p)>0||cross(c,a,p)>0)continue;
+            auto wa=double(cross(b,c,p))/cross(a,b,c),wb=double(cross(c,a,p))/cross(a,b,c);
+            unsigned sample=(x&1)?16641+(y/2)*128+x/2:(y/2)*129+x/2;
+            auto error=std::abs(real(heights,sample*4)-(wa*real(heights,index(i)*4)+wb*real(heights,index(i+1)*4)+(1-wa-wb)*real(heights,index(i+2)*4)));
+            require(error<=tolerances[level]+1e-4,"Refined mesh exceeds the height-error bound");
+          }
+      }
+    }
+    // Structural mixed-level checks. They bound sampled disagreement and check
+    // actual skirt coverage; they do not emulate the client's LOD selection.
+    auto surface=[&](unsigned node,std::array<int,2> p) {
+      auto const& nodes=parts["MLND"];
+      auto start=get(nodes,node*24), count=get(nodes,node*24+4);
+      for(unsigned i=start;i<start+count;i+=3)
+      {
+        auto a=point(index(i)),b=point(index(i+1)),c=point(index(i+2));
+        if(cross(a,b,p)>0||cross(b,c,p)>0||cross(c,a,p)>0)continue;
+        auto wa=double(cross(b,c,p))/cross(a,b,c),wb=double(cross(c,a,p))/cross(a,b,c);
+        return wa*real(heights,index(i)*4)+wb*real(heights,index(i+1)*4)+(1-wa-wb)*real(heights,index(i+2)*4);
+      }
+      throw std::runtime_error("Mixed-level boundary is not covered by its node");
+    };
+    // A level-1 node beside a level-2 node, on x=128 in half-cell units.
+    double node_gap=0;
+    for(int y=0;y<=64;y+=2)
+      node_gap=std::max(node_gap,std::abs(surface(2,{128,y})-surface(6,{128,y})));
+    require(node_gap>0.001&&node_gap<=6.0001,
+            "Coarse/fine boundary must exercise different surfaces within their combined sampled error bound");
+    auto skirt_span=[&](unsigned level,int y) {
+      double low=std::numeric_limits<double>::infinity(),high=-low;
+      auto base=[&](unsigned v) {
+        if(v<33025)return v;
+        auto p=(v-33025)*2;
+        return unsigned(parts["MLSI"].at(p))|(unsigned(parts["MLSI"].at(p+1))<<8);
+      };
+      auto start=get(levels,level*20+16),count=get(levels,level*20+12);
+      for(unsigned i=start;i<start+count;i+=3)
+        for(unsigned e=0;e<3;++e)
+        {
+          auto av=index(i+e),bv=index(i+(e+1)%3);
+          auto a=point(base(av)),b=point(base(bv));
+          if(a[0]||b[0]||y<std::min(a[1],b[1])||y>std::max(a[1],b[1]))continue;
+          auto add=[&](double h){low=std::min(low,h);high=std::max(high,h);};
+          if(a[1]==b[1]) { add(real(heights,av*4));add(real(heights,bv*4)); }
+          else { auto t=double(y-a[1])/(b[1]-a[1]);add((1-t)*real(heights,av*4)+t*real(heights,bv*4)); }
+        }
+      require(std::isfinite(low)&&std::isfinite(high),"Mixed-level border has a gap in its skirts");
+      return std::array<double,2>{low,high};
+    };
+    double border_gap=0;
+    for(int y=0;y<=8;y+=2)
+    {
+      auto coarse=surface(0,{0,y}),fine=surface(21,{0,y});
+      auto a=skirt_span(0,y),b=skirt_span(3,y);
+      border_gap=std::max(border_gap,std::abs(coarse-fine));
+      require(std::abs(a[1]-coarse)<1e-4&&std::abs(b[1]-fine)<1e-4,
+              "Split skirt no longer follows its terrain edge");
+      auto const& higher=coarse>=fine?a:b;
+      auto lower=std::min(coarse,fine);
+      require(higher[0]<=lower+1e-4&&higher[1]>=lower-1e-4,
+              "Skirt does not cover the sampled coarse/fine border height difference");
+    }
+    require(border_gap>0.001,"Skirt fixture did not exercise different coarse/fine border heights");
+    bool bounded=false;
+    try { (void)TerrainLodUpdater::update(before,original,make_root(false,true)); }
+    catch(std::runtime_error const& e) { bounded=std::string(e.what()).find("refinement triangle budget")!=std::string::npos; }
+    require(bounded,"Excessive refinement did not fail at its triangle budget");
   }
   void hole_tests()
   {
@@ -320,10 +614,153 @@ namespace
   }
 }
 
+namespace
+{
+  void check_cut_surface(Bytes const& data, HoleCells const& holes)
+  {
+    check_mesh(data, holes, false);
+    auto const parts = bodies(data);
+    auto const& indices = parts.at("MLVI");
+    auto const& levels = parts.at("MLLL");
+    using Point = std::array<double, 2>;
+    using Polygon = std::vector<Point>;
+    auto index = [&](std::size_t i) { return unsigned(indices.at(i*2)) | (unsigned(indices.at(i*2+1)) << 8); };
+    auto point = [](unsigned v) -> Point {
+      require(v < 33025, "Cut terrain references a skirt vertex");
+      return v < 16641 ? Point{double(v%129)*2, double(v/129)*2}
+        : Point{double((v-16641)%128)*2+1, double((v-16641)/128)*2+1};
+    };
+    auto cross = [](Point a, Point b, Point p) {
+      return (b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0]);
+    };
+    // Independent polygon clipping measures area, including intersections that
+    // miss cell centres. The production cut uses separating axes instead.
+    auto clip = [&](Polygon const& polygon, Point a, Point b) {
+      Polygon output;
+      if (polygon.empty()) return output;
+      auto previous = polygon.back();
+      auto d = cross(a, b, previous);
+      for (auto p : polygon)
+      {
+        auto next = cross(a, b, p);
+        if ((d <= 0) != (next <= 0))
+        {
+          auto t = d/(d-next);
+          output.push_back({previous[0]+t*(p[0]-previous[0]), previous[1]+t*(p[1]-previous[1])});
+        }
+        if (next <= 0) output.push_back(p);
+        previous = p; d = next;
+      }
+      return output;
+    };
+    auto area = [](Polygon const& polygon) {
+      double value = 0;
+      for (std::size_t i=0; i<polygon.size(); ++i)
+      {
+        auto a=polygon[i], b=polygon[(i+1)%polygon.size()];
+        value += a[0]*b[1]-a[1]*b[0];
+      }
+      return std::abs(value)*0.5;
+    };
+    for (unsigned level=0; level<4; ++level)
+    {
+      std::vector<std::vector<Polygon>> cells(128*128);
+      std::map<std::pair<unsigned,unsigned>, unsigned> edges;
+      auto start=get(levels,level*20+4), count=get(levels,level*20+8);
+      for (unsigned i=start; i<start+count; i+=3)
+      {
+        Polygon triangle{point(index(i)),point(index(i+1)),point(index(i+2))};
+        for (unsigned e=0; e<3; ++e) ++edges[std::minmax(index(i+e),index(i+(e+1)%3))];
+        int xmin=int(std::min({triangle[0][0],triangle[1][0],triangle[2][0]})/2);
+        int xmax=int(std::ceil(std::max({triangle[0][0],triangle[1][0],triangle[2][0]})/2));
+        int ymin=int(std::min({triangle[0][1],triangle[1][1],triangle[2][1]})/2);
+        int ymax=int(std::ceil(std::max({triangle[0][1],triangle[1][1],triangle[2][1]})/2));
+        for (int y=ymin; y<ymax; ++y) for (int x=xmin; x<xmax; ++x)
+        {
+          Point a{double(x*2),double(y*2)}, b{double(x*2),double(y*2+2)},
+            c{double(x*2+2),double(y*2+2)}, d{double(x*2+2),double(y*2)};
+          auto piece=clip(clip(clip(clip(triangle,a,b),b,c),c,d),d,a);
+          if (area(piece)<=1e-8) continue;
+          auto& existing=cells[y*128+x];
+          for (auto const& other:existing)
+          {
+            auto overlap=piece;
+            for (std::size_t e=0; e<other.size(); ++e)
+              overlap=clip(overlap,other[e],other[(e+1)%other.size()]);
+            require(area(overlap)<=1e-8,"Cut mesh contains positive-area triangle overlap");
+          }
+          existing.push_back(std::move(piece));
+        }
+      }
+      for (unsigned i=0; i<cells.size(); ++i)
+      {
+        double covered=0;
+        for (auto const& p:cells[i]) covered+=area(p);
+        require(std::abs(covered-(holes[i]?0.:4.))<1e-8,
+          "Cut mesh crosses an active hole or leaves solid cell area uncovered");
+      }
+      for (auto const& [edge, uses]:edges)
+      {
+        require(uses<=2,"Cut mesh has a non-manifold edge");
+        if (uses==2) continue;
+        auto a=point(edge.first), b=point(edge.second);
+        bool horizontal=a[1]==b[1], vertical=a[0]==b[0];
+        require(horizontal || vertical,"Cut mesh has an unmatched diagonal edge");
+        int fixed=int(horizontal?a[1]:a[0]);
+        if (fixed==0 || fixed==256) continue;
+        require(fixed%2==0,"Cut boundary is not on the cell grid");
+        int lo=int(horizontal?std::min(a[0],b[0]):std::min(a[1],b[1]));
+        int hi=int(horizontal?std::max(a[0],b[0]):std::max(a[1],b[1]));
+        for (int t=lo/2; t<hi/2; ++t)
+        {
+          int x=horizontal?t:fixed/2, y=horizontal?fixed/2:t;
+          require(holes[y*128+x] != holes[(y-(horizontal?1:0))*128+x-(vertical?1:0)],
+            "Cut mesh has a T-junction or an unmatched solid edge");
+        }
+      }
+      // The original fixture has a complete skirt along x=0, y=0..4 cells.
+      // Its solid intervals must survive, while the newly opened interval is gone.
+      std::array<unsigned,4> skirt_coverage{};
+      auto skirt_start=get(levels,level*20+16), skirt_count=get(levels,level*20+12);
+      for (unsigned i=skirt_start; i<skirt_start+skirt_count; i+=3)
+      {
+        std::vector<unsigned> top;
+        for (unsigned e=0;e<3;++e) if (index(i+e)<33025) top.push_back(index(i+e));
+        if (top.size()!=2) continue;
+        auto a=point(top[0]),b=point(top[1]);
+        if (a[0] || b[0]) continue;
+        for (int y=0;y<4;++y)
+          if (std::min(a[1],b[1])<y*2+1 && std::max(a[1],b[1])>y*2+1) ++skirt_coverage[y];
+      }
+      for (unsigned y=0;y<4;++y)
+        require(skirt_coverage[y]==(holes[y*128]?0u:1u),"Perimeter skirt bridges a hole or lost a solid interval");
+    }
+  }
+
+  void hole_cut_tests()
+  {
+    HoleCells holes{};
+    for (auto p : {std::array<int,2>{9,11}, {15,15}, {16,15}, {15,16}, {16,16},
+                   {31,7}, {32,7}, {63,63}, {64,63}, {63,64}, {64,64}, {0,1}, {127,127}})
+      holes[p[1]*128+p[0]]=true;
+    for (int layout=0;layout<4;++layout)
+    {
+      auto before=root(false), current=with_holes(before,holes,layout);
+      auto original=mesh_lod({},layout,true);
+      auto result=TerrainLodUpdater::update(before,original,current);
+      check_bounds(result);
+      check_cut_surface(result,holes);
+      require(bodies(result).at("TEST")==bodies(original).at("TEST"),"Hole cut changed opaque bytes");
+      require(TerrainLodUpdater::update(current,result,current)==result,"Hole cut is not byte-idempotent");
+    }
+  }
+}
+
 int main(int argc, char** argv)
 {
   try
   {
+    reference_tests();
     for (int layout = 0; layout < 4; ++layout)
     {
       std::string diagnostics;
@@ -339,6 +776,13 @@ int main(int argc, char** argv)
     rejects([&] { (void)TerrainLodUpdater::update(truncated, lod(false), root(false)); });
     auto bad_lod = lod(false); put(bad_lod, 4, 0xffffffff);
     rejects([&] { (void)TerrainLodUpdater::update(root(false), bad_lod, root(false)); });
+    auto oversized_parts = bodies(lod(false));
+    oversized_parts["MLVH"].resize(65537 * 4);
+    oversized_parts["MLSI"].resize((65537 - 33025) * 2);
+    Bytes oversized_lod;
+    for (auto const& [name, bytes] : oversized_parts) append(oversized_lod, name.c_str(), bytes);
+    rejects([&] { (void)TerrainLodUpdater::inspectReference(root(false), oversized_lod); });
+    rejects([&] { (void)TerrainLodUpdater::update(root(false), oversized_lod, root(false)); });
     bad_lod = lod(false);
     // MLSI is immediately before the final TEST chunk; invalid grid index.
     bad_lod[bad_lod.size() - 15] = 255; bad_lod[bad_lod.size() - 14] = 255;
@@ -356,7 +800,11 @@ int main(int argc, char** argv)
     rejects([&] { (void)TerrainLodUpdater::update(root(false), bad_lod, root(false)); });
     constexpr std::size_t first_header = 12 + 72 + 8;
     auto holes = root(false); put(holes, first_header + 60, 1);
-    rejects([&] { (void)TerrainLodUpdater::update(root(false), lod(false), holes); });
+    // This fixture has no mesh index chunks, so it cannot cut or close holes.
+    bool missing_mesh=false;
+    try { (void)TerrainLodUpdater::update(root(false), lod(false), holes); }
+    catch(std::runtime_error const& e) { missing_mesh=std::string(e.what()).find("without MLND/MLVI/MLLL")!=std::string::npos; }
+    require(missing_mesh,"Changed holes without mesh indices were accepted");
     auto high_holes = root(false);
     put(high_holes, first_header, 0x10000); put(high_holes, first_header + 20, 0x303);
     require(TerrainLodUpdater::update(holes, lod(false), high_holes) == lod(false),
@@ -380,7 +828,10 @@ int main(int argc, char** argv)
     require(TerrainLodUpdater::update(root(false), lod(false), liquid_type) == lod(false),
             "Legacy liquid flags must not block a Retail MH2O update.");
     hole_tests();
-    std::cout << "PASS: four layouts, skirts, preserved bytes, ambiguity, confidence, malformed input, "
+    hole_cut_tests();
+    calibration_tests();
+    refinement_tests();
+    std::cout << "PASS: reference inspection, flat noise, four layouts, skirts, preserved bytes, ambiguity, confidence, malformed input, "
                  "closed and partial holes, node borders, long edges, active holes and idempotence.\n";
     // Optional read-only comparison: original dir, edited dir, reference LOD dir.
     if (argc == 4)

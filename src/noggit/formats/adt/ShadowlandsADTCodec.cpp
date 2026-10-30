@@ -18,7 +18,13 @@
 
 #include <QSaveFile>
 #include <QFile>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <memory>
+#include <optional>
 
 #include <algorithm>
 #include <array>
@@ -1279,10 +1285,152 @@ namespace Noggit::Formats::ADT
       }
     }
 
+    using LodBytes = std::vector<std::uint8_t>;
+
+    QString project_file(std::string const& path)
+    {
+      auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+      return QString::fromStdString(client->getDiskPath(BlizzardArchive::Listfile::FileKey(path)));
+    }
+
+    std::string reference_config_path(std::string const& root_path)
+    {
+      auto const map = QFileInfo(QString::fromStdString(root_path)).dir().dirName().toLower();
+      if (map.isEmpty() || map == "." || map == "..")
+        throw std::invalid_argument("LOD reference requires a map ROOT path.");
+      return ".noggit/lod-reference/" + map.toStdString() + ".json";
+    }
+
+    std::optional<LodBytes> read_reference_file(QString const& path)
+    {
+      QFile file(path);
+      if (!file.exists()) return std::nullopt;
+      if (!file.open(QIODevice::ReadOnly) || file.size() > 64 * 1024 * 1024)
+        throw std::runtime_error("Cannot read LOD reference: " + path.toStdString());
+      auto bytes = file.readAll();
+      if (file.error() != QFileDevice::NoError)
+        throw std::runtime_error("Cannot read LOD reference: " + path.toStdString());
+      return LodBytes(bytes.begin(), bytes.end());
+    }
+
+    QString reference_hash(LodBytes const& bytes)
+    {
+      return QString::fromLatin1(QCryptographicHash::hash(
+        QByteArray::fromRawData(reinterpret_cast<char const*>(bytes.data()), static_cast<int>(bytes.size())),
+        QCryptographicHash::Sha256).toHex());
+    }
+
+    LodBytes json_bytes(QJsonObject const& object)
+    {
+      auto bytes = QJsonDocument(object).toJson(QJsonDocument::Indented);
+      return LodBytes(bytes.begin(), bytes.end());
+    }
+
+    struct LodReference
+    {
+      LodBytes root;
+      TerrainLodReferenceInspection inspection;
+      std::string origin;
+      std::optional<LodBytes> calibrated_lod;
+    };
+
+    LodReference resolve_lod_reference(ShadowlandsADTBackingStore const& backing,
+                                       LodBytes const& lod)
+    {
+      auto const base = ".noggit/lod-reference/" + backing.source.root_path;
+      std::string failures;
+      auto attempt = [&](std::string const& origin, auto&& load) -> std::optional<LodReference> {
+        try
+        {
+          auto candidate = load();
+          if (!candidate) return std::nullopt;
+          std::optional<LodBytes> calibrated;
+          if (candidate->second != lod)
+            calibrated = TerrainLodUpdater::calibrateReference(candidate->first, candidate->second, lod);
+          auto inspection = TerrainLodUpdater::inspectReference(candidate->first,
+            calibrated ? *calibrated : lod);
+          if (!inspection.usable) throw std::runtime_error(inspection.diagnostics);
+          return LodReference{std::move(candidate->first), std::move(inspection), origin, std::move(calibrated)};
+        }
+        catch (std::exception const& error)
+        {
+          failures += origin + ": " + error.what() + "; ";
+          return std::nullopt;
+        }
+      };
+      using Pair = std::pair<LodBytes, LodBytes>;
+      if (auto retained = attempt("retained", [&]() -> std::optional<Pair> {
+            auto root = read_reference_file(project_file(base + ".root"));
+            auto old_lod = read_reference_file(project_file(base + ".lod"));
+            if (!root && !old_lod) return std::nullopt;
+            if (!root || !old_lod) throw std::runtime_error("Incomplete retained ROOT/LOD pair");
+            if (auto metadata = read_reference_file(project_file(base + ".json")))
+            {
+              auto document = QJsonDocument::fromJson(QByteArray(
+                reinterpret_cast<char const*>(metadata->data()), static_cast<int>(metadata->size())));
+              auto object = document.object();
+              if (!document.isObject() || object.value("version").toInt() != 1
+                  || object.value("rootPath").toString().compare(
+                       QString::fromStdString(backing.source.root_path), Qt::CaseInsensitive) != 0
+                  || object.value("rootSha256").toString() != reference_hash(*root)
+                  || object.value("lodSha256").toString() != reference_hash(*old_lod))
+                throw std::runtime_error("Retained reference metadata does not match its files");
+            }
+            return Pair{std::move(*root), std::move(*old_lod)};
+          })) return std::move(*retained);
+
+      if (auto configured = attempt("configured folder", [&]() -> std::optional<Pair> {
+            auto directory = ShadowlandsADTCodec::lodReferenceDirectory(backing.source.root_path);
+            if (directory.empty()) return std::nullopt;
+            QDir source(QString::fromStdString(directory));
+            auto root = read_reference_file(source.filePath(QFileInfo(
+              QString::fromStdString(backing.source.root_path)).fileName()));
+            auto old_lod = read_reference_file(source.filePath(QFileInfo(QString::fromStdString(
+              backing.source.paths[part_index(ShadowlandsADTPart::Lod)])).fileName()));
+            if (!root || !old_lod) throw std::runtime_error("Folder has no ROOT/LOD pair for this tile");
+            return Pair{std::move(*root), std::move(*old_lod)};
+          })) return std::move(*configured);
+
+      if (auto archive = attempt("client archives", [&]() -> std::optional<Pair> {
+            auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+            std::vector<char> root, old_lod;
+            if (!client->readFile(BlizzardArchive::Listfile::FileKey(backing.source.root_path), root)
+                || !client->readFile(BlizzardArchive::Listfile::FileKey(
+                     backing.source.paths[part_index(ShadowlandsADTPart::Lod)]), old_lod))
+              return std::nullopt;
+            return Pair{LodBytes(root.begin(), root.end()), LodBytes(old_lod.begin(), old_lod.end())};
+          })) return std::move(*archive);
+
+      throw std::runtime_error("No coherent ROOT/LOD reference. " + failures
+        + "Choose a LOD reference folder containing the original pair for this tile.");
+    }
+
+    void retain_lod_reference(std::string const& root_path, LodBytes const& root,
+      LodBytes const& lod, std::string const& origin,
+      std::vector<std::pair<std::string, LodBytes>>& parts,
+      TerrainLodReferenceInspection const* verified = nullptr)
+    {
+      auto const inspection = verified ? *verified : TerrainLodUpdater::inspectReference(root, lod);
+      if (!inspection.usable)
+        throw std::runtime_error("Generated LOD cannot form a verified reference: " + inspection.diagnostics);
+      QJsonObject metadata{{"version", 1}, {"rootPath", QString::fromStdString(root_path)},
+        {"rootSha256", reference_hash(root)}, {"lodSha256", reference_hash(lod)},
+        {"origin", QString::fromStdString(origin)},
+        {"candidateLayouts", static_cast<int>(inspection.candidate_layouts)}};
+      // A tied flat reference has equivalent outputs, but no unique orientation.
+      if (inspection.unique_layout)
+        metadata.insert("layout", static_cast<int>(*inspection.unique_layout));
+      auto const base = ".noggit/lod-reference/" + root_path;
+      parts.emplace_back(base + ".root", root);
+      parts.emplace_back(base + ".lod", lod);
+      parts.emplace_back(base + ".json", json_bytes(metadata));
+    }
+
     bool update_lod(ShadowlandsADTBackingStore const& backing,
       std::vector<std::uint8_t> const& root, std::vector<std::uint8_t>& obj1,
       std::vector<std::uint8_t>& lod,
-      std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& lod_reference_parts)
+      std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& lod_reference_parts,
+      std::string* failure = nullptr, bool force_refinement = false)
     {
       bool lod_updated = false;
       auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
@@ -1295,58 +1443,45 @@ namespace Noggit::Formats::ADT
       else if (backing.has(ShadowlandsADTPart::Lod))
       {
         lod = backing.part(ShadowlandsADTPart::Lod).bytes;
-        // ROOT/LOD reference pair: the last ROOT that the preserved LOD matches.
-        // Used as the update baseline while the saved LOD is stale.
-        auto const root_reference_path = ".noggit/lod-reference/" + backing.source.root_path + ".root";
-        auto const lod_reference_path = ".noggit/lod-reference/" + backing.source.root_path + ".lod";
-        auto disk_path = [&](std::string const& path) {
-          return QString::fromStdString(client_data->getDiskPath(BlizzardArchive::Listfile::FileKey(path)));
-        };
-        bool const has_reference = QFile::exists(disk_path(root_reference_path))
-                                || QFile::exists(disk_path(lod_reference_path));
-        auto reference_root = backing.part(ShadowlandsADTPart::Root).bytes;
-        bool reference_valid = !has_reference;
+        std::optional<LodReference> reference;
         try
         {
-          if (has_reference)
-          {
-            auto read_reference = [&](std::string const& path) {
-              QFile file(disk_path(path));
-              if (!file.open(QIODevice::ReadOnly) || file.size() > 64 * 1024 * 1024)
-                throw std::runtime_error("Cannot read retained LOD reference: " + path);
-              auto bytes = file.readAll();
-              if (file.error() != QFileDevice::NoError)
-                throw std::runtime_error("Cannot read retained LOD reference: " + path);
-              return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
-            };
-            reference_root = read_reference(root_reference_path);
-            if (read_reference(lod_reference_path) != lod)
-              throw std::runtime_error("LOD differs from its retained reference; restore a coherent ROOT/LOD reference pair.");
-            reference_valid = true;
-          }
+          reference = resolve_lod_reference(backing, lod);
           std::string diagnostics;
-          auto updated_lod = TerrainLodUpdater::update(reference_root, lod, root, &diagnostics);
+          auto updated_lod = TerrainLodUpdater::update(reference->root,
+            reference->calibrated_lod ? *reference->calibrated_lod : lod, root,
+            &diagnostics, force_refinement);
           auto updated_obj1 = RetailLiquid::update_object_water(root,obj1);
           updated_lod = RetailLiquid::update_object_bounds(updated_obj1,updated_lod);
+          // Validate before changing any output, including the retained baseline.
+          retain_lod_reference(backing.source.root_path, root, updated_lod,
+            reference->origin, lod_reference_parts);
           lod = std::move(updated_lod);
           obj1 = std::move(updated_obj1);
           lod_updated = true;
-          Log << "[Terrain LOD] " << backing.source.root_path << ": " << diagnostics << std::endl;
+          Log << "[Terrain LOD] " << backing.source.root_path << ": reference="
+              << reference->origin << (reference->calibrated_lod ? " (terrain indexing verified; heights recalibrated)" : "")
+              << "; " << diagnostics << std::endl;
         }
         catch (std::exception const& error)
         {
+          if (failure) *failure = error.what();
           LogError << "[Terrain LOD] Preserving original LOD; result remains stale for "
                    << backing.source.root_path << ": " << error.what() << std::endl;
-        }
-        if (reference_valid && (has_reference || !lod_updated))
-        {
-          lod_reference_parts.emplace_back(root_reference_path, lod_updated ? root : reference_root);
-          lod_reference_parts.emplace_back(lod_reference_path, lod);
+          // Retain only an inspected baseline. A failed guess must never become
+          // the reference used by every subsequent retry.
+          lod_reference_parts.clear();
+          if (reference && !reference->calibrated_lod)
+            retain_lod_reference(backing.source.root_path, reference->root, lod,
+              reference->origin, lod_reference_parts, &reference->inspection);
         }
       }
       else
+      {
+        if (failure) *failure = "No LOD template exists for this tile.";
         LogError << "[Terrain LOD] No template; result remains stale for "
                  << backing.source.root_path << std::endl;
+      }
 
       return lod_updated;
     }
@@ -1355,6 +1490,42 @@ namespace Noggit::Formats::ADT
   bool ShadowlandsADTBackingStore::has(ShadowlandsADTPart part) const noexcept
   {
     return parts[part_index(part)].present;
+  }
+
+  std::string ShadowlandsADTCodec::lodReferenceDirectory(std::string const& root_path)
+  {
+    auto const bytes = read_reference_file(project_file(reference_config_path(root_path)));
+    if (!bytes) return {};
+    auto const document = QJsonDocument::fromJson(QByteArray(
+      reinterpret_cast<char const*>(bytes->data()), static_cast<int>(bytes->size())));
+    auto const object = document.object();
+    if (!document.isObject() || object.value("version").toInt() != 1
+        || !object.value("directory").isString())
+      throw std::runtime_error("Invalid LOD reference folder configuration (preserved without overwriting).");
+    auto const directory = object.value("directory").toString();
+    if (!QDir::isAbsolutePath(directory))
+      throw std::runtime_error("LOD reference folder must be an absolute path.");
+    return directory.toStdString();
+  }
+
+  void ShadowlandsADTCodec::setLodReferenceDirectory(std::string const& root_path,
+                                                     std::string const& directory)
+  {
+    auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+    if (client->version() != BlizzardArchive::ClientVersion::RETAIL)
+      throw std::runtime_error("LOD reference folders are available only for Retail.");
+    auto const source = QFileInfo(QString::fromStdString(directory));
+    if (directory.empty() || !source.isDir())
+      throw std::runtime_error("Choose an existing folder containing the original ROOT and LOD ADTs.");
+    auto const path = project_file(reference_config_path(root_path));
+    if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+      throw std::runtime_error("Cannot create the project LOD reference directory.");
+    auto const bytes = QJsonDocument(QJsonObject{{"version", 1},
+      {"directory", source.canonicalFilePath()}}).toJson(QJsonDocument::Indented);
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+      throw std::runtime_error("Cannot save the project LOD reference folder.");
   }
 
   void ShadowlandsADTCodec::rebuildDerived(std::string const& root_path)
@@ -1366,8 +1537,9 @@ namespace Noggit::Formats::ADT
     auto obj1 = backing.part(ShadowlandsADTPart::Obj1).bytes;
     std::vector<std::uint8_t> lod;
     std::vector<std::pair<std::string, std::vector<std::uint8_t>>> parts;
-    if (!update_lod(backing, backing.part(ShadowlandsADTPart::Root).bytes, obj1, lod, parts))
-      throw std::runtime_error("LOD could not be rebuilt; see the terrain LOD diagnostic in log.txt.");
+    std::string failure;
+    if (!update_lod(backing, backing.part(ShadowlandsADTPart::Root).bytes, obj1, lod, parts, &failure, true))
+      throw std::runtime_error("LOD could not be rebuilt: " + failure);
     parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Lod)], std::move(lod));
     if (backing.has(ShadowlandsADTPart::Obj1))
       parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Obj1)], std::move(obj1));

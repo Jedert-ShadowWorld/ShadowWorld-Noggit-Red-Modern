@@ -2978,8 +2978,22 @@ void MapView::paintGL()
   _last_frame_durations.emplace_back (now - _last_update);
 
   lock = true;
-  if (!activeTool()->preRender())
+  auto* frameTool = activeTool().get();
+  if (usesRetailMapWorkflow())
   {
+      auto* minimap = static_cast<Noggit::MinimapTool*>(_tools[static_cast<int>(editing_mode::minimap)].get());
+      if (minimap->isExportActive())
+          frameTool = minimap;
+  }
+  if (!frameTool->preRender())
+  {
+      // Export jobs keep receiving frames while the normal scene is paused.
+      // Do not turn their duration into one large simulation tick on resume.
+      if (usesRetailMapWorkflow())
+      {
+          _last_update = now;
+          _last_frame_durations.pop_back();
+      }
       lock = false;
       return;
   }
@@ -4459,10 +4473,17 @@ void MapView::save(save_mode mode)
         try
         {
           // Pending WDL tiles without unsaved changes are rebuilt from their saved ADTs.
-          auto wdl_tiles = saved_tiles;
+          auto const pending_lod = Noggit::DerivedMapState::pending(
+            project_path, _world->basename, Noggit::DerivedMapState::Lod);
+          auto lod_ready = [&](TileIndex const& tile) {
+            return std::find(pending_lod.begin(), pending_lod.end(), tile) == pending_lod.end();
+          };
+          std::vector<TileIndex> wdl_tiles;
+          for (auto const& tile : saved_tiles)
+            if (lod_ready(tile)) wdl_tiles.push_back(tile);
           for (auto const& tile : Noggit::DerivedMapState::pending(
                  project_path, _world->basename, Noggit::DerivedMapState::Wdl))
-            if (!_world->mapIndex.has_unsaved_changes(tile)
+            if (lod_ready(tile) && !_world->mapIndex.has_unsaved_changes(tile)
                 && std::find(wdl_tiles.begin(), wdl_tiles.end(), tile) == wdl_tiles.end())
               wdl_tiles.push_back(tile);
           _world->horizon.save_wdl(_world.get(), true, &wdl_tiles);
@@ -4488,10 +4509,11 @@ void MapView::save(save_mode mode)
         if (!errors.empty())
         {
           LogError << "[Map Save] Map textures incomplete: " << errors.join("; ").toStdString() << std::endl;
-          _main_window->statusBar()->showMessage("Map save incomplete: map textures could not be written", 15000);
+          _main_window->statusBar()->showMessage("ADTs saved; derived map results are incomplete", 15000);
           QMessageBox warning(QMessageBox::Warning, "Map save incomplete",
-            "ADTs were saved, but some map textures could not be written and remain pending.\n"
-            "After resolving the errors, use Both map textures: changed / pending tiles in the Minimap Editor.",
+            "ADTs were saved, but LOD or map texture generation did not finish.\n"
+            "See Details for the affected tiles. Use Update project LOD + map textures + heightmap "
+            "after resolving the reported problem.",
             QMessageBox::Ok, this);
           warning.setDetailedText(errors.join("\n"));
           warning.exec();

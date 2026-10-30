@@ -3,6 +3,14 @@
 #include <iostream>
 #include <fstream>
 #include <iterator>
+#include <exception>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 using namespace Noggit::Formats::ADT::RetailLiquid;
 namespace
@@ -92,6 +100,43 @@ namespace
       }
     }
   }
+#ifdef _WIN32
+  void low_stack_regression(Bytes const& terrain, Bytes const& objects)
+  {
+    struct Work
+    {
+      Bytes const& terrain;
+      Bytes const& objects;
+      Bytes originalLod, expectedLod, expectedObjects;
+      std::exception_ptr failure;
+    } work{terrain, objects, lod(), {}, {}, {}};
+    work.expectedLod = rebuild(terrain, work.originalLod);
+    work.expectedObjects = update_object_water(terrain, objects);
+    // Exercise the production liquid routines with less stack than the editor's
+    // caller chain leaves available. Large per-cell tables must live on the heap.
+    auto run = [](void* parameter) -> DWORD
+    {
+      auto& w = *static_cast<Work*>(parameter);
+      try
+      {
+        auto generated = rebuild(w.terrain, w.originalLod);
+        check(generated == w.expectedLod, "Low-stack liquid generation changed bytes");
+        check(rebuild(w.terrain, generated) == generated, "Low-stack liquid generation is not idempotent");
+        check(update_object_water(w.terrain, w.objects) == w.expectedObjects,
+          "Low-stack object liquid update changed bytes");
+      }
+      catch (...) { w.failure = std::current_exception(); }
+      return 0;
+    };
+    auto thread = CreateThread(nullptr, 256*1024, run, &work,
+      STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    check(thread != nullptr, "Cannot create low-stack liquid regression thread");
+    auto const waited = WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    check(waited == WAIT_OBJECT_0, "Cannot wait for low-stack liquid regression");
+    if (work.failure) std::rethrow_exception(work.failure);
+  }
+#endif
 }
 int main(int argc, char** argv)
 {
@@ -167,6 +212,9 @@ int main(int argc, char** argv)
     check(real(body(updated,"MLDL"),0) == 12,"Object water height not updated");
     check(body(updated,"MLDD") == placement && body(updated,"MDLD") == body(obj,"MDLD"),"Object identity/data modified");
     check(real(body(update_object_water(root({}),updated),"MLDL"),0) == 0,"Removed water leaves object height");
+#ifdef _WIN32
+    low_stack_regression(root(water()), obj);
+#endif
     Bytes extents(28); putf(extents,8,-2); putf(extents,20,30); append(obj,"MLDX",extents);
     auto bounded = body(update_object_bounds(obj,lod()),"MLHD");
     check(real(bounded,12) == -2 && real(bounded,16) == 30,"Object bounds stale");

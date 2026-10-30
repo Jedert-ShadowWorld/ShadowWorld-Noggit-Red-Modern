@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <memory>
+#include <QString>
 
 namespace OpenGL
 {
@@ -95,7 +96,8 @@ namespace Noggit::Rendering
 
     bool saveMinimap (TileIndex const& tile_idx
                       , MinimapRenderSettings* settings
-                      , std::optional<QImage>& combined_image);
+                      , std::optional<QImage>& combined_image
+                      , QString const& outputPath = {});
 
     [[nodiscard]]
     OpenGL::TerrainParamsUniformBlock* getTerrainParamsUniformBlock();;

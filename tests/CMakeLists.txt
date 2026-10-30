@@ -75,6 +75,19 @@ if(WIN32)
     "${NOGGIT_SOURCE}/noggit/rendering/WMOGroupRender.hpp"
     "${NOGGIT_SOURCE}/noggit/TextureManager.cpp")
   noggit_method_test(object_clipboard object-clipboard "${NOGGIT_SOURCE}/noggit/ui/ObjectEditor.cpp")
+  if(Qt5_FOUND)
+    noggit_method_test(terrain_export_lifecycle terrain-export
+      "${NOGGIT_SOURCE}/noggit/tools/MinimapTool.cpp" "${NOGGIT_SOURCE}/noggit/MapView.cpp")
+    target_link_libraries(terrain_export_lifecycle PRIVATE Qt5::Widgets)
+    set_tests_properties(terrain_export_lifecycle PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    noggit_method_test(terrain_lod_reference lod-reference
+      "${NOGGIT_SOURCE}/noggit/formats/adt/ShadowlandsADTCodec.cpp"
+      "${NOGGIT_SOURCE}/noggit/formats/adt/ShadowlandsADTCodec.hpp"
+      "${CMAKE_CURRENT_LIST_DIR}/terrain_lod_updater.cpp")
+    target_sources(terrain_lod_reference PRIVATE "${NOGGIT_SOURCE}/noggit/formats/adt/TerrainLodUpdater.cpp")
+    target_include_directories(terrain_lod_reference PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+    target_link_libraries(terrain_lod_reference PRIVATE Qt5::Core)
+  endif()
   # The existing OBJ1 fixture uses a separate main include.
   set(output "${CMAKE_CURRENT_BINARY_DIR}/obj1-regression.cpp")
   add_custom_command(OUTPUT "${output}"

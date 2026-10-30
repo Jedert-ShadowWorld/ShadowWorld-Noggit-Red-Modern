@@ -2367,10 +2367,14 @@ void WorldRender::drawMinimap ( MapTile *tile
   }
 }
 
-bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* settings, std::optional<QImage>& combined_image)
+bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* settings,
+    std::optional<QImage>& combined_image, QString const& outputPath)
 {
-  if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
-      != BlizzardArchive::ClientVersion::RETAIL)
+  bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL;
+  if (!outputPath.isEmpty() && (!retail || !isMapTexture(*settings)))
+    throw std::invalid_argument("A staged output path is only supported for Retail map textures.");
+  if (!retail)
     return saveMinimapLegacy(tile_idx, settings, combined_image);
   ZoneScoped;
   QOpenGLFramebufferObjectFormat fmt;
@@ -2406,7 +2410,9 @@ bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* 
     unsigned counter = 0;
     constexpr unsigned TIMEOUT = 5000;
 
-    while (AsyncLoader::instance->is_loading() || !mTile->finishedLoading())
+    // Map textures only depend on this tile and its terrain textures. Other
+    // scene/model loads must not time out an otherwise ready terrain export.
+    while (!isMapTexture(*settings) && AsyncLoader::instance->is_loading())
     {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       counter++;
@@ -2510,7 +2516,10 @@ bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* 
 
     if (settings->file_format == ".png")
     {
-      QSaveFile file(dir.filePath(std::string(map_name + "_" + std::to_string(tile_idx.x) + "_" + std::to_string(tile_idx.z) + ".png").c_str()));
+      QSaveFile file(outputPath.isEmpty()
+        ? dir.filePath(std::string(map_name + "_" + std::to_string(tile_idx.x) + "_" + std::to_string(tile_idx.z) + ".png").c_str())
+        : outputPath);
+      file.setDirectWriteFallback(false);
       if (!file.open(QIODevice::WriteOnly) || !image.save(&file, "PNG") || !file.commit())
         return false;
     }
@@ -2535,7 +2544,8 @@ bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* 
       if (isMapTexture(*settings))
         Noggit::Formats::finalizeRetailMapTexture(blp_image, file_size);
 
-      QSaveFile file(dir.filePath(tex_name.c_str()));
+      QSaveFile file(outputPath.isEmpty() ? dir.filePath(tex_name.c_str()) : outputPath);
+      file.setDirectWriteFallback(false);
       if (!file.open(QIODevice::WriteOnly)
           || file.write(reinterpret_cast<const char*>(blp_image), file_size) != file_size
           || !file.commit())

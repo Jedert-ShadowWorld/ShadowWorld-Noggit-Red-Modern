@@ -17,6 +17,7 @@
 #include <noggit/World.h>
 
 #include <QDir>
+#include <QFileDialog>
 #include <QMenu>
 #include <QProgressBar>
 #include <QPushButton>
@@ -106,6 +107,36 @@ namespace Noggit
             settings->map_texture_scope = MapTextureScope::Project;
             beginSaving();
         });
+        auto* reference = menu->addAction("Choose LOD reference folder...");
+        reference->setToolTip("Choose original ROOT and LOD files for the open map. They are read only.");
+        QObject::connect(reference, &QAction::triggered, _minimapTool, [this]() {
+            if (saving_minimap) return;
+            auto const& map = mapView()->getWorld()->basename;
+            auto const root = "world/maps/" + map + "/" + map + "_0_0.adt";
+            try
+            {
+                using Codec = Formats::ADT::ShadowlandsADTCodec;
+                QString initialDirectory;
+                try
+                {
+                    initialDirectory = QString::fromStdString(Codec::lodReferenceDirectory(root));
+                }
+                catch (std::exception const& error)
+                {
+                    // A bad saved setting must not prevent choosing its replacement.
+                    LogError << "[LOD reference] Could not read the saved folder: " << error.what() << std::endl;
+                }
+                auto const directory = QFileDialog::getExistingDirectory(mapView(), "Original ROOT and LOD files",
+                    initialDirectory);
+                if (directory.isEmpty()) return;
+                Codec::setLodReferenceDirectory(root, directory.toStdString());
+                mapView()->mainWindow()->statusBar()->showMessage("LOD reference folder saved for this map.", 5000);
+            }
+            catch (std::exception const& error)
+            {
+                QMessageBox::warning(mapView(), "LOD reference folder", error.what());
+            }
+        });
     }
 
     ToolDrawParameters MinimapTool::drawParameters() const
@@ -148,6 +179,8 @@ namespace Noggit
         _heightmap_tiles.clear();
         _mmap_render_index = 0;
         _failed = 0;
+        _blocked = 0;
+        _terrain_errors.clear();
         const auto mode = _export_settings.export_mode;
         const bool derived = mode == TERRAIN_DERIVED;
         const bool paired = mode == LOD_MAPTEXTURES_BOTH || derived;
@@ -245,7 +278,25 @@ namespace Noggit
             mapView()->mainWindow()->statusBar()->showMessage("Export cancelled. Unfinished terrain results remain pending.", 10000);
         });
         _minimapTool->setEnabled(false);
-        saving_minimap = true;
+        setExportActive(true);
+    }
+
+    void MinimapTool::setExportActive(bool active)
+    {
+        if (saving_minimap == active)
+            return;
+        if (active)
+        {
+            _previous_update_behavior = mapView()->updateBehavior();
+            // Keep the editor image while only the offscreen export renders.
+            mapView()->setUpdateBehavior(QOpenGLWidget::PartialUpdate);
+        }
+        else
+        {
+            mapView()->setUpdateBehavior(_previous_update_behavior);
+            mapView()->update();
+        }
+        saving_minimap = active;
     }
 
     bool MinimapTool::preRender()
@@ -274,7 +325,16 @@ namespace Noggit
         {
             settings = mapTextureSettings(job.mode);
         }
-        try
+        auto const terrain_error = _terrain_errors.find(job.tile);
+        bool const blocked = pair && terrain_error != _terrain_errors.end();
+        if (blocked)
+        {
+            ++_blocked;
+            LogError << "Map textures skipped for " << job.tile.x << "_" << job.tile.z
+                << ": LOD rebuild failed: " << terrain_error->second
+                << "; existing map textures were kept." << std::endl;
+        }
+        else try
         {
             if ((textures || job.mode == TERRAIN_DERIVED) && world->mapIndex.has_unsaved_changes(job.tile))
                 throw std::runtime_error("Tile changed during export; save and regenerate.");
@@ -321,13 +381,15 @@ namespace Noggit
         catch (const std::exception& error)
         {
             ++_failed;
+            if (job.mode == TERRAIN_DERIVED)
+                _terrain_errors[job.tile] = error.what();
             LogError << "Terrain export " << job.tile.x << "_" << job.tile.z << ": " << error.what() << std::endl;
         }
         _progress->setValue(++_mmap_render_index);
         if (_mmap_render_index == _export_jobs.size())
         {
-            const auto message = QString("Terrain export finished: %1 completed, %2 failed. Failed results remain pending.")
-                .arg(_mmap_render_index - _failed).arg(_failed);
+            const auto message = QString("Terrain export finished: %1 completed, %2 failed, %3 skipped after LOD failure. Unfinished results remain pending; see log.txt for tile details.")
+                .arg(_mmap_render_index - _failed - _blocked).arg(_failed).arg(_blocked);
             finishSaving(_progress, _cancel, world, &_export_settings);
             mv->mainWindow()->statusBar()->showMessage(message, 15000);
         }
@@ -336,22 +398,26 @@ namespace Noggit
         mv->makeCurrent();
         gl.bindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(framebuffer));
         gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-        return true;
+        // Returning false skips the normal scene, but paintGL is still called
+        // by the frame timer to advance the next export job.
+        return !saving_minimap;
     }
 
     void MinimapTool::writeMapTexturePair(TileIndex const& tile)
     {
         auto* world = mapView()->getWorld();
         std::optional<QImage> unusedAtlas;
-        auto write = [&](MinimapGenMode mode) {
+        auto write = [&](MinimapGenMode mode, std::string const& outputPath) {
             auto settings = mapTextureSettings(mode);
-            if (!world->renderer()->saveMinimap(tile, &settings, unusedAtlas))
+            if (!world->renderer()->saveMinimap(tile, &settings, unusedAtlas, QString::fromStdString(outputPath)))
                 throw std::runtime_error(mode == LOD_MAPTEXTURES
                     ? "Failed to render or write the diffuse map texture."
                     : "Failed to render or write the normal map texture.");
         };
         DerivedMapState::writeTexturePair(Project::CurrentProject::get()->ProjectPath,
-            world->basename, tile, [&] { write(LOD_MAPTEXTURES); }, [&] { write(LOD_MAPTEXTURES_N); });
+            world->basename, tile,
+            [&](std::string const& outputPath) { write(LOD_MAPTEXTURES, outputPath); },
+            [&](std::string const& outputPath) { write(LOD_MAPTEXTURES_N, outputPath); });
     }
 
     QStringList MinimapTool::saveRetailMapTextures(std::vector<TileIndex> const& savedTiles)
@@ -373,7 +439,18 @@ namespace Noggit
             if (saving_minimap)
                 throw std::runtime_error("An export is already running; map textures remain pending.");
             // Only the saved tiles; other pending tiles are processed by the Minimap Editor.
-            tiles = std::move(targets);
+            auto const pendingLod = DerivedMapState::pending(projectPath, world->basename, DerivedMapState::Lod);
+            for (auto const& tile : targets)
+            {
+                if (std::find(pendingLod.begin(), pendingLod.end(), tile) != pendingLod.end())
+                {
+                    auto const message = QString("LOD remains pending for tile %1_%2; existing map textures were retained. Rebuild LOD before retrying the save.")
+                        .arg(tile.x).arg(tile.z);
+                    errors.append(message);
+                    LogError << "Map texture save " << message.toStdString() << std::endl;
+                }
+                else tiles.push_back(tile);
+            }
         }
         catch (std::exception const& error)
         {
@@ -657,7 +734,7 @@ namespace Noggit
         _heightmap_tiles.clear();
         _minimapTool->setEnabled(true);
         _mmap_render_index = 0;
-        saving_minimap = false;
+        setExportActive(false);
         progress->deleteLater();
         cancel_btn->deleteLater();
         _progress = nullptr;

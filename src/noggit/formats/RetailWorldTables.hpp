@@ -1,8 +1,14 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #pragma once
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
+#include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -17,14 +23,17 @@ namespace Noggit::Formats::RetailWorldTables
     if (p > b.size() || b.size() - p < 4) throw std::runtime_error("Truncated world table");
     std::uint32_t n; std::memcpy(&n, b.data() + p, 4); return n;
   }
-  inline std::vector<Chunk> chunks(Bytes const& b)
+  inline std::vector<Chunk> chunks(Bytes const& b, std::size_t begin = 0,
+                                  std::size_t end = std::string::npos)
   {
+    if (end == std::string::npos) end = b.size();
+    if (begin > end || end > b.size()) throw std::runtime_error("Invalid world table chunk range");
     std::vector<Chunk> result;
-    for (std::size_t p = 0; p < b.size();)
+    for (std::size_t p = begin; p < end;)
     {
-      if (b.size() - p < 8) throw std::runtime_error("Truncated world table chunk");
+      if (end - p < 8) throw std::runtime_error("Truncated world table chunk");
       auto n = read(b, p + 4);
-      if (n > b.size() - p - 8) throw std::runtime_error("World table chunk exceeds file");
+      if (n > end - p - 8) throw std::runtime_error("World table chunk exceeds file");
       result.push_back({std::string{b[p+3], b[p+2], b[p+1], b[p]}, p, p+8, n});
       p += 8 + n;
     }
@@ -56,7 +65,140 @@ namespace Noggit::Formats::RetailWorldTables
     }
     return original;
   }
-  inline std::map<unsigned, std::size_t> wdlOffsets(Bytes const& bytes)
+  using WdlHoles = std::array<std::uint16_t, 16>;
+  struct WdlTileOffsets
+  {
+    std::size_t heights;
+    std::optional<std::size_t> holes;
+  };
+  inline std::int16_t wdlHeight(float height)
+  {
+    // Check before conversion: an out-of-range floating-point to integer cast
+    // is undefined. Keep the existing truncation for representable heights.
+    if (!std::isfinite(height) || height < std::numeric_limits<std::int16_t>::min()
+        || height > std::numeric_limits<std::int16_t>::max())
+      throw std::runtime_error("WDL height is not finite or exceeds the signed 16-bit range");
+    return static_cast<std::int16_t>(height);
+  }
+  inline std::map<unsigned, std::size_t> occlusionOffsets(Bytes const& bytes)
+  {
+    auto list = chunks(bytes);
+    auto version = required(list, "MVER", 4);
+    if (read(bytes, version.payload) != 18) throw std::runtime_error("Unsupported Retail occlusion table");
+    std::optional<Chunk> index, heights;
+    for (auto const& c : list)
+      if (c.tag == "MAOI" || c.tag == "MAOH")
+      {
+        auto& target = c.tag == "MAOI" ? index : heights;
+        if (target) throw std::runtime_error("Duplicate occlusion chunk");
+        target = c;
+      }
+    if (!index || !heights || index->size % 12)
+      throw std::runtime_error("Invalid occlusion index");
+    std::map<unsigned, std::size_t> result;
+    std::set<std::size_t> ranges;
+    for (std::size_t p = index->payload; p < index->payload + index->size; p += 12)
+    {
+      auto xy = read(bytes, p), x = xy & 0xffffu, y = xy >> 16;
+      auto offset = read(bytes, p + 4), size = read(bytes, p + 8);
+      // Retail CASC uses only the 17x17 outer grid here, unlike WDL MARE.
+      if (x >= 64 || y >= 64 || size != 578 || offset % 2
+          || offset > heights->size || size > heights->size - offset
+          || !result.emplace(y * 64 + x, heights->payload + offset).second)
+        throw std::runtime_error("Unsupported or invalid occlusion tile");
+      auto next = ranges.lower_bound(offset);
+      if ((next != ranges.end() && *next < offset + size)
+          || (next != ranges.begin() && *std::prev(next) + size > offset))
+        throw std::runtime_error("Shared occlusion height range");
+      ranges.insert(offset);
+    }
+    return result;
+  }
+  inline std::size_t lowerOcclusionTile(Bytes& bytes, std::map<unsigned, std::size_t> const& offsets,
+                                        unsigned tile, Bytes const& root)
+  {
+    auto target = offsets.find(tile);
+    if (target == offsets.end()) return 0; // A tile without an occluder needs none added.
+    if (target->second > bytes.size() || bytes.size() - target->second < 578)
+      throw std::runtime_error("Occlusion tile exceeds file");
+    auto list = chunks(root);
+    auto version = required(list, "MVER", 4);
+    if (read(root, version.payload) != 18) throw std::runtime_error("Unsupported occlusion ROOT");
+    required(list, "MHDR", 64);
+    std::array<std::int16_t, 256> minima{};
+    std::set<unsigned> seen;
+    auto height = [&](std::size_t p) {
+      auto bits = read(root, p); float value; std::memcpy(&value, &bits, 4);
+      if (!std::isfinite(value)) throw std::runtime_error("Non-finite occlusion ROOT height");
+      return value;
+    };
+    for (auto const& c : list)
+    {
+      if (c.tag != "MCNK") continue;
+      if (c.size < 128) throw std::runtime_error("Truncated occlusion ROOT MCNK");
+      auto x = read(root, c.payload + 4), y = read(root, c.payload + 8);
+      if (x >= 16 || y >= 16 || !seen.insert(y * 16 + x).second)
+        throw std::runtime_error("Invalid occlusion ROOT grid");
+      auto mcvt = required(chunks(root, c.payload + 128, c.payload + c.size), "MCVT", 580);
+      auto base = height(c.payload + 112);
+      float minimum = std::numeric_limits<float>::infinity();
+      for (unsigned v = 0; v < 145; ++v)
+      {
+        auto value = height(mcvt.payload + v * 4) + base;
+        if (!std::isfinite(value)) throw std::runtime_error("Occlusion ROOT height overflow");
+        minimum = std::min(minimum, value);
+      }
+      auto lower = wdlHeight(std::floor(minimum));
+      bool hole = read(root, c.payload) & 0x10000u
+        ? (read(root, c.payload + 20) | read(root, c.payload + 24)) != 0
+        : (read(root, c.payload + 60) & 0xffffu) != 0;
+      // A coarse quad cannot represent a hole; keep its occluder below the world.
+      minima[y * 16 + x] = hole ? std::numeric_limits<std::int16_t>::min() : lower;
+    }
+    if (seen.size() != 256) throw std::runtime_error("Incomplete occlusion ROOT grid");
+    std::size_t changed = 0;
+    for (int y = 0; y <= 16; ++y)
+      for (int x = 0; x <= 16; ++x)
+      {
+        auto p = target->second + (y * 17 + x) * 2;
+        std::int16_t value; std::memcpy(&value, bytes.data() + p, 2);
+        auto original = value;
+        // All four vertices of each quad are <= its lowest terrain vertex.
+        // Thus either diagonal stays below the entire piecewise-linear surface.
+        for (int cy = std::max(0, y - 1); cy <= std::min(15, y); ++cy)
+          for (int cx = std::max(0, x - 1); cx <= std::min(15, x); ++cx)
+            value = std::min(value, minima[cy * 16 + cx]);
+        if (value != original) { std::memcpy(bytes.data() + p, &value, 2); ++changed; }
+      }
+    return changed;
+  }
+  inline WdlHoles wdlHoles(Bytes const& root)
+  {
+    auto list = chunks(root);
+    auto version = required(list, "MVER", 4);
+    if (read(root, version.payload) != 18)
+      throw std::runtime_error("Unsupported Retail ROOT for WDL holes");
+    required(list, "MHDR", 64);
+    WdlHoles result{};
+    std::set<unsigned> seen;
+    for (auto const& c : list)
+    {
+      if (c.tag != "MCNK") continue;
+      if (c.size < 128) throw std::runtime_error("Truncated ROOT MCNK for WDL holes");
+      auto x = read(root, c.payload + 4), y = read(root, c.payload + 8);
+      if (x >= 16 || y >= 16 || !seen.insert(y * 16 + x).second)
+        throw std::runtime_error("Invalid ROOT MCNK grid for WDL holes");
+      // MAHO has one bit per whole MCNK, not per terrain cell. A partial
+      // high-resolution hole must not remove the remaining solid terrain.
+      bool empty = read(root, c.payload) & 0x10000u
+        ? read(root, c.payload + 20) == 0xffffffffu && read(root, c.payload + 24) == 0xffffffffu
+        : (read(root, c.payload + 60) & 0xffffu) == 0xffffu;
+      if (empty) result[y] |= std::uint16_t(1u << x);
+    }
+    if (seen.size() != 256) throw std::runtime_error("Incomplete ROOT MCNK grid for WDL holes");
+    return result;
+  }
+  inline std::map<unsigned, WdlTileOffsets> wdlOffsets(Bytes const& bytes)
   {
     auto list = chunks(bytes);
     auto version = required(list, "MVER", 4);
@@ -64,7 +206,7 @@ namespace Noggit::Formats::RetailWorldTables
     auto maof = required(list, "MAOF", 16384);
     std::map<std::size_t, Chunk> byOffset;
     for (auto const& c : list) byOffset.emplace(c.header, c);
-    std::map<unsigned, std::size_t> result;
+    std::map<unsigned, WdlTileOffsets> result;
     std::set<std::size_t> used;
     for (unsigned i = 0; i < 4096; ++i)
     {
@@ -73,17 +215,36 @@ namespace Noggit::Formats::RetailWorldTables
       auto c = byOffset.find(p);
       if (c == byOffset.end() || c->second.tag != "MARE" || c->second.size != 1090 || !used.insert(p).second)
         throw std::runtime_error("Invalid or shared Retail WDL MARE offset");
-      result.emplace(i, c->second.payload);
+      std::optional<std::size_t> holes;
+      auto next = byOffset.find(c->second.payload + c->second.size);
+      if (next != byOffset.end() && next->second.tag == "MAHO")
+      {
+        if (next->second.size != 32) throw std::runtime_error("Invalid Retail WDL MAHO size");
+        holes = next->second.payload;
+        auto following = byOffset.find(next->second.payload + next->second.size);
+        if (following != byOffset.end() && following->second.tag == "MAHO")
+          throw std::runtime_error("Duplicate Retail WDL MAHO for one tile");
+      }
+      result.emplace(i, WdlTileOffsets{c->second.payload, holes});
     }
     return result;
   }
-  inline void updateWdlTile(Bytes& bytes, std::map<unsigned, std::size_t> const& offsets,
-                            unsigned tile, void const* outer, void const* inner)
+  inline void updateWdlTile(Bytes& bytes, std::map<unsigned, WdlTileOffsets> const& offsets,
+                            unsigned tile, void const* outer, void const* inner, WdlHoles const& holes)
   {
-    // Writes MARE heights only; MAHO, MAOE and other chunks keep their bytes.
+    // Only the selected MARE and its adjacent MAHO may change. Do not insert
+    // chunks here: MAOF and other offset-bearing data must retain their bytes.
     auto it = offsets.find(tile);
     if (it == offsets.end()) throw std::runtime_error("Retail WDL template has no tile; topology rebuild is unsupported");
-    std::memcpy(bytes.data() + it->second, outer, 578);
-    std::memcpy(bytes.data() + it->second + 578, inner, 512);
+    auto const& target = it->second;
+    if (target.heights > bytes.size() || bytes.size() - target.heights < 1090
+        || (target.holes && (*target.holes > bytes.size() || bytes.size() - *target.holes < 32)))
+      throw std::runtime_error("Retail WDL tile offsets exceed file");
+    if (!target.holes)
+      for (auto row : holes)
+        if (row) throw std::runtime_error("Retail WDL tile needs a missing MAHO chunk; WDL remains pending");
+    std::memcpy(bytes.data() + target.heights, outer, 578);
+    std::memcpy(bytes.data() + target.heights + 578, inner, 512);
+    if (target.holes) std::memcpy(bytes.data() + *target.holes, holes.data(), 32);
   }
 }

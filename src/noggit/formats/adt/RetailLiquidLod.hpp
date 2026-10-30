@@ -267,8 +267,7 @@ namespace Noggit::Formats::ADT::RetailLiquid
       }
     }
     Bytes depth(128*128), alpha(128*128/8), generated;
-    std::array<float,128*128> top;
-    top.fill(-INFINITY);
+    std::vector<float> top(128*128, -INFINITY);
     using Key = std::pair<unsigned,unsigned>;
     std::map<Key,std::vector<Cell>> groups;
     float lo = INFINITY, hi = -INFINITY;
@@ -389,7 +388,7 @@ namespace Noggit::Formats::ADT::RetailLiquid
       found = true;
     }
     if (!found) throw std::runtime_error("Missing ROOT grid for object liquid update.");
-    std::array<std::vector<Cell const*>,128*128> by_cell;
+    std::vector<std::vector<Cell const*>> by_cell(128*128);
     auto cells = read(mh2o(root));
     for (auto const& c : cells) by_cell[c.y*128+c.x].push_back(&c);
     Bytes out;

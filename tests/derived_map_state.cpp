@@ -8,6 +8,12 @@
 
 #include <iostream>
 #include <stdexcept>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace
 {
@@ -15,12 +21,39 @@ namespace
   {
     if (!value) throw std::runtime_error(message);
   }
-  template<typename Function> void rejects(Function function)
+  template<typename Function> std::string rejects(Function function)
   {
     try { function(); }
-    catch (std::exception const&) { return; }
+    catch (std::exception const& error) { return error.what(); }
     throw std::runtime_error("Invalid or unwritable state was accepted.");
   }
+  void write(QString const& path, QByteArray const& bytes)
+  {
+    QFile file(path);
+    require(file.open(QIODevice::WriteOnly | QIODevice::Truncate)
+      && file.write(bytes) == bytes.size(), "Cannot write texture fixture.");
+  }
+  QByteArray read(QString const& path)
+  {
+    QFile file(path);
+    require(file.open(QIODevice::ReadOnly), "Cannot read texture fixture.");
+    return file.readAll();
+  }
+#ifdef _WIN32
+  // Windows allows reading/staging beside this file, but rejects replacement.
+  // This exercises failure of the second commit after the first file changed.
+  struct ReplacementLock
+  {
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    void lock(QString const& path)
+    {
+      handle = CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_READ,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      require(handle != INVALID_HANDLE_VALUE, "Cannot lock texture fixture.");
+    }
+    ~ReplacementLock() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+  };
+#endif
 }
 
 int main()
@@ -94,29 +127,47 @@ int main()
     require(State::pending(path, "azeroth").size() == 1, "Map states interfered.");
     require(State::pending(path, "kalimdor")[0] == second, "Second map was not persisted.");
 
+    auto const textures = project.path() + "/world/maptextures/pairs";
+    require(QDir().mkpath(textures), "Cannot create texture fixture directory.");
+    auto const diffuse = textures + "/pairs_27_29.blp";
+    auto const normal = textures + "/pairs_27_29_n.blp";
+    write(diffuse, "old diffuse");
+    write(normal, "old normal");
     int diffuseWrites = 0, normalWrites = 0;
+    auto writeDiffuse = [&](std::string const& output) {
+      ++diffuseWrites; write(QString::fromStdString(output), "new diffuse");
+    };
+    auto writeNormal = [&](std::string const& output) {
+      ++normalWrites; write(QString::fromStdString(output), "new normal");
+    };
     rejects([&] {
       State::writeTexturePair(path, "pairs", first,
-        [&] { ++diffuseWrites; throw std::runtime_error("diffuse write failed"); },
-        [&] { ++normalWrites; });
+        [&](std::string const&) { ++diffuseWrites; throw std::runtime_error("diffuse write failed"); },
+        writeNormal);
     });
     require(diffuseWrites == 1 && normalWrites == 0, "A failed diffuse write did not stop the pair.");
+    require(read(diffuse) == "old diffuse" && read(normal) == "old normal", "Failed render replaced existing files.");
     require(State::pending(path, "pairs", State::Diffuse).size() == 1
          && State::pending(path, "pairs", State::Normal).size() == 1,
             "First write failure lost pending texture work.");
     rejects([&] {
       State::writeTexturePair(path, "pairs", first,
-        [&] { ++diffuseWrites; },
-        [&] { ++normalWrites; throw std::runtime_error("normal write failed"); });
+        writeDiffuse, [&](std::string const& output) {
+          writeNormal(output); throw std::runtime_error("cancelled during pair preparation");
+        });
     });
     require(diffuseWrites == 2 && normalWrites == 1, "Pair writers ran in an unexpected order.");
+    require(read(diffuse) == "old diffuse" && read(normal) == "old normal", "Cancelled pair published partial results.");
+    require(QDir(project.path() + "/.noggit/derived-staging/pairs")
+        .entryList({"pair-*"}, QDir::Dirs | QDir::NoDotAndDotDot).empty(),
+      "Failed pair left staging files behind.");
     require(State::pending(path, "pairs", State::Diffuse).size() == 1
          && State::pending(path, "pairs", State::Normal).size() == 1,
             "Second write failure accepted a half-written pair.");
     State::mark(path, "pairs", first, State::Lod);
     State::mark(path, "pairs", second, State::Diffuse | State::Normal);
-    State::writeTexturePair(path, "pairs", first,
-      [&] { ++diffuseWrites; }, [&] { ++normalWrites; });
+    State::writeTexturePair(path, "pairs", first, writeDiffuse, writeNormal);
+    require(read(diffuse) == "new diffuse" && read(normal) == "new normal", "Retry did not publish both files.");
     auto const pendingPairs = State::pending(path, "pairs", State::Diffuse | State::Normal);
     require(pendingPairs.size() == 1 && pendingPairs[0] == second,
             "Retry did not accept the complete pair or lost another tile.");
@@ -125,13 +176,38 @@ int main()
     {
       QLockFile completionLock(project.path() + "/.noggit/derived-maps/pairs.json.lock");
       rejects([&] {
-        State::writeTexturePair(path, "pairs", second, [] {},
-          [&] { require(completionLock.tryLock(0), "Cannot lock pair completion."); });
+        State::writeTexturePair(path, "pairs", second, writeDiffuse,
+          [&](std::string const& output) {
+            writeNormal(output); require(completionLock.tryLock(0), "Cannot lock pair completion.");
+          });
       });
     }
     require(State::pending(path, "pairs", State::Diffuse).size() == 1
          && State::pending(path, "pairs", State::Normal).size() == 1,
             "Failed state publication lost unfinished texture work.");
+
+#ifdef _WIN32
+    for (bool existingDiffuse : {true, false})
+    {
+      if (existingDiffuse) write(diffuse, "rollback diffuse");
+      else require(QFile::remove(diffuse), "Cannot prepare absent diffuse fixture.");
+      write(normal, "rollback normal");
+      ReplacementLock lock;
+      auto const error = rejects([&] {
+        State::writeTexturePair(path, "pairs", first, writeDiffuse,
+          [&](std::string const& output) { writeNormal(output); lock.lock(normal); });
+      });
+      require(error.find("Cannot commit map texture " + normal.toStdString()) != std::string::npos,
+        "Fixture did not reach the second commit failure.");
+      require(error.find("rollback failed") == std::string::npos, "Texture rollback failed.");
+      require(existingDiffuse ? read(diffuse) == "rollback diffuse" : !QFile::exists(diffuse),
+        "Second commit failure did not restore the original diffuse state.");
+      require(read(normal) == "rollback normal", "Second commit failure changed the normal texture.");
+      require(State::pending(path, "pairs", State::Diffuse).size() == 2
+        && State::pending(path, "pairs", State::Normal).size() == 2,
+        "Commit failure lost pending pair work.");
+    }
+#endif
 
     // Independent readers still see unfinished work after a failure.
     require(State::pending(path, "azeroth", State::Normal).size() == 1, "Pending generation vanished.");
@@ -163,10 +239,10 @@ int main()
     diffuseWrites = normalWrites = 0;
     rejects([&] {
       State::writeTexturePair(unwritable.path().toStdString(), "azeroth", first,
-        [&] { ++diffuseWrites; }, [&] { ++normalWrites; });
+        writeDiffuse, writeNormal);
     });
     require(diffuseWrites == 0 && normalWrites == 0, "Texture writes started without persistent pending state.");
-    std::cout << "PASS: derived map state, texture pair failure/retry, locks, corruption and write failure.\n";
+    std::cout << "PASS: derived map state, staged texture pair failure/retry/rollback, locks, corruption and write failure.\n";
     return 0;
   }
   catch (std::exception const& error)

@@ -38,8 +38,12 @@ namespace Noggit
                       TileIndex const& tile, unsigned flags);
     static void clear(std::string const& projectPath, std::string const& mapName,
                       std::vector<TileIndex> const& tiles, unsigned flags);
+    // Writers receive temporary output paths. Both files are prepared before
+    // publication; a failed commit restores files already replaced. This is
+    // recoverable on reported errors, not crash-atomic across the pair.
     static void writeTexturePair(std::string const& projectPath, std::string const& mapName,
-                                 TileIndex const& tile, std::function<void()> const& writeDiffuse,
-                                 std::function<void()> const& writeNormal);
+                                 TileIndex const& tile,
+                                 std::function<void(std::string const&)> const& writeDiffuse,
+                                 std::function<void(std::string const&)> const& writeNormal);
   };
 }

@@ -70,6 +70,13 @@ namespace Noggit::Formats::ADT
     // ROOT/TEX0/OBJ0 are not written.
     static void rebuildDerived(std::string const& root_path);
 
+    // Optional, project-local source of coherent ROOT/LOD pairs for imported maps.
+    // The directory contains <map>_<x>_<y>.adt and its _lod.adt sibling. Each
+    // candidate is checked against the actual LOD before it can be used.
+    [[nodiscard]] static std::string lodReferenceDirectory(std::string const& root_path);
+    static void setLodReferenceDirectory(std::string const& root_path,
+                                        std::string const& directory);
+
     // Builds the required split parts for an explicitly new tile, without CASC reads.
     [[nodiscard]] static ShadowlandsADTBackingStore createBackingStore(
       std::string const& root_path, std::vector<std::uint8_t> const& legacy_adt);

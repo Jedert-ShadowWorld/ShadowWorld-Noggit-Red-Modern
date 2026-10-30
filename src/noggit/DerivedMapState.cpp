@@ -10,8 +10,10 @@
 #include <QLockFile>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QTemporaryDir>
 
 #include <array>
+#include <memory>
 #include <stdexcept>
 
 namespace
@@ -183,11 +185,76 @@ std::vector<TileIndex> Noggit::DerivedMapState::projectTiles(
 
 void Noggit::DerivedMapState::writeTexturePair(
     std::string const& projectPath, std::string const& mapName, TileIndex const& tile,
-    std::function<void()> const& writeDiffuse, std::function<void()> const& writeNormal)
+    std::function<void(std::string const&)> const& writeDiffuse,
+    std::function<void(std::string const&)> const& writeNormal)
 {
   constexpr unsigned flags = Diffuse | Normal;
   mark(projectPath, mapName, tile, flags);
-  writeDiffuse();
-  writeNormal();
+  auto const map = QString::fromStdString(mapName).toLower();
+  QDir directory(QDir(QString::fromStdString(projectPath)).filePath("world/maptextures/" + map));
+  if (!directory.mkpath("."))
+    fail(directory.path(), "cannot create map texture directory");
+  // Keep interrupted staging outside the paths consumed by map patch packers.
+  QDir stagingDirectory(QDir(QString::fromStdString(projectPath)).filePath(".noggit/derived-staging/" + map));
+  if (!stagingDirectory.mkpath(".")) fail(stagingDirectory.path(), "cannot create staging directory");
+  QTemporaryDir staging(stagingDirectory.filePath("pair-XXXXXX"));
+  if (!staging.isValid())
+    fail(directory.path(), "cannot stage map textures");
+  std::array<QString, 2> const staged{staging.filePath("diffuse.blp"), staging.filePath("normal.blp")};
+  writeDiffuse(staged[0].toStdString());
+  writeNormal(staged[1].toStdString());
+
+  struct Output
+  {
+    QString path;
+    bool existed = false;
+    QByteArray previous;
+    std::unique_ptr<QSaveFile> file;
+  };
+  auto const basename = QString("%1_%2_%3").arg(map).arg(tile.x).arg(tile.z);
+  std::array<Output, 2> outputs;
+  for (std::size_t i = 0; i < outputs.size(); ++i)
+  {
+    auto& output = outputs[i];
+    output.path = directory.filePath(basename + (i == 0 ? ".blp" : "_n.blp"));
+    QFile previous(output.path);
+    output.existed = previous.exists();
+    if (output.existed)
+    {
+      if (!previous.open(QIODevice::ReadOnly)) fail(output.path, previous.errorString());
+      output.previous = previous.readAll();
+      if (previous.error() != QFileDevice::NoError) fail(output.path, previous.errorString());
+    }
+    QFile prepared(staged[i]);
+    if (!prepared.open(QIODevice::ReadOnly)) fail(staged[i], prepared.errorString());
+    auto const bytes = prepared.readAll();
+    if (prepared.error() != QFileDevice::NoError) fail(staged[i], prepared.errorString());
+    if (bytes.isEmpty()) fail(staged[i], "map texture writer produced no data");
+    output.file = std::make_unique<QSaveFile>(output.path);
+    output.file->setDirectWriteFallback(false);
+    if (!output.file->open(QIODevice::WriteOnly) || output.file->write(bytes) != bytes.size())
+      fail(output.path, output.file->errorString());
+  }
+  for (std::size_t committed = 0; committed < outputs.size(); ++committed)
+  {
+    if (outputs[committed].file->commit()) continue;
+    auto message = "Cannot commit map texture " + outputs[committed].path + ": "
+      + outputs[committed].file->errorString();
+    for (std::size_t i = 0; i < committed; ++i)
+    {
+      auto const& output = outputs[i];
+      bool restored;
+      if (output.existed)
+      {
+        QSaveFile restore(output.path);
+        restore.setDirectWriteFallback(false);
+        restored = restore.open(QIODevice::WriteOnly)
+          && restore.write(output.previous) == output.previous.size() && restore.commit();
+      }
+      else restored = QFile::remove(output.path);
+      if (!restored) message += "; rollback failed for " + output.path;
+    }
+    throw std::runtime_error(message.toStdString());
+  }
   clear(projectPath, mapName, tile, flags);
 }
