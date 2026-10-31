@@ -14,5 +14,6 @@ namespace Noggit::ClientData
   void removeModernMapDB2(std::uint32_t map_id);
   void saveModernEditorDB2(DBCFile& legacy, std::string const& filename);
   void loadModernEditorSoundDB2();
+  bool loadModernWMOAreaDB2();
   bool saveEditorDatabase(DBCFile& table, QWidget* parent);
 }

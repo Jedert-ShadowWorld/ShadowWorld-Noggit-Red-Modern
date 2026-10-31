@@ -19,6 +19,7 @@
 #include <math/ray.hpp>
 
 #include <sstream>
+#include <cmath>
 
 ModelInstance::ModelInstance(BlizzardArchive::Listfile::FileKey const& file_key
                              , Noggit::NoggitRenderContext context)
@@ -192,6 +193,10 @@ void ModelInstance::intersect (glm::mat4x4 const& model_view
                               , bool only_opaque_tris
                               )
 {  
+  // Zero-scale placements are invisible and have no invertible pick transform.
+  if (!std::isfinite(scale) || scale == 0.f)
+    return;
+
   if (!finishedLoading() || model->loading_failed())
     return;
 

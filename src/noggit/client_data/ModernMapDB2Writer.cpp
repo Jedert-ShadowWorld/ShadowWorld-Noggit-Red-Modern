@@ -648,6 +648,52 @@ bool Noggit::ClientData::saveEditorDatabase(DBCFile& table, QWidget* parent)
   }
 }
 
+bool Noggit::ClientData::loadModernWMOAreaDB2()
+{
+  try
+  {
+    // The native WDC codec supports the Retail layout without the legacy
+    // record-buffer overflow. Build an in-memory view, never a replacement DB2.
+    NativeTable native("WMOAreaTable", true);
+    auto const id_column = native.idColumn();
+    std::vector<unsigned int> ids;
+    ids.reserve(native.table.rows.size());
+    for (auto const& row : native.table.rows)
+      ids.push_back(std::stoul(dbc::CellToString(row.cells.at(id_column))));
+    auto out = DBCFile::createNewWithIds("DBFilesClient\\WMOAreaTable.dbc", 28, 112, ids);
+    std::array<std::pair<std::size_t, char const*>, 10> const fields = {{{
+      WMOAreaTableDB::WmoId, "WMOID"}, {WMOAreaTableDB::NameSetId, "NameSetID"},
+      {WMOAreaTableDB::WMOGroupID, "WMOGroupID"},
+      {WMOAreaTableDB::SoundProviderPreferences, "SoundProviderPref"},
+      {WMOAreaTableDB::UnderwaterSoundProviderPreferences, "SoundProviderPrefUnderwater"},
+      {WMOAreaTableDB::SoundAmbience, "AmbienceID"}, {WMOAreaTableDB::ZoneMusic, "ZoneMusic"},
+      {WMOAreaTableDB::ZoneIntroMusicTable, "IntroSound"}, {WMOAreaTableDB::Flags, "Flags"},
+      {WMOAreaTableDB::AreaTableRefId, "AreaTableID"}}};
+    std::array<std::size_t, 10> columns;
+    for (std::size_t i = 0; i < fields.size(); ++i)
+      columns[i] = columnIndex(native, fields[i].second);
+    auto const name_column = columnIndex(native, "AreaName_lang");
+    for (std::size_t i = 0; i < native.table.rows.size(); ++i)
+    {
+      auto const& row = native.table.rows[i];
+      auto record = out.getRecord(i);
+      for (std::size_t field = 0; field < fields.size(); ++field)
+        record.write(fields[field].first,
+          static_cast<std::uint32_t>(std::stoll(dbc::CellToString(row.cells.at(columns[field])))));
+      record.writeLocalizedString(WMOAreaTableDB::Name,
+        dbc::CellToString(row.cells.at(name_column)), 0);
+    }
+    gWMOAreaTableDB.overwriteWith(out);
+    Log << "[ModernDB2][WMOAreaTable] Native editor view ready: " << ids.size() << " rows" << std::endl;
+    return true;
+  }
+  catch (std::exception const& error)
+  {
+    LogError << "[ModernDB2][WMOAreaTable] " << error.what() << std::endl;
+    return false;
+  }
+}
+
 void Noggit::ClientData::loadModernEditorSoundDB2()
 {
   try

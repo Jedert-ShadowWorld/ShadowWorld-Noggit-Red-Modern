@@ -627,7 +627,7 @@ namespace Noggit::Formats::ADT
       if (old_doodads.size() != old_doodad_extents.size()
           || old_doodads.size() != old_doodad_lod.size()
           || old_map_objects.size() != old_map_extents.size()
-          || counts[3] + counts[4] != old_doodads.size()
+          || static_cast<std::uint64_t>(counts[3]) + counts[4] + counts[5] != old_doodads.size()
           || counts[8] + counts[11] != old_map_objects.size()
           || counts[8] != counts[9])
         throw std::runtime_error("OBJ1 LOD placement counts do not match MLFD.");
@@ -643,7 +643,8 @@ namespace Noggit::Formats::ADT
       std::vector<LodExtent> updated_doodad_extents;
       std::vector<std::uint32_t> updated_doodad_lod;
       std::vector<std::size_t> updated_doodad_groups;
-      std::array<std::uint32_t, 2> doodad_groups{};
+      // Retail also uses the third MLFD doodad range (including 2720_40_31).
+      std::array<std::uint32_t, 3> doodad_groups{};
       for (auto const& placement : doodads)
       {
         auto entry = placement;
@@ -672,7 +673,8 @@ namespace Noggit::Formats::ADT
                                   changed_rotation);
           }
           lod = old_doodad_lod[index];
-          group = index < counts[3] ? 0 : 1;
+          group = index < counts[3] ? 0
+            : index < static_cast<std::uint64_t>(counts[3]) + counts[4] ? 1 : 2;
         }
         else
         {
@@ -725,6 +727,7 @@ namespace Noggit::Formats::ADT
       }
       counts[3] = doodad_groups[0];
       counts[4] = doodad_groups[1];
+      counts[5] = doodad_groups[2];
       if (counts[1])
         counts[1] = doodad_groups[0];
       counts[8] = map_groups[0];
@@ -754,9 +757,13 @@ namespace Noggit::Formats::ADT
       };
       auto [base_doodads, base_extents, base_lod] = group_doodads(0);
       auto [other_doodads, other_extents, other_lod] = group_doodads(1);
+      auto [far_doodads, far_extents, far_lod] = group_doodads(2);
       base_doodads.insert(base_doodads.end(), other_doodads.begin(), other_doodads.end());
+      base_doodads.insert(base_doodads.end(), far_doodads.begin(), far_doodads.end());
       base_extents.insert(base_extents.end(), other_extents.begin(), other_extents.end());
+      base_extents.insert(base_extents.end(), far_extents.begin(), far_extents.end());
       base_lod.insert(base_lod.end(), other_lod.begin(), other_lod.end());
+      base_lod.insert(base_lod.end(), far_lod.begin(), far_lod.end());
       updated_doodads = std::move(base_doodads);
       updated_doodad_extents = std::move(base_extents);
       updated_doodad_lod = std::move(base_lod);

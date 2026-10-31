@@ -29,6 +29,7 @@ namespace
   bool unwrap_md21_container(BlizzardArchive::ClientFile& file,
                              std::string const& name,
                              std::vector<std::uint32_t>& texture_file_ids,
+                             std::uint32_t& skin_file_id,
                              std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t>& animation_file_ids)
   {
     auto const* buffer = file.getBuffer();
@@ -65,6 +66,12 @@ namespace
         texture_file_ids.resize(texture_count);
         std::memcpy(texture_file_ids.data(), buffer + chunk_payload,
                     texture_count * sizeof(std::uint32_t));
+      }
+      else if (std::memcmp(buffer + chunk_offset, "SFID", 4) == 0
+               && chunk_size >= sizeof(skin_file_id))
+      {
+        // The first SFID is the first skin profile, independent of the M2 name.
+        std::memcpy(&skin_file_id, buffer + chunk_payload, sizeof(skin_file_id));
       }
       else if (std::memcmp(buffer + chunk_offset, "AFID", 4) == 0
                && chunk_size % 8 == 0)
@@ -108,6 +115,7 @@ void Model::finishLoading()
 {
   BlizzardArchive::ClientFile f(_file_key, Noggit::Application::NoggitApplication::instance()->clientData());
   std::vector<std::uint32_t> modern_texture_file_ids;
+  std::uint32_t modern_skin_file_id = 0;
   std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> modern_animation_file_ids;
 
   if (f.isEof() || f.getSize() < 8)
@@ -118,6 +126,7 @@ void Model::finishLoading()
   }
 
   if (!unwrap_md21_container(f, _file_key.stringRepr(), modern_texture_file_ids,
+                             modern_skin_file_id,
                              modern_animation_file_ids)
       || f.getSize() < sizeof(ModelHeader))
   {
@@ -193,7 +202,7 @@ void Model::finishLoading()
   }
 
   //! \todo  This takes a biiiiiit long. Have a look at this.
-  initCommon(f, header);
+  initCommon(f, header, modern_skin_file_id);
 
   if (!modern_texture_file_ids.empty())
   {
@@ -418,7 +427,8 @@ namespace
 }
 
 
-void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header)
+void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header,
+                       std::uint32_t skin_file_id)
 {
   // vertices, normals, texcoords
   _vertices = M2Array<ModelVertex>(f, header.ofsVertices, header.nVertices);
@@ -527,7 +537,10 @@ void Model::initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header
     // indices - allocate space, too
     std::string lodname = _file_key.filepath().substr(0, _file_key.filepath().length() - 3);
     lodname.append("00.skin");
-    BlizzardArchive::ClientFile g(lodname, Noggit::Application::NoggitApplication::instance()->clientData());
+    auto const skin_key = skin_file_id
+      ? BlizzardArchive::Listfile::FileKey(skin_file_id)
+      : BlizzardArchive::Listfile::FileKey(lodname);
+    BlizzardArchive::ClientFile g(skin_key, Noggit::Application::NoggitApplication::instance()->clientData());
     if (g.isEof()) {
       LogError << "loading skinfile " << lodname << std::endl;
       _skin_load_failed = true;

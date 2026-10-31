@@ -62,7 +62,7 @@ int main(int argc, char** argv)
       bool rejected = false;
       try { rewrite_obj1(obj1, record_bytes(doodads), record_bytes(objects)); }
       catch (std::runtime_error const&) { rejected = true; }
-      require(rejected, "Retail fixture did not reproduce the original failure");
+      bool const rewrite_supported = !rejected;
       require(obj1_for_save(obj0, obj1, record_bytes(doodads), record_bytes(objects)) == obj1,
               "Painting changed original OBJ1 bytes");
       auto normalized_doodads = doodads;
@@ -102,14 +102,14 @@ int main(int argc, char** argv)
       rejected = false;
       try { obj1_for_save(obj0, obj1, record_bytes(doodads), record_bytes(resized_objects)); }
       catch (std::runtime_error const&) { rejected = true; }
-      require(rejected, "Resized WMO bypassed LOD validation");
+      require(rejected != rewrite_supported, "Resized WMO did not respect LOD layout support");
       require(!doodads.empty(), "Expected an M2 fixture");
       doodads[0].pos[0] += 10;
       rejected = false;
       try { obj1_for_save(obj0, obj1, record_bytes(doodads), record_bytes(objects)); }
       catch (std::runtime_error const&) { rejected = true; }
-      require(rejected, "Moved objects bypassed LOD validation");
-      std::cout << "PASS real Retail fixture: unchanged/reordered placements and derived WMO bounds preserve OBJ1; moved M2 and resized WMO reject unsupported layout\n";
+      require(rejected != rewrite_supported, "Moved objects did not respect LOD layout support");
+      std::cout << "PASS real Retail fixture: unchanged/reordered placements preserve OBJ1; edited placements respect layout support=" << rewrite_supported << '\n';
       return 0;
     }
     for (int fixture = 1; fixture < argc; ++fixture) {
@@ -160,6 +160,20 @@ int main(int argc, char** argv)
         require(find_chunk(saved, fourcc('M','L','M','D'))->size == edited_objects.size() * sizeof(LodMapObject), "WMO count wrong");
         require(rewrite_obj1(output, record_bytes(edited), record_bytes(edited_objects)) == output, "Repeated save is not stable");
         auto saved_doodads = placement_records<ENTRY_MDDF>(output, *find_chunk(saved, fourcc('M','L','D','D')), "saved MLDD");
+        if (had_groups) {
+          auto original_counts = placement_records<std::uint32_t>(bytes, *find_chunk(chunks, fourcc('M','L','F','D')), "original MLFD");
+          auto saved_counts = placement_records<std::uint32_t>(output, *find_chunk(saved, fourcc('M','L','F','D')), "saved MLFD");
+          auto group_of = [](std::size_t index, auto const& counts) {
+            return index < counts[3] ? 0 : index < static_cast<std::uint64_t>(counts[3]) + counts[4] ? 1 : 2;
+          };
+          for (std::size_t index = 0; index < saved_doodads.size(); ++index) {
+            auto const& entry = saved_doodads[index];
+            auto old = std::find_if(doodads.begin(), doodads.end(), [&](auto const& item) { return item.uniqueID == entry.uniqueID && item.nameID == entry.nameID; });
+            if (old != doodads.end())
+              require(group_of(old - doodads.begin(), original_counts) == group_of(index, saved_counts),
+                      "An existing doodad changed its LOD group");
+          }
+        }
         for (auto const& entry : edited) {
           auto found = std::find_if(saved_doodads.begin(), saved_doodads.end(), [&](auto const& item) { return item.uniqueID == entry.uniqueID && item.nameID == entry.nameID; });
           require(found != saved_doodads.end() && std::equal(std::begin(entry.pos), std::end(entry.pos), std::begin(found->pos)), "Edited position missing");

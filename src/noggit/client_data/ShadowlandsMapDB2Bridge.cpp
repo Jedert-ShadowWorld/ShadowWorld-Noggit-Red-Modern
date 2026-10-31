@@ -379,12 +379,7 @@ namespace Noggit::ClientData
       bool wmo_area_ok = false;
       if (wmo_area && project->projectVersion == Noggit::Project::ProjectVersion::RETAIL)
       {
-        // The legacy database reader's WDC5 record buffer is too short for the
-        // 12.1 WMOAreaTable layout and corrupts the heap while materializing a
-        // row. Keep the CASC table loaded, but do not pass it through the 9.2.7
-        // compatibility bridge until the WDC5 reader supports this layout.
-        LogError << "[ModernDB2][Map] Skipping unsafe Retail WMOAreaTable legacy bridge" << std::endl;
-        wmo_area_ok = true;
+        wmo_area_ok = loadModernWMOAreaDB2();
       }
       else if (wmo_area)
       {

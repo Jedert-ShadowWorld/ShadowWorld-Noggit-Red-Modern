@@ -300,7 +300,8 @@ private:
 
   Noggit::NoggitRenderContext _context;
 
-  void initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header);
+  void initCommon(const BlizzardArchive::ClientFile& f, ModelHeader& header,
+                  std::uint32_t skin_file_id);
   bool isAnimated(const BlizzardArchive::ClientFile& f, ModelHeader& header);
   void initAnimated(
       const BlizzardArchive::ClientFile& f,

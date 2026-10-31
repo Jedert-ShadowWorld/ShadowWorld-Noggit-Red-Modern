@@ -217,6 +217,22 @@ map_horizon::map_horizon(const std::string& basename, World * const world)
         done = true;
         break;
       }
+      case 'MLDD':
+      case 'MLDX':
+      case 'MLMD':
+      case 'MLMX':
+      {
+        // Modern WDL object LOD tables are not terrain heightmap chunks.
+        // This reader uses the tile-index minimap when MAOF/MARE are absent.
+        if (wdl_file.getPos() > wdl_file.getSize() || size > wdl_file.getSize() - wdl_file.getPos())
+        {
+          LogError << "invalid WDL LOD chunk size in \"" << _filename << "\"" << std::endl;
+          done = true;
+        }
+        else
+          wdl_file.seekRelative(size);
+        break;
+      }
       default:
         LogError << "unknown chunk in wdl: code=" << fourcc << std::endl;
         if (wdl_file.getPos() > wdl_file.getSize() || size > wdl_file.getSize() - wdl_file.getPos())

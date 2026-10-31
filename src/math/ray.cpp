@@ -10,6 +10,29 @@
 
 namespace math
 {
+  namespace
+  {
+    bool finite(glm::vec3 const& value)
+    {
+      return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    }
+
+    glm::vec3 normalized_direction(glm::vec3 const& direction)
+    {
+      if (!finite(direction)) return glm::vec3(0.f);
+      // Scaling first avoids overflow/underflow in dot(direction, direction).
+      auto const largest = std::max(std::abs(direction.x),
+        std::max(std::abs(direction.y), std::abs(direction.z)));
+      if (largest == 0.f) return glm::vec3(0.f);
+      return glm::normalize(direction / largest);
+    }
+
+    bool valid_ray(glm::vec3 const& origin, glm::vec3 const& direction)
+    {
+      return finite(origin) && finite(direction) && direction != glm::vec3(0.f);
+    }
+  }
+
   float magnitutde_sq(glm::vec2 const& v)
   {
     return glm::dot(v, v);
@@ -26,12 +49,8 @@ namespace math
   }
 
   ray::ray(glm::vec3 origin, glm::vec3 const& direction)
-    : _origin(std::move(origin)), _direction(glm::normalize(direction))
+    : _origin(std::move(origin)), _direction(normalized_direction(direction))
   {
-    if (std::isnan(_direction.x) || std::isnan(_direction.y) || std::isnan(_direction.z))
-    {
-      assert(false);
-    }
     // pre compute inverted direction
     _inverted_direction.x = (_direction.x != 0.0f) ? 1.0f / _direction.x : std::numeric_limits<float>::max();
     _inverted_direction.y = (_direction.y != 0.0f) ? 1.0f / _direction.y : std::numeric_limits<float>::max();
@@ -42,6 +61,7 @@ namespace math
   std::optional<float> ray::intersect_bounds
     (glm::vec3 const& min, glm::vec3 const& max) const noexcept
   {
+    if (!valid_ray(_origin, _direction)) return std::nullopt;
 
     float tmin (std::numeric_limits<float>::lowest());
     float tmax (std::numeric_limits<float>::max());
@@ -92,6 +112,7 @@ namespace math
   std::optional<float> ray::intersect_triangle
     (glm::vec3 const& v0, glm::vec3 const& v1, glm::vec3 const& v2) const noexcept
   {
+    if (!valid_ray(_origin, _direction)) return std::nullopt;
     glm::vec3 e1(v1 - v0);
     glm::vec3 e2(v2 - v0);
 
@@ -134,6 +155,7 @@ namespace math
   std::optional<float> ray::intersect_box
     (glm::vec3 const& position, glm::vec3 const& box_min, glm::vec3 const& box_max, glm::vec3 const& rotation) const noexcept
   {
+    if (!valid_ray(_origin, _direction)) return std::nullopt;
     auto inverse_rotation = glm::inverse(glm::yawPitchRoll(rotation.y, rotation.z, rotation.x));
 
     glm::vec3 origin = inverse_rotation * glm::vec4{ _origin - position, 1.f };
@@ -156,6 +178,8 @@ namespace math
 
   hit_result ray::intersects_sphere(sphere const& sphere) const
   {
+    if (!valid_ray(_origin, _direction))
+      return { sphere.position, 0.f, false };
     // Taken from https://gamedev.stackexchange.com/a/96469
     
     // Calculate ray start's offset from the sphere center

@@ -18,6 +18,7 @@
 #include <math/ray.hpp>
 
 #include <sstream>
+#include <cmath>
 
 WMOInstance::WMOInstance(BlizzardArchive::Listfile::FileKey const& file_key, ENTRY_MODF const* d, Noggit::NoggitRenderContext context)
   : SceneObject(SceneObjectTypes::eWMO, context)
@@ -240,6 +241,9 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
 
 void WMOInstance::intersect (math::ray const& ray, selection_result* results, bool do_exterior, bool do_interior, bool first_occurence)
 {
+  if (!std::isfinite(scale) || scale == 0.f)
+    return;
+
   if (!finishedLoading() || wmo->loading_failed())
     return;
 
