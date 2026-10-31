@@ -483,6 +483,11 @@ namespace Noggit::Formats::ADT
       if (neighbour && chosen.empty() && selectedRecords(tile.objects, modern).empty()
           && (!tile.hasLod || selectedRecords(tile.lod, true).empty())) continue;
       plan.references+=chosen.size();
+      if (modern && !tile.hasLod)
+        for (auto p : chosen)
+          if (p->lod)
+            throw std::runtime_error(tile.path + ": placement UID " + std::to_string(p->uid)
+              + " requires OBJ1 LOD coverage, but the destination has no OBJ1 template");
       std::map<std::uint32_t, RetailObjectTransfer::Instance> local;
       if (modern)
       {
@@ -515,7 +520,9 @@ namespace Noggit::Formats::ADT
           }
           try {
             auto rebuilt = RetailObjectTransfer::write(tile.lod,std::move(rows),true);
-            tile.lod = neighbour ? mergeNeighbour(tile.lod, rebuilt, true, selected, canonical) : std::move(rebuilt);
+            auto updated = neighbour ? mergeNeighbour(tile.lod, rebuilt, true, selected, canonical) : std::move(rebuilt);
+            if (updated != tile.lod) plan.changedObjectLodTiles.push_back({tile.x, tile.z});
+            tile.lod = std::move(updated);
           }
           catch (std::exception const& e) { throw std::runtime_error(tile.path + " [OBJ1]: " + e.what()); }
           continue;

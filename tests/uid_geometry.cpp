@@ -45,6 +45,7 @@ int main()
     auto original=input[0].objects;
     auto read=[](UidRepair::Reference const& asset){if(asset.fileId==13)throw std::runtime_error("Missing");return model();};
     auto plan=planUidGeometry(input,true,true,read,{},{});
+    check(plan.changedObjectLodTiles.empty(),"Primary-only repair scheduled object LOD work");
     check(input[0].objects==original,"Planning mutated input");
     check(plan.removed==1 && plan.highest==1 && plan.problems.size()==1,"Missing placement not reported/removed");
     auto a=payload(plan.tiles[0].objects,"FDDM"),b=payload(plan.tiles[1].objects,"FDDM");
@@ -159,6 +160,30 @@ int main()
       }
     }
     auto lodPlan=planUidGeometry(withLod,true,true,read,{},{});
+    check(lodPlan.changedObjectLodTiles == std::vector<std::array<int,2>>({{0,0},{1,0}}),
+      "Changed source/destination OBJ1 did not schedule aggregate LOD bounds repair");
+    // Both whole-map and project-only repairs must block before publication
+    // when a surviving authored LOD placement reaches a missing OBJ1 template.
+    for (bool projectOnly : {false, true})
+    {
+      auto missingLod = withLod;
+      missingLod[1].hasLod = false;
+      missingLod[1].lod.clear();
+      missingLod[1].editable = !projectOnly;
+      auto const sourceBefore = missingLod[0].lod;
+      auto const destinationBefore = missingLod[1].objects;
+      bool blocked = false;
+      try { planUidGeometry(missingLod,true,true,read,{},{},projectOnly); }
+      catch (std::runtime_error const& error)
+      {
+        auto message = std::string(error.what());
+        blocked = message.find(missingLod[1].path) != std::string::npos
+          && message.find("no OBJ1 template") != std::string::npos;
+      }
+      check(blocked,"Missing destination OBJ1 coverage did not block preflight");
+      check(missingLod[0].lod == sourceBefore && missingLod[1].objects == destinationBefore,
+        "Blocked LOD coverage plan mutated its input");
+    }
     for(auto const& tile:lodPlan.tiles)
     {
       auto metadata=RetailObjectTransfer::read(tile.lod,true);
@@ -179,6 +204,10 @@ int main()
       put(neighbourLod[1].lod,row.uidOffset+4,TILESIZE+100.f);
     put(neighbourLod[1].lod,remoteLodRows[1].uidOffset-4,14u);
     auto neighbourLodPlan=planUidGeometry(neighbourLod,true,true,read,{},{},true);
+    check(std::find(neighbourLodPlan.changedObjectLodTiles.begin(),
+      neighbourLodPlan.changedObjectLodTiles.end(), std::array<int,2>{1,0})
+        != neighbourLodPlan.changedObjectLodTiles.end(),
+      "Changed neighbour OBJ1 did not schedule aggregate LOD bounds repair");
     auto originalMetadata=RetailObjectTransfer::read(neighbourLod[1].lod,true);
     auto mergedMetadata=RetailObjectTransfer::read(neighbourLodPlan.tiles[1].lod,true);
     check(mergedMetadata.size()==3,"Neighbour LOD placements lost");
@@ -194,6 +223,8 @@ int main()
         && kept.levels==old.levels,"Unrelated LOD metadata changed");
     }
     auto neighbourLodAgain=planUidGeometry(neighbourLodPlan.tiles,true,true,read,{},{},true);
+    check(neighbourLodAgain.changedObjectLodTiles.empty(),
+      "Unchanged OBJ1 scheduled redundant aggregate LOD bounds repair");
     check(neighbourLodAgain.tiles[1].lod==neighbourLodPlan.tiles[1].lod,
       "Neighbour LOD repair is not idempotent");
     auto scopedLod = lodPlan.tiles;

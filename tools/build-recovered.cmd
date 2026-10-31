@@ -7,6 +7,8 @@ set "PATH=%SDK%\bin\%SDKVER%\x64;%PATH%"
 set "INCLUDE=%SDK%\Include\%SDKVER%\ucrt;%SDK%\Include\%SDKVER%\shared;%SDK%\Include\%SDKVER%\um;%INCLUDE%"
 set "LIB=%SDK%\Lib\%SDKVER%\ucrt\x64;%SDK%\Lib\%SDKVER%\um\x64;%LIB%"
 set "ROOT=I:\WOW\Server\Codex\Noggit"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\tools\apply-local-dependencies.ps1"
+if errorlevel 1 exit /b 1
 set "BUILD=C:\NoggitBuild\Shadow-Noggit-Recovered"
 set "DEPS=C:\NoggitBuild\Shadow-Noggit\_deps"
 set "CMAKE=I:\WOW\Server\Codex\BuildTools\cmake-4.3.4-windows-x86_64\bin\cmake.exe"

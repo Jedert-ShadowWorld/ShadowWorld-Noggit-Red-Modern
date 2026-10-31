@@ -1429,6 +1429,14 @@ uid_fix_status MapIndex::reviewAndFixUIDs(World* world, bool projectOnly)
     report << QString("Confirmed: projectOnly=%1, removed=%2, valid placements=%3, tile references=%4")
       .arg(projectOnly).arg(plan.removed).arg(plan.sourceUids.size()).arg(plan.references);
     saveReport();
+    // Persist stale aggregate object bounds before publishing any changed OBJ1.
+    // Keep these flags on failure too: rollback may itself fail, and retrying
+    // derived generation is safe even when the original OBJ files were restored.
+    std::vector<TileIndex> pendingObjectLod;
+    for (auto const& coordinates : plan.changedObjectLodTiles)
+      pendingObjectLod.emplace_back(coordinates[0], coordinates[1]);
+    Noggit::DerivedMapState::mark(projectPath, basename, pendingObjectLod,
+      Noggit::DerivedMapState::Lod);
     _uid_fix_all_in_progress=true;
     for(int z=0;z<64;++z)for(int x=0;x<64;++x)if(mTiles[z][x].tile)
     {mTiles[z][x].tile->wait_until_loaded();unloadTile(mTiles[z][x].tile->index);}

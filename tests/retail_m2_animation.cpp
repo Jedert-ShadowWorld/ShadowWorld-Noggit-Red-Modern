@@ -23,6 +23,55 @@ Bytes fixture(std::uint32_t parent, std::uint16_t animation, std::uint32_t exter
   if(external) { Bytes af(8);put(af,0,animation);put(af,4,external);append(result,chunk("AFID",af)); }
   return result;
 }
+void preservesModelPayloadSources()
+{
+  // The original order differs from SKEL's; sequence 1 aliases sequence 0.
+  Bytes model(304 + 3 * 64);
+  put<std::uint32_t>(model, 28, 3); put<std::uint32_t>(model, 32, 304);
+  put<std::uint16_t>(model, 304, 7); put<std::uint16_t>(model, 306, 2);
+  put<std::uint16_t>(model, 368, 8); put<std::uint32_t>(model, 380, 0x40);
+  put<std::uint16_t>(model, 430, 0);
+  put<std::uint16_t>(model, 432, 9); put<std::uint32_t>(model, 444, 0x20);
+  auto parts = chunks(fixture(0, 7, 100, 0));
+  auto& seq = parts.at("SKS1");
+  put<std::uint16_t>(seq, 34, 2);
+  auto second = slice(seq, 32, 64); put<std::uint16_t>(second, 0, 8); put<std::uint16_t>(second, 2, 0);
+  auto third = second; put<std::uint16_t>(third, 0, 9);
+  append(seq, second); append(seq, third); put<std::uint32_t>(seq, 8, 3);
+  auto& ids = parts.at("AFID"); put<std::uint16_t>(ids, 2, 2);
+  Bytes skel; for (auto const& part : parts) append(skel, chunk(part.first, part.second));
+  Bytes bonePayload(16); put<float>(bonePayload, 4, 42.f);
+  Bytes emitterPayload(16); put<float>(emitterPayload, 4, 99.f);
+  Bytes container = chunk("AFSB", bonePayload); append(container, chunk("AFM2", emitterPayload));
+  ModelAnimationSources sources;
+  Animation::TrackModes modes;
+  applySkeleton(model, 1, [&](std::uint32_t id) { check(id == 1 || id == 100); return id == 1 ? skel : container; }, &modes, &sources);
+  check(sources.size() == 3);
+  check(sources[0].animation == 7 && sources[0].subAnimation == 2 && sources[0].external());
+  check(sources[1].animation == 7 && sources[1].subAnimation == 2 && sources[1].resolvedIndex == 0 && sources[1].external());
+  check(sources[2].animation == 9 && !sources[2].external());
+  auto outSequences = get<std::uint32_t>(model, 32);
+  check((get<std::uint32_t>(model, outSequences + 12) & 0x20) != 0);
+  auto bone = get<std::uint32_t>(model, 48);
+  auto keys = get<std::uint32_t>(model, bone + 32);
+  check(get<float>(model, get<std::uint32_t>(model, keys + 4)) == 42.f);
+  AnimationIds modelIds{{{7, 2}, 200}};
+  // Model AFID is independent of skeleton AFID, including alias slots.
+  for (std::size_t i = 0; i < 2; ++i)
+  {
+    auto const& source = sources[i];
+    check(modelIds.at({source.animation, source.subAnimation}) == 200);
+    check(get<float>(animationPayload(container, "AFM2"), 4) == 99.f);
+  }
+  auto malformed = Bytes(304); put<std::uint32_t>(malformed, 28, 1);
+  put<std::uint32_t>(malformed, 32, 304);
+  rejects([&] { modelAnimationSources(malformed); });
+  auto cyclic = Bytes(368); put<std::uint32_t>(cyclic, 28, 1); put<std::uint32_t>(cyclic, 32, 304);
+  put<std::uint32_t>(cyclic, 316, 0x40);
+  rejects([&] { modelAnimationSources(cyclic); });
+  put<std::uint16_t>(cyclic, 366, 1);
+  rejects([&] { modelAnimationSources(cyclic); });
+}
 int main(int argc,char** argv)
 {
   if(argc==3 || argc==4)
@@ -40,6 +89,7 @@ int main(int argc,char** argv)
     applySkeleton(model,static_cast<std::uint32_t>(std::stoul(argv[2])),read);
     std::cout << "Real SKEL validated: bones="<<get<std::uint32_t>(model,44)<<", animations="<<get<std::uint32_t>(model,28)<<", materialized bytes="<<model.size()<<'\n'; return 0;
   }
+  preservesModelPayloadSources();
   Bytes raw(16);put<float>(raw,4,42);auto anim=chunk("AFSB",raw);append(anim,chunk("AFSA",Bytes(3,'a')));
   check(animationPayload(anim,"AFSB")==raw);check(animationPayload(anim,"AFSA")==Bytes(3,'a'));
   rejects([&]{animationPayload(anim,"AFM2");});check(animationPayload(chunk("AFM2",raw),"AFSB")==raw);

@@ -163,6 +163,7 @@ void Model::finishLoading()
   }
 
   Animation::TrackModes skeleton_track_modes;
+  Noggit::RetailM2::ModelAnimationSources model_animation_sources;
   if (retail && skeleton_file_id)
   {
     Noggit::RetailM2::Bytes model(f.getBuffer(), f.getBuffer() + f.getSize());
@@ -172,9 +173,8 @@ void Model::finishLoading()
         Noggit::Application::NoggitApplication::instance()->clientData());
       if (source.isEof()) throw std::runtime_error("Cannot load skeleton/animation FileDataID " + std::to_string(id));
       return Noggit::RetailM2::Bytes(source.getBuffer(), source.getBuffer() + source.getSize());
-    }, &skeleton_track_modes);
+    }, &skeleton_track_modes, &model_animation_sources);
     f.setBuffer(model);
-    modern_animation_file_ids.clear(); // Bone tracks have been materialized from the skeleton's AFID.
   }
 
   ModelHeader header;
@@ -314,7 +314,8 @@ void Model::finishLoading()
 
   if (animated)
   {
-    initAnimated(f, header, modern_animation_file_ids, skeleton_track_modes);
+    initAnimated(f, header, modern_animation_file_ids, skeleton_track_modes,
+      retail && skeleton_file_id ? &model_animation_sources : nullptr);
 
     mesh_bounds_ratio = calcMeshBoundsRatio();
   }
@@ -732,7 +733,8 @@ void Model::initAnimated(
     const BlizzardArchive::ClientFile& f,
     ModelHeader& header,
     std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> const& animation_file_ids,
-    Animation::TrackModes const& track_modes)
+    Animation::TrackModes const& track_modes,
+    Noggit::RetailM2::ModelAnimationSources const* model_sources)
 {
   std::vector<std::unique_ptr<BlizzardArchive::ClientFile>> animation_files;
 
@@ -770,10 +772,18 @@ void Model::initAnimated(
       _animation_length[anim.animID] += anim.length;
       _animations_seq_per_id[anim.animID][anim.subAnimID] = anim;
 
-      // Aliases play the resolved sequence's tracks and share its AFID load.
-      if (retail && static_cast<std::size_t>(anim.Index) != animation_index) continue;
-      auto const modern_file = animation_file_ids.find({anim.animID, anim.subAnimID});
-      if (modern_file != animation_file_ids.end() && (!retail || !(anim.loopType & 0x20)))
+      // Materialized bones use the rewritten sequence table, while emitter
+      // tracks retain the original M2 sequence slots and AFM2 provenance.
+      if (model_sources && animation_index >= model_sources->size()) continue;
+      if (!model_sources && retail && static_cast<std::size_t>(anim.Index) != animation_index) continue;
+      auto const payload_animation = model_sources
+        ? (*model_sources)[animation_index].animation : anim.animID;
+      auto const payload_sub_animation = model_sources
+        ? (*model_sources)[animation_index].subAnimation : anim.subAnimID;
+      bool const payload_external = model_sources
+        ? (*model_sources)[animation_index].external() : !(anim.loopType & 0x20);
+      auto const modern_file = animation_file_ids.find({payload_animation, payload_sub_animation});
+      if (modern_file != animation_file_ids.end() && (!retail || payload_external))
       {
         BlizzardArchive::Listfile::FileKey key(modern_file->second);
         auto external_file = std::make_unique<BlizzardArchive::ClientFile>(key, client_data);
@@ -789,11 +799,11 @@ void Model::initAnimated(
         }
       }
 
-      if (!animation_files[animation_index] && (!retail || (_file_key.hasFilepath() && !(anim.loopType & 0x20))))
+      if (!animation_files[animation_index] && (!retail || (_file_key.hasFilepath() && payload_external)))
       {
         std::string lodname = _file_key.filepath().substr(0, _file_key.filepath().length() - 3);
         std::stringstream tempname;
-        tempname << lodname << anim.animID << "-" << anim.subAnimID << ".anim";
+        tempname << lodname << payload_animation << "-" << payload_sub_animation << ".anim";
         if (client_data->exists(tempname.str()))
         {
           animation_files[animation_index] =
@@ -812,10 +822,13 @@ void Model::initAnimated(
 
   if (animBones)
   {
+    // Rebased bone offsets address f, never the emitter-only AFM2 payloads.
+    std::vector<std::unique_ptr<BlizzardArchive::ClientFile>> const no_external_files;
     ModelBoneDef const* mb = reinterpret_cast<ModelBoneDef const*>(f.getBuffer() + header.ofsBones);
     for (size_t i = 0; i<header.nBones; ++i)
     {
-      bones.emplace_back(f, mb[i], _global_sequences.data(), animation_files, track_modes);
+      bones.emplace_back(f, mb[i], _global_sequences.data(),
+        model_sources ? no_external_files : animation_files, track_modes);
     }
 
     bone_matrices.resize(bones.size());

@@ -1,0 +1,27 @@
+diff --git a/GenerateRevision.cmake b/GenerateRevision.cmake
+index 327b5a08..31351039 100644
+--- a/GenerateRevision.cmake
++++ b/GenerateRevision.cmake
+@@ -32,9 +32,10 @@ endif()
+ execute (_revision "${GIT_EXECUTABLE}" ${_git_safe_directory} "rev-parse" "--short" "HEAD")
+ execute (_commit_count "${GIT_EXECUTABLE}" ${_git_safe_directory} "rev-list" "--count" "--all")
+ 
++file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../VERSION" SHADOWWORLD_VERSION LIMIT_COUNT 1)
+ file (READ "${_noggit_revision_template_file}" _template_blob)
+ file (READ "${CMAKE_CURRENT_LIST_FILE}" _self_blob)
+-string (SHA256 _state_hash "${_dirty_marker}${_revision}${_template_blob}${_self_blob}")
++string (SHA256 _state_hash "${SHADOWWORLD_VERSION}${_dirty_marker}${_revision}${_template_blob}${_self_blob}")
+ 
+ if (EXISTS ${_noggit_revision_state_file})
+   file (READ "${_noggit_revision_state_file}" _old_state_hash)
+diff --git a/revision.h.in b/revision.h.in
+index 92da9ae5..1b46d54e 100644
+--- a/revision.h.in
++++ b/revision.h.in
+@@ -2,5 +2,4 @@
+ 
+ #pragma once
+ 
+-#define STRPRODUCTVER "3.@NOGGIT_GIT_VERSION_STRING@"
+-#define STRPRODUCTVER "3.@NOGGIT_COMMIT_COUNT@ [@NOGGIT_GIT_VERSION_STRING@]"
++#define STRPRODUCTVER "@SHADOWWORLD_VERSION@ [@NOGGIT_GIT_VERSION_STRING@]"

@@ -6,6 +6,7 @@
 #include <noggit/ContextObject.hpp>
 #include <noggit/ModelHeaders.h>
 #include <noggit/Particle.h>
+#include <noggit/RetailM2Animation.hpp>
 #include <noggit/rendering/ModelRender.hpp>
 #include <noggit/scoped_blp_texture_reference.hpp>
 
@@ -308,7 +309,8 @@ private:
       const BlizzardArchive::ClientFile& f,
       ModelHeader& header,
       std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t> const& animation_file_ids,
-      Animation::TrackModes const& track_modes);
+      Animation::TrackModes const& track_modes,
+      Noggit::RetailM2::ModelAnimationSources const* model_sources);
 
   void animate(glm::mat4x4 const& model_view, int anim_id, int anim_time);
   void calcBones(glm::mat4x4 const& model_view, int anim, int time, int animation_time);

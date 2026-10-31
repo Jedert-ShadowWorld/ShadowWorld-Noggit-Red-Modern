@@ -20,6 +20,14 @@ namespace Noggit::RetailM2
   using Bytes = std::vector<char>;
   using Reader = std::function<Bytes(std::uint32_t)>;
   using AnimationIds = std::map<std::pair<std::uint16_t, std::uint16_t>, std::uint32_t>;
+  struct ModelAnimationSource
+  {
+    std::uint16_t animation, subAnimation;
+    std::uint32_t flags;
+    std::size_t resolvedIndex;
+    bool external() const { return !(flags & 0x20); }
+  };
+  using ModelAnimationSources = std::vector<ModelAnimationSource>;
   inline void range(Bytes const& b, std::size_t off, std::size_t count, std::size_t stride = 1)
   {
     if (!stride || off > b.size() || count > (b.size() - off) / stride)
@@ -120,10 +128,33 @@ namespace Noggit::RetailM2
       index = get<std::uint16_t>(s.sequences, off + 62);
     }
   }
+  // Snapshot the M2's payload provenance before SKEL replaces its sequence
+  // table. AFM2 emitter data and materialized AFSB bone data use different
+  // address spaces, even when their animation IDs are equal.
+  inline ModelAnimationSources modelAnimationSources(Bytes const& model)
+  {
+    Skeleton original;
+    original.sequenceCount = get<std::uint32_t>(model, 28);
+    auto offset = get<std::uint32_t>(model, 32);
+    range(model, offset, original.sequenceCount, 64);
+    original.sequences = slice(model, offset, std::size_t(original.sequenceCount) * 64);
+    ModelAnimationSources sources;
+    sources.reserve(original.sequenceCount);
+    for (std::size_t i = 0; i < original.sequenceCount; ++i)
+    {
+      auto resolved = resolveAlias(original, i);
+      auto off = resolved * 64;
+      sources.push_back({get<std::uint16_t>(original.sequences, off), get<std::uint16_t>(original.sequences, off + 2),
+                         get<std::uint32_t>(original.sequences, off + 12), resolved});
+    }
+    return sources;
+  }
   // Materialize bone tracks into the existing M2 reader's address space. Geometry,
   // collision, particle definitions and texture tracks keep their original offsets.
-  inline void applySkeleton(Bytes& model, std::uint32_t id, Reader const& read, Animation::TrackModes* modes = nullptr)
+  inline void applySkeleton(Bytes& model, std::uint32_t id, Reader const& read, Animation::TrackModes* modes = nullptr,
+                            ModelAnimationSources* modelSources = nullptr)
   {
+    auto sources = modelSources ? modelAnimationSources(model) : ModelAnimationSources{};
     std::vector<Skeleton> chain; std::set<std::uint32_t> seen;
     while (id)
     {
@@ -275,5 +306,6 @@ namespace Noggit::RetailM2
     put(model, 20, static_cast<std::uint32_t>(globals.size() / 4)); put(model, 24, append(model, globals));
     put(model, 28, static_cast<std::uint32_t>(selected.size())); put(model, 32, append(model, sequences));
     put(model, 44, base.boneCount); put(model, 48, append(model, bones));
+    if (modelSources) *modelSources = std::move(sources);
   }
 }

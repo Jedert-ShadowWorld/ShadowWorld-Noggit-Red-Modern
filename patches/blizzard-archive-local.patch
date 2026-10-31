@@ -1,0 +1,29 @@
+diff --git a/src/ClientData.cpp b/src/ClientData.cpp
+index e01d03b..f71c679 100644
+--- a/src/ClientData.cpp
++++ b/src/ClientData.cpp
+@@ -358,6 +358,9 @@ void ClientData::initializeMPQStorage()
+ void ClientData::initializeCASCStorage()
+ {
+   _listfile.initFromCSV((fs::path(_local_path) / "listfile.csv").string());
++  auto const custom_listfile = fs::path(_local_path) / "custom-listfile.csv";
++  if (fs::exists(custom_listfile))
++    _listfile.initFromCSV(custom_listfile.string());
+   std::string const product_code = _version == ClientVersion::FOREVER ? "wow_classic_beta" : "wow";
+ 
+   switch (_open_mode)
+diff --git a/src/Listfile.cpp b/src/Listfile.cpp
+index bd447ba..f71cfc4 100644
+--- a/src/Listfile.cpp
++++ b/src/Listfile.cpp
+@@ -55,7 +55,9 @@ FileKey::FileKey(std::uint32_t file_data_id, Listfile* listfile)
+ 
+ void Listfile::initFromCSV(std::string const& listfile_path)
+ {
+-  _csv_path = listfile_path;
++  // CASC root discovery must keep using the complete community listfile.
++  if (_csv_path.empty())
++    _csv_path = listfile_path;
+ 
+   std::ifstream fstream;
+   fstream.open(listfile_path);

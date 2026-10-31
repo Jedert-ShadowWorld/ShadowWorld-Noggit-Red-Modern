@@ -19,6 +19,8 @@ namespace Noggit::Formats::ADT
   struct UidGeometryPlan
   {
     std::vector<UidTile> tiles;
+    // Coordinates whose changed OBJ1 requires terrain LOD aggregate bounds repair.
+    std::vector<std::array<int, 2>> changedObjectLodTiles;
     std::vector<UidProblem> problems;
     std::vector<std::uint32_t> sourceUids, targetUids;
     std::uint32_t highest = 0;
