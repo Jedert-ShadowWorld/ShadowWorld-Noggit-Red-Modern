@@ -278,7 +278,7 @@ void MapIndex::ensureModernWdtInProject()
   }
 }
 
-bool MapIndex::saveall (World* world)
+bool MapIndex::saveall (World* world, derived_save_policy derived)
 {
   world->wait_for_all_tile_updates();
 
@@ -291,7 +291,7 @@ bool MapIndex::saveall (World* world)
   bool success = true;
   for (MapTile* tile : loaded_tiles())
   {
-    if (tile->saveTile(world))
+    if (tile->saveTile(world, derived))
     {
       world->horizon.update_horizon_tile(tile);
       tile->changed = false;
@@ -610,7 +610,7 @@ bool MapIndex::isTileExternal(const TileIndex& tile) const
   return tile.is_valid() && mTiles[tile.z][tile.x].onDisc;
 }
 
-bool MapIndex::saveTile(const TileIndex& tile, World* world, bool save_unloaded)
+bool MapIndex::saveTile(const TileIndex& tile, World* world, bool save_unloaded, derived_save_policy derived)
 {
   world->wait_for_all_tile_updates();
   if (!tile.is_valid() || !mTiles[tile.z][tile.x].tile)
@@ -623,14 +623,14 @@ bool MapIndex::saveTile(const TileIndex& tile, World* world, bool save_unloaded)
 	if (save_unloaded)
   {
     mTiles[tile.z][tile.x].tile->initEmptyChunks();
-    return mTiles[tile.z][tile.x].tile->saveTile(world);
+    return mTiles[tile.z][tile.x].tile->saveTile(world, derived);
   }
 
 	if (tileLoaded(tile))
 	{
     saveMaxUID();
     auto* current = mTiles[tile.z][tile.x].tile.get();
-    if (!current->saveTile(world))
+    if (!current->saveTile(world, derived))
     {
       current->changed = true;
       return false;
@@ -642,7 +642,7 @@ bool MapIndex::saveTile(const TileIndex& tile, World* world, bool save_unloaded)
   return false;
 }
 
-bool MapIndex::saveChanged (World* world, bool save_unloaded)
+bool MapIndex::saveChanged (World* world, bool save_unloaded, derived_save_policy derived)
 {
   world->wait_for_all_tile_updates();
 
@@ -689,7 +689,7 @@ bool MapIndex::saveChanged (World* world, bool save_unloaded)
         if (mTiles[i][j].flags & 0x1)
         {
           mTiles[i][j].tile->initEmptyChunks();
-          if (mTiles[i][j].tile->saveTile(world))
+          if (mTiles[i][j].tile->saveTile(world, derived))
           {
             mTiles[i][j].tile->changed = false;
           }
@@ -711,7 +711,7 @@ bool MapIndex::saveChanged (World* world, bool save_unloaded)
   {
     if (tile->changed.load())
     {
-      if (tile->saveTile(world))
+      if (tile->saveTile(world, derived))
       {
         world->horizon.update_horizon_tile(tile);
         tile->changed = false;

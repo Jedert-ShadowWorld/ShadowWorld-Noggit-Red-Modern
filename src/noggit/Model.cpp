@@ -328,8 +328,7 @@ void Model::finishLoading()
     _fake_geometry.emplace(this);
   }
 
-  finished = true;
-  _state_changed.notify_all();
+  complete_loading();
 }
 
 void Model::waitForChildrenLoaded()

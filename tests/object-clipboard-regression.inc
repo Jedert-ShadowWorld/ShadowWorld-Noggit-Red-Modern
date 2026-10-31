@@ -60,7 +60,13 @@ struct World
   auto const& multi_select_pivot()const{return pivot;}
 };
 struct MapView {int getRenderContext()const{return 7;}};
-struct Label {unsigned updates=0;std::string text;void setText(char const* value){text=value;++updates;}};
+struct Label
+{
+  unsigned updates=0;
+  std::string text,tooltip;
+  void setPlainText(char const* value){text=value;++updates;}
+  void setToolTip(char const* value){tooltip=value;}
+};
 #define LogError std::cerr
 struct object_editor
 {
@@ -111,6 +117,12 @@ int main()
     World unnamedWorld;unnamedWorld.selection={selected_object_type(&unnamed)};
     object_editor unnamedEditor;unnamedEditor.copy_current_selection(&unnamedWorld);
     check(unnamedEditor.label.text=="Model: 6033633","Clipboard label failed for unnamed FileDataID asset");
+    check(unnamedEditor.label.tooltip==unnamedEditor.label.text,"FileDataID fallback is missing from the tooltip");
+    std::string const longPath="world/wmo/expansion11/bloodelf/12be_bloodelf_silvermoon_building02.wmo";
+    WMOInstance modern(Key(longPath,5947475),7);World modernWorld;modernWorld.selection={selected_object_type(&modern)};
+    object_editor modernEditor;modernEditor.copy_current_selection(&modernWorld);
+    check(modernEditor.label.text=="Model: "+longPath,"Long modern model name was truncated in clipboard data");
+    check(modernEditor.label.tooltip==modernEditor.label.text,"Full model identity is missing from the tooltip");
     std::cout<<"PASS: actual clipboard copy preserves FileDataID, appearance, provenance, transforms and legacy defaults\n";
     return 0;
   }

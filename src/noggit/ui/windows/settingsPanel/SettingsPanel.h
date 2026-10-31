@@ -11,6 +11,7 @@ namespace Ui
 
 class QSettings;
 class QComboBox;
+class QCheckBox;
 class QLabel;
 class QShowEvent;
 
@@ -27,6 +28,7 @@ namespace Noggit
       QComboBox* _retail_preview_animation;
       QComboBox* _retail_preview_lod;
       QComboBox* _retail_preview_decals;
+      QCheckBox* _retail_generate_derived_on_save;
       QLabel* _retail_preview_description;
       void update_retail_preview_description();
     public:

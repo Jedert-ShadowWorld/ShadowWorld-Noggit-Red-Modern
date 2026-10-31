@@ -112,6 +112,41 @@ int main(int argc, char** argv) {
     }
     require(lightCase(true,false,0.f)==std::array<unsigned char,3>{0,0,0},"Lit Retail material bypasses world lighting");
     require(lightCase(true,false,.25f)[1]>0 && lightCase(true,false,.25f)[1]<180,"Lit Retail material ignores dim ambient");
+    // MCNR's lighting basis stores a world normal as (-z,y,-x). Compare model
+    // lighting against the terrain dot product, including the editor's
+    // no-directional-light vector (0,-1,0) and a direction with distinct axes.
+    for (glm::vec3 direction : {glm::vec3(0,-1,0), glm::normalize(glm::vec3(-2,-3,1))})
+    {
+      for (glm::vec3 normal : {glm::vec3(0,1,0), glm::vec3(0,-1,0),
+                              glm::normalize(glm::vec3(2,1,-3))})
+      {
+        for (auto& vertex : vertices) vertex.normal=normal;
+        uploadMesh();
+        lighting.fill(0.f);
+        lighting[0]=lighting[1]=lighting[2]=.6f;
+        lighting[4]=lighting[5]=lighting[6]=.1f;
+        lighting[12]=direction.x;lighting[13]=direction.y;lighting[14]=direction.z;
+        f->glBindBuffer(GL_UNIFORM_BUFFER,lightingBuffer);
+        f->glBufferData(GL_UNIFORM_BUFFER,sizeof(lighting),lighting.data(),GL_DYNAMIC_DRAW);
+        f->glUniform1i(uniform("unlit"),0);
+        for (bool retail : {true,false})
+        {
+          draw(retail,4,1);
+          std::array<unsigned char,16> pixels{};
+          f->glReadPixels(0,0,4,1,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+          auto const light = retail ? direction : glm::vec3(-direction.x,direction.z,-direction.y);
+          auto const lightingNormal = retail ? glm::vec3(-normal.z,normal.y,-normal.x) : normal;
+          float const nDotL=std::max(glm::dot(lightingNormal,-light),0.f);
+          float const expectedLight=.1f*(.9f+.2f*nDotL)+.6f*nDotL;
+          for (unsigned channel=0;channel<3;++channel)
+            require(std::abs(int(pixels[channel])-int(std::lround(rgba[0][channel]*expectedLight)))<=1,
+                retail ? "Retail M2 world light direction differs from terrain" : "Legacy M2 light direction changed");
+        }
+      }
+    }
+    for (auto& vertex : vertices) vertex.normal={0,0,1};
+    uploadMesh();
+    lighting.fill(0.f);
     lightCase(true,true,1.f);
     f->glUniform1i(uniform("blend_mode"),1);
     auto validStages=[](std::uint16_t combo,unsigned count,std::vector<std::uint16_t> const& lookup,

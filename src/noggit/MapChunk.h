@@ -84,6 +84,8 @@ public:
   ~MapChunk();
 
   auto getHoleMask(void) const -> unsigned;
+  auto getHighResHoleMask() const -> std::uint64_t;
+  void commitSavedHoleMask();
   MapTile *mt;
   glm::vec3 vmin, vmax, vcenter;
   int px, py;
@@ -121,6 +123,9 @@ public:
 private:
 
   unsigned _chunk_update_flags;
+
+  // Latest loaded/saved 8x8 mask, separate from the editor's coarse holes.
+  std::uint64_t _high_res_holes = 0;
 
   Noggit::NoggitRenderContext _context;
 

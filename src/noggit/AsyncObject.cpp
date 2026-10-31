@@ -474,7 +474,24 @@ bool AsyncObject::finishedLoading() const
 [[nodiscard]]
 bool AsyncObject::loading_failed() const
 {
-  return _loading_failed;
+  return _loading_failed.load();
+}
+
+void AsyncObject::complete_loading(bool failed)
+{
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _loading_failed = failed;
+    finished = true;
+  }
+  _state_changed.notify_all();
+}
+
+void AsyncObject::reset_loading()
+{
+  std::lock_guard<std::mutex> lock(_mutex);
+  finished = false;
+  _loading_failed = false;
 }
 
 void AsyncObject::wait_until_loaded()
@@ -502,9 +519,7 @@ void AsyncObject::error_on_loading()
 {
   LogError << "File " << (_file_key.hasFilepath() ? _file_key.filepath() : std::to_string(_file_key.fileDataID()))
            << " could not be loaded" << std::endl;
-  _loading_failed = true;
-  finished = true;
-  _state_changed.notify_all();
+  complete_loading(true);
 }
 
 [[nodiscard]]

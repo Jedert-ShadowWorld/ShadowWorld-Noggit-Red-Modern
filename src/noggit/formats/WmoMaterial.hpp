@@ -1,9 +1,20 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 #pragma once
+#include <array>
 #include <cstdint>
 #include <cstddef>
 namespace Noggit::Format
 {
+  // A zero Retail FileDataID means an absent stage, not a failed asset load.
+  // Capture this before MOMT's last two references become runtime indices.
+  constexpr std::uint16_t wmo_missing_texture_mask(std::array<std::uint32_t, 9> const& refs, unsigned count)
+  {
+    std::uint16_t mask = 0;
+    for (unsigned slot = 0; slot < count && slot < refs.size(); ++slot)
+      if (refs[slot] == 0) mask |= std::uint16_t(1u << slot);
+    return mask;
+  }
+
   // Extended MOBA material selectors are independent of the client target.
   // Keep loading, readiness checks and batch packing on the same fallback.
   template<typename Batch>

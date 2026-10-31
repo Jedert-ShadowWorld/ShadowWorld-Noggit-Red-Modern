@@ -20,7 +20,10 @@ namespace Noggit::Rendering
 {
   struct MapTileDrawCall
   {
-    std::array<int, 11> samplers;
+    // The fragment stage also uses shadowmap, alphamap and stamp_brush.
+    // Heightmap and MCCV are vertex-only and do not consume its 16-unit limit.
+    static constexpr unsigned sampler_count = 13;
+    std::array<int, sampler_count> samplers;
     unsigned start_chunk;
     unsigned n_chunks;
   };
@@ -72,9 +75,10 @@ namespace Noggit::Rendering
     [[nodiscard]]
     bool isUploaded() const;;
     // False when the last draw was skipped because a layer or height texture
-    // was not resident yet.
+    // was not resident yet, its mapping awaits an upload, or a chunk exceeded
+    // the sampler budget.
     [[nodiscard]]
-    bool texturesReady() const { return !_texture_not_loaded; }
+    bool texturesReady() const { return !_texture_not_loaded && !_requires_sampler_reset && !_sampler_error; }
     [[nodiscard]]
     bool alphamapUploadedLastFrame() const;;
     int numUploadedChunkAlphamaps() const;;
@@ -82,6 +86,9 @@ namespace Noggit::Rendering
   private:
 
     void uploadTextures();
+    void pruneUnusedSamplers(bool skip_upload_alphamap = false);
+    void updateTextureAnimation(MapChunk* chunk, unsigned chunk_index);
+    void rebuildDrawCalls();
     bool fillSamplers(MapChunk* chunk, unsigned chunk_index, unsigned draw_call_index);
 
     MapTile* _map_tile;
@@ -93,6 +100,7 @@ namespace Noggit::Rendering
     bool _requires_paintability_recalc = true;
     bool _requires_ground_effect_color_recalc = true;
     bool _texture_not_loaded = true;
+    bool _sampler_error = false;
     bool _require_geffect_active_texture_update = true;
 
     bool _uploaded_alphamap_last_frame = false;
@@ -125,7 +133,7 @@ namespace Noggit::Rendering
     OpenGL::Scoped::deferred_upload_buffers<2> _buffers;
 
     GLuint const& _chunk_instance_data_ubo = _buffers[0];
-    OpenGL::ChunkInstanceDataUniformBlock _chunk_instance_data[256];
+    OpenGL::ChunkInstanceDataUniformBlock _chunk_instance_data[256]{};
 
     GLuint const& _chunk_layer_ext_ubo = _buffers[1];
     OpenGL::ChunkExtLayerParams _chunk_layer_ext_data[256 * EXT_RENDER_TEXTURE_LAYERS];

@@ -12,7 +12,7 @@
 class AsyncObject
 {
 private: 
-  bool _loading_failed = false;
+  std::atomic<bool> _loading_failed = {false};
   mutable std::mutex _modern_attachment_mutex;
   mutable std::condition_variable _modern_attachment_changed;
   mutable unsigned char _modern_water_state = 0;
@@ -26,6 +26,12 @@ protected:
   BlizzardArchive::Listfile::FileKey _file_key;
 
   AsyncObject(BlizzardArchive::Listfile::FileKey file_key);
+
+  // Publish payload readiness under the same mutex used by wait_until_loaded.
+  // This does not replace AsyncLoader::ensure_deletable: the worker may still
+  // be using the object after its payload is ready.
+  void complete_loading(bool failed = false);
+  void reset_loading();
 
 public:
 

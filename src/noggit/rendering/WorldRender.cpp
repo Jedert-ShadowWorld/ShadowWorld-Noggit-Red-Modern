@@ -39,6 +39,7 @@
 #include <cstdlib>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <stdexcept>
 
@@ -145,6 +146,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     , glm::vec3 const& camera_pos
     , MinimapRenderSettings* minimap_render_settings
     , WorldRenderParams const& render_settings
+    , std::span<MapTile* const> terrain_tiles
 )
 {
 
@@ -212,7 +214,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
   bool modern_features = Noggit::Application::NoggitApplication::instance()->getConfiguration()->modern_features;
 
-  for (MapTile* tile : _world->mapIndex.loaded_tiles())
+  auto collect_tile = [&](MapTile* tile)
   {
     tile->_was_rendered_last_frame = false;
 
@@ -227,7 +229,7 @@ void WorldRender::draw (glm::mat4x4 const& model_view
 
       tile_counter++;
       _world->_n_loaded_tiles++;
-      continue;
+      return;
     }
 
     auto& tile_extents = tile->getCombinedExtents();
@@ -260,6 +262,19 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     }
 
     _world->_n_loaded_tiles++;
+  };
+
+  // A map texture covers its target and the neighbour used by the tilted
+  // projection. Do not prepare/upload unrelated tiles or attach their objects.
+  if (!terrain_tiles.empty())
+  {
+    for (MapTile* tile : terrain_tiles)
+      if (tile) collect_tile(tile);
+  }
+  else
+  {
+    for (MapTile* tile : _world->mapIndex.loaded_tiles())
+      collect_tile(tile);
   }
 
   auto buf_end = _world->_loaded_tiles_buffer.begin() + tile_counter;
@@ -372,7 +387,10 @@ void WorldRender::draw (glm::mat4x4 const& model_view
     {
       OpenGL::Scoped::use_program mcnk_shader{ *_mcnk_program.get() };
 
+      bool const retail_client = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+          == BlizzardArchive::ClientVersion::RETAIL;
       mcnk_shader.uniform("enable_mists_heightmapping", modern_features);
+      mcnk_shader.uniform("retail_terrain", retail_client);
       mcnk_shader.uniform("camera", glm::vec3(camera_pos.x, camera_pos.y, camera_pos.z));
       mcnk_shader.uniform("animtime", static_cast<int>(_world->animtime));
 
@@ -394,8 +412,6 @@ void WorldRender::draw (glm::mat4x4 const& model_view
       gl.bindBuffer(GL_ELEMENT_ARRAY_BUFFER, _mapchunk_index);
 
       int num_chunks_uploaded_alphamap = 0;
-      bool const retail_client = Noggit::Application::NoggitApplication::instance()->clientData()->version()
-          == BlizzardArchive::ClientVersion::RETAIL;
 
       for (auto const& pair : _world->_loaded_tiles_buffer)
       {
@@ -1846,7 +1862,9 @@ void WorldRender::upload()
     mcnk_shader.uniform("stamp_brush", 4);
     mcnk_shader.uniform("base_instance", 0);
 
-    std::vector<int> samplers {5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    // Texture unit indices use the combined limit, not the fragment-stage
+    // sampler count. Units 0 and 1 are used only by the vertex shader.
+    std::vector<int> samplers {5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17};
     mcnk_shader.uniform("textures", samplers);
 
   }
@@ -2310,7 +2328,7 @@ void WorldRender::drawMinimap ( MapTile *tile
 
   }
 
-  WorldRenderParams renderParams;
+  WorldRenderParams renderParams{};
 
   renderParams.cursorRotation = 0.0f;
   renderParams.cursor_type = CursorType::NONE;
@@ -2346,19 +2364,35 @@ void WorldRender::drawMinimap ( MapTile *tile
   renderParams.minimap_render = true;
   renderParams.draw_wmo_exterior = true;
 
+  std::array<MapTile*, 2> const export_tiles{tile, mTile};
+  auto const terrain_tiles = terrainOnly ? std::span<MapTile* const>(export_tiles)
+                                       : std::span<MapTile* const>{};
   draw(model_view, projection, glm::vec3(), glm::vec4(),
-  glm::vec3(), camera_pos, settings, renderParams);
+  glm::vec3(), camera_pos, settings, renderParams, terrain_tiles);
 
   // A tile drawn for the first time uploads its textures during the draw and
   // skips itself in that pass; a skipped tile must not be exported as black.
-  if (retail && !tile->renderer()->texturesReady())
+  auto textures_ready = [&] {
+    return terrainOnly
+      ? std::all_of(export_tiles.begin(), export_tiles.end(), [](MapTile* candidate) {
+          return !candidate || candidate->renderer()->texturesReady();
+        })
+      : tile->renderer()->texturesReady();
+  };
+  if (retail && !textures_ready())
   {
     gl.clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     draw(model_view, projection, glm::vec3(), glm::vec4(),
-    glm::vec3(), camera_pos, settings, renderParams);
-    if (!tile->renderer()->texturesReady())
+    glm::vec3(), camera_pos, settings, renderParams, terrain_tiles);
+    if (!textures_ready())
+    {
+      auto* failed = tile;
+      if (terrainOnly)
+        for (auto* candidate : export_tiles)
+          if (candidate && !candidate->renderer()->texturesReady()) { failed = candidate; break; }
       throw std::runtime_error("Terrain textures are not resident; tile "
-        + std::to_string(tile->index.x) + "_" + std::to_string(tile->index.z) + " was not rendered.");
+        + std::to_string(failed->index.x) + "_" + std::to_string(failed->index.z) + " was not rendered.");
+    }
   }
 
   if (unload && !retail)
@@ -2401,9 +2435,11 @@ bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* 
   mTile->wait_until_loaded();
   if (mTile->loading_failed())
     return false;
-  _world->wait_for_all_tile_updates();
   if (!isMapTexture(*settings))
+  {
+    _world->wait_for_all_tile_updates();
     mTile->waitForChildrenLoaded();
+  }
 
   if (mTile)
   {
@@ -2525,15 +2561,8 @@ bool WorldRender::saveMinimap(TileIndex const& tile_idx, MinimapRenderSettings* 
     }
     else if (settings->file_format == ".blp (DXT1)" || settings->file_format == ".blp (DXT5)")
     {
-      QByteArray bytes;
-      QBuffer buffer( &bytes );
-      buffer.open( QIODevice::WriteOnly );
-
-      if (!image.save(&buffer, "PNG"))
-        return false;
-
       auto blp = Png2Blp();
-      blp.load(reinterpret_cast<const void*>(bytes.constData()), bytes.size());
+      blp.loadRgba(image.constBits(), image.sizeInBytes(), image.width(), image.height(), image.bytesPerLine());
 
       uint32_t file_size;
       void* blp_image = blp.createBlpDxtInMemory(settings->generate_mipmaps || settings->file_format == ".blp (DXT5)",

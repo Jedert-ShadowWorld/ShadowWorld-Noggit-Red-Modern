@@ -47,6 +47,7 @@ void WMORender::draw(OpenGL::Scoped::use_program& wmo_shader
     , bool interior_only
     , bool render_group_bounds
     , bool grouped
+    , std::span<std::uint16_t const> selected_doodad_sets
 )
 {
 
@@ -56,7 +57,11 @@ void WMORender::draw(OpenGL::Scoped::use_program& wmo_shader
     return;
   }
 
-  wmo_shader.uniform("ambient_color",glm::vec3(_wmo->ambient_light_color));
+  auto const ambient = Noggit::Format::wmo_ambient_colors(_wmo->ambient_volumes,
+      selected_doodad_sets, glm::vec3(_wmo->ambient_light_color));
+  wmo_shader.uniform("ambient_color", ambient[0]);
+  wmo_shader.uniform("ambient_horizon_color", ambient[1]);
+  wmo_shader.uniform("ambient_ground_color", ambient[2]);
 
   for (auto& group : _wmo->groups)
   {

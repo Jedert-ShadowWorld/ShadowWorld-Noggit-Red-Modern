@@ -353,7 +353,12 @@ void main()
 
   if(unlit == 0)
   {
-      float nDotL = clamp(dot(normalize(norm), -normalize(vec3(-LightDir_FogRate.x, LightDir_FogRate.z, -LightDir_FogRate.y))), 0.0, 1.0);
+      // Terrain stores MCNR normals in (-world.z, world.y, -world.x).
+      // Convert its shared light vector into the model's world-normal basis.
+      vec3 light_dir = retail_materials
+          ? vec3(-LightDir_FogRate.z, LightDir_FogRate.y, -LightDir_FogRate.x)
+          : vec3(-LightDir_FogRate.x, LightDir_FogRate.z, -LightDir_FogRate.y);
+      float nDotL = clamp(dot(normalize(norm), -normalize(light_dir)), 0.0, 1.0);
 
       vec3 ambientColor = AmbientColor_FogEnd.xyz;
 

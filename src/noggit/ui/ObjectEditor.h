@@ -15,6 +15,7 @@ class QSettings;
 class QSlider;
 class QToolButton;
 class QLineEdit;
+class QTextEdit;
 class World;
 
 namespace Noggit
@@ -111,7 +112,7 @@ namespace Noggit
       QSettings* _settings;
 
       QButtonGroup* pasteModeGroup;
-      QLabel* _filename;
+      QTextEdit* _filename;
 
       QLabel* _selection_groups_info;
 

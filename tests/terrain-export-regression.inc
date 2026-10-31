@@ -3,8 +3,10 @@
 #include <noggit/MinimapRenderSettings.hpp>
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QImage>
 #include <QMainWindow>
+#include <QMessageBox>
 #include <QOpenGLWidget>
 #include <QProgressBar>
 #include <QPushButton>
@@ -18,6 +20,7 @@
 #include <vector>
 
 #define LogError std::cerr
+#define Log std::cout
 void require(bool ok, char const* message) { if (!ok) throw std::runtime_error(message); }
 bool retail = true;
 bool isRetail() { return retail; }
@@ -26,6 +29,8 @@ MinimapRenderSettings mapTextureSettings(MinimapGenMode mode)
 struct TileIndex
 {
     unsigned x = 0, z = 0;
+    TileIndex() = default;
+    TileIndex(unsigned tx, unsigned tz) : x(tx), z(tz) {}
     bool operator<(TileIndex const& b) const { return x < b.x || (x == b.x && z < b.z); }
 };
 struct MapTile
@@ -39,6 +44,7 @@ struct MapIndex
     MapTile tile;
     unsigned unloads = 0;
     bool unsaved = false;
+    bool hasTile(TileIndex const& index) const { return index.x < 64 && index.z < 64; }
     bool has_unsaved_changes(TileIndex const&) const { return unsaved; }
     bool tileLoaded(TileIndex const&) const { return false; }
     bool tileAwaitingLoading(TileIndex const&) const { return false; }
@@ -71,6 +77,8 @@ struct MapView : QOpenGLWidget
     World world;
     QMainWindow window;
     unsigned makeCurrentCalls = 0;
+    struct Camera { TileIndex position; } camera;
+    Camera* getCamera() { return &camera; }
     World* getWorld() { return &world; }
     QMainWindow* mainWindow() { return &window; }
     void setCameraDirty() {}
@@ -110,7 +118,15 @@ namespace Noggit
     }
     namespace DerivedMapState
     {
-        constexpr unsigned Lod = 1, Wdl = 2, Diffuse = 4, Normal = 8;
+        constexpr unsigned Lod = 1, Wdl = 2, Diffuse = 4, Normal = 8, All = 15;
+        unsigned scopeQueries = 0;
+        std::vector<TileIndex> marked;
+        std::vector<TileIndex> projectTiles(std::string const&, std::string const&)
+        { ++scopeQueries; return {{20, 20}}; }
+        std::vector<TileIndex> pending(std::string const&, std::string const&, unsigned)
+        { ++scopeQueries; return {{21, 21}}; }
+        void mark(std::string const&, std::string const&, std::vector<TileIndex> const& tiles, unsigned)
+        { marked = tiles; }
         void clear(std::string const&, std::string const&, std::vector<TileIndex> const&, unsigned) {}
         void clear(std::string const&, std::string const&, TileIndex const&, unsigned) {}
     }
@@ -127,8 +143,12 @@ namespace Noggit
     {
     public:
         MapView view;
-        QWidget panel;
-        QWidget* _minimapTool = &panel;
+        struct Panel : QWidget
+        {
+            MinimapRenderSettings settings;
+            MinimapRenderSettings* getMinimapRenderSettings() { return &settings; }
+        } panel;
+        Panel* _minimapTool = &panel;
         struct ExportJob { TileIndex tile; MinimapGenMode mode; };
         std::vector<ExportJob> _export_jobs;
         std::vector<TileIndex> _heightmap_tiles;
@@ -145,6 +165,8 @@ namespace Noggit
         bool preRenderLegacy() { ++legacyFrames; return true; }
         void writeMapTexturePair(TileIndex const&) { ++pairs; }
         void setExportActive(bool);
+        bool queueSavedTerrain(std::vector<TileIndex> const&);
+        bool beginSaving(std::vector<TileIndex> const* = nullptr);
         bool preRender();
         void finishSaving(QProgressBar*, QPushButton*, World*, MinimapRenderSettings*);
         void start(std::initializer_list<MinimapGenMode> modes)
@@ -161,6 +183,7 @@ namespace Noggit
         }
         void cancel() { finishSaving(_progress, _cancel, &view.world, &_export_settings); }
     };
+// ACTUAL_EXPORT_START
 // ACTUAL_EXPORT_FRAME
 // ACTUAL_EXPORT_FINISH
 }
@@ -235,7 +258,24 @@ int main(int argc, char** argv)
         require(!dispatch.frame() && otherTool.frames == 0, "tool switch does not stop the active export");
         require(dispatch.frame() && !tool.saving_minimap, "export finishes while another tool is selected");
         require(dispatch.frame() && otherTool.frames == 1, "selected tool resumes after export");
+        tool.panel.settings.export_mode = LOD_MAPTEXTURES;
+        tool.panel.settings.map_texture_scope = MapTextureScope::Project;
+        require(!tool.queueSavedTerrain({}), "empty save does not start an export");
+        require(tool.queueSavedTerrain({{3, 4}, {8, 9}}), "saved tiles start queued generation");
+        require(tool._export_jobs.size() == 5, "two saved tiles produce two pairs and one WDL job");
+        require(tool._export_jobs[0].tile.x == 3 && tool._export_jobs[0].tile.z == 4
+            && tool._export_jobs[2].tile.x == 8 && tool._export_jobs[2].tile.z == 9,
+            "automatic export uses the exact saved tile set");
+        require(Noggit::DerivedMapState::scopeQueries == 0
+            && Noggit::DerivedMapState::marked.size() == 2, "automatic export never expands to project or pending tiles");
+        require(tool.panel.settings.export_mode == LOD_MAPTEXTURES
+            && tool.panel.settings.map_texture_scope == MapTextureScope::Project,
+            "automatic export preserves manual panel settings");
+        require(!tool.queueSavedTerrain({{10, 11}}) && tool._export_jobs.size() == 5,
+            "an active export cannot be replaced by another save");
+        tool.cancel();
         retail = false;
+        require(!tool.queueSavedTerrain({{3, 4}}), "non-Retail save never starts the Retail queue");
         tool.start({TERRAIN_DERIVED});
         require(dispatch.frame() && otherTool.frames == 2 && tool._mmap_render_index == 0, "legacy dispatch does not redirect to minimap");
         tool.cancel();

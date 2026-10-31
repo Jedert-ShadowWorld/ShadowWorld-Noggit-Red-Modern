@@ -18,7 +18,9 @@ namespace OpenGL::Scoped
     ~texture_array_binding_restore()
     {
       if (_enabled)
-        _context.bindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(_previous));
+        // Allocating a new page may retire the last slice of the old binding.
+        _context.bindTexture(GL_TEXTURE_2D_ARRAY,
+          _previous && _context.isTexture(static_cast<GLuint>(_previous)) ? static_cast<GLuint>(_previous) : 0);
     }
     texture_array_binding_restore(texture_array_binding_restore const&) = delete;
     texture_array_binding_restore& operator=(texture_array_binding_restore const&) = delete;

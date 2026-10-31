@@ -26,14 +26,19 @@ namespace Noggit
 
     void apply(World* const world)
     {
-      if (update_type == model_update::remove && !instance->getTiles().empty())
+      if (update_type == model_update::remove)
       {
-        std::vector<TileIndex> tiles;
-        tiles.reserve(instance->getTiles().size());
-        for (auto const* tile : instance->getTiles())
-          tiles.push_back(tile->index);
-        for (auto const& tile : tiles)
-          world->mapIndex.update_model_tile(tile, update_type, instance);
+        // The caller keeps the instance alive and waits for removal. Its tile
+        // references already identify every affected loaded tile. Loading or
+        // attaching tiles here can re-enter instance storage while deletion
+        // holds its mutex, and is unnecessary even for an empty reference set.
+        auto const& references = instance->getTiles();
+        std::vector<MapTile*> tiles(references.begin(), references.end());
+        for (auto* tile : tiles)
+        {
+          tile->remove_model(instance);
+          tile->changed = true;
+        }
         return;
       }
 
@@ -62,7 +67,10 @@ namespace Noggit
 
   world_tile_update_queue::~world_tile_update_queue()
   {
-    _stop = true;
+    {
+      std::lock_guard<std::mutex> lock(_mutex);
+      _stop = true;
+    }
     _state_changed.notify_all();
 
     _thread->join();

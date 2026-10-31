@@ -5,6 +5,7 @@
 
 #include <vector>
 #include <stdint.h>
+#include <cstddef>
 #include "BinaryWriter.h"
 
 const int FORMAT_DXT1 = 0;
@@ -35,6 +36,7 @@ class Png2Blp {
 public:
     Png2Blp();
     void load(const void* pngData, uint32_t pngSize);
+    void loadRgba(const void* pixels, std::size_t size, uint32_t width, uint32_t height, std::size_t stride);
 
     void* createBlpPalettedInMemory(bool generateMipMaps, uint8_t alphaDepth, uint8_t minQuality, uint8_t maxQuality, uint32_t& fileSize);
     void* createBlpUncompressedInMemory(bool generateMipMaps, uint32_t &fileSize);
