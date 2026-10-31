@@ -74,7 +74,7 @@ namespace OpenGL
     int ChunkHoles_DrawImpass_TexLayerCount_CantPaint[4];
     int ChunkTexDoAnim[4];
     int ChunkTexAnimSpeed[4];
-    int AreaIDColor_Pad2_DrawSelection[4];
+    int AreaIDColor_Pad2_DrawSelection[4]; // y/z: Retail 8x8 hole mask, low/high words.
     int ChunkXZ_TileXZ[4];
     int ChunkTexAnimDir[4];
 
@@ -94,15 +94,18 @@ namespace OpenGL
   // terrain_frag.glsl (16 bytes).
   struct ChunkExtLayerParams
   {
-    // bits 0-3: sampler id, bit 4: anim enabled,
-    // bits 5-7: anim speed, bits 8-10: anim rotation
+    // bits 0-3: diffuse sampler, 4: animation enabled, 5-7: speed,
+    // 8-10: direction, 11-14: UV scale, 15-18: height sampler,
+    // 19-26: height array slice. Keep this record at 16 bytes so the
+    // 256 * 12 extended layers fit the existing uniform block.
     int params_packed = 0;
-    // BLP array layer; negative = layer texture has no specular map
+    // Diffuse array slice; -(slice + 1) means no specular map, including slice 0.
     int array_index = -1;
-    // reserved (mists heightmapping scale/offset)
-    float _unused0 = 0.0f;
-    float _unused1 = 0.0f;
+    float height_scale = 0.0f;
+    float height_offset = 1.0f;
   };
+
+  static_assert(sizeof(ChunkExtLayerParams) == 16);
 
   struct LiquidChunkInstanceDataUniformBlock
   {

@@ -17,6 +17,7 @@
 #include <noggit/World.h>
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QMenu>
 #include <QProgressBar>
@@ -162,17 +163,25 @@ namespace Noggit
         }
     }
 
-    void MinimapTool::beginSaving()
+    bool MinimapTool::queueSavedTerrain(std::vector<TileIndex> const& savedTiles)
+    {
+        if (!isRetail() || savedTiles.empty()) return false;
+        return beginSaving(&savedTiles);
+    }
+
+    bool MinimapTool::beginSaving(std::vector<TileIndex> const* savedTiles)
     {
         if (saving_minimap)
-            return;
+            return false;
         if (!isRetail())
         {
             saving_minimap = true;
-            return;
+            return true;
         }
         auto world = mapView()->getWorld();
         _export_settings = *_minimapTool->getMinimapRenderSettings();
+        if (savedTiles)
+            _export_settings.export_mode = TERRAIN_DERIVED;
         _export_settings.draw_only_normals = false;
         _export_settings.point_normals_up = false;
         _export_jobs.clear();
@@ -188,7 +197,9 @@ namespace Noggit
         std::vector<TileIndex> tiles;
         try
         {
-            if (paired && _export_settings.map_texture_scope == MapTextureScope::Project)
+            if (savedTiles)
+                tiles = *savedTiles;
+            else if (paired && _export_settings.map_texture_scope == MapTextureScope::Project)
                 tiles = DerivedMapState::projectTiles(Project::CurrentProject::get()->ProjectPath, world->basename);
             else if (paired && _export_settings.map_texture_scope == MapTextureScope::Stale)
             {
@@ -198,7 +209,7 @@ namespace Noggit
                         {
                             QMessageBox::information(mapView(), "Map textures",
                                 "Save changed ADTs first.");
-                            return;
+                            return false;
                         }
                 tiles = DerivedMapState::pending(Project::CurrentProject::get()->ProjectPath, world->basename,
                     derived ? DerivedMapState::All : DerivedMapState::Diffuse | DerivedMapState::Normal);
@@ -219,7 +230,7 @@ namespace Noggit
                 if (textures && world->mapIndex.has_unsaved_changes(tile))
                 {
                     QMessageBox::information(mapView(), "Map textures", "Save the affected ADTs before generating map textures.");
-                    return;
+                    return false;
                 }
                 if (paired)
                 {
@@ -229,13 +240,13 @@ namespace Noggit
                 else
                     _export_jobs.push_back({tile, mode});
             }
-            if (derived && !_export_jobs.empty()
+            if (derived && !savedTiles && !_export_jobs.empty()
                 && QMessageBox::question(mapView(), "Update terrain results",
                     QString("Rebuild LOD, map textures and WDL heights for %1 saved tiles of %2?\n"
                             "ROOT/TEX0/OBJ0 are not rewritten; OBJ1 water heights may be updated.")
                         .arg(_export_jobs.size() / 2).arg(QString::fromStdString(world->basename)),
                     QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
-                return;
+                return false;
             if (textures)
             {
                 std::vector<TileIndex> targets;
@@ -252,12 +263,12 @@ namespace Noggit
         catch (const std::exception& error)
         {
             QMessageBox::warning(mapView(), "Map textures", error.what());
-            return;
+            return false;
         }
         if (_export_jobs.empty())
         {
             mapView()->mainWindow()->statusBar()->showMessage("No tiles to export.", 5000);
-            return;
+            return false;
         }
         if (textures)
             _export_settings.combined_minimap = false;
@@ -279,6 +290,7 @@ namespace Noggit
         });
         _minimapTool->setEnabled(false);
         setExportActive(true);
+        return true;
     }
 
     void MinimapTool::setExportActive(bool active)
@@ -315,6 +327,16 @@ namespace Noggit
         gl.getIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
         gl.getIntegerv(GL_VIEWPORT, viewport.data());
         const auto job = _export_jobs.at(_mmap_render_index);
+        auto const* stage = job.mode == TERRAIN_DERIVED ? "LOD"
+            : job.mode == WDL_HEIGHTMAP ? "WDL"
+            : job.mode == LOD_MAPTEXTURES_BOTH ? "map-texture pair"
+            : job.mode == LOD_MAPTEXTURES ? "diffuse map texture"
+            : job.mode == LOD_MAPTEXTURES_N ? "normal map texture" : "minimap";
+        QElapsedTimer elapsed;
+        elapsed.start();
+        Log << "Terrain export begin: map=" << world->basename << " tile=" << job.tile.x << "_" << job.tile.z
+            << " stage=" << stage << " job=" << _mmap_render_index + 1 << "/" << _export_jobs.size() << std::endl;
+        bool failed = false;
         auto settings = _export_settings;
         settings.export_mode = job.mode;
         settings.draw_only_normals = false;
@@ -380,11 +402,15 @@ namespace Noggit
         }
         catch (const std::exception& error)
         {
+            failed = true;
             ++_failed;
             if (job.mode == TERRAIN_DERIVED)
                 _terrain_errors[job.tile] = error.what();
             LogError << "Terrain export " << job.tile.x << "_" << job.tile.z << ": " << error.what() << std::endl;
         }
+        Log << "Terrain export end: map=" << world->basename << " tile=" << job.tile.x << "_" << job.tile.z
+            << " stage=" << stage << " result=" << (blocked ? "blocked" : failed ? "failed" : "completed")
+            << " elapsed_ms=" << elapsed.elapsed() << std::endl;
         _progress->setValue(++_mmap_render_index);
         if (_mmap_render_index == _export_jobs.size())
         {
@@ -418,75 +444,6 @@ namespace Noggit
             world->basename, tile,
             [&](std::string const& outputPath) { write(LOD_MAPTEXTURES, outputPath); },
             [&](std::string const& outputPath) { write(LOD_MAPTEXTURES_N, outputPath); });
-    }
-
-    QStringList MinimapTool::saveRetailMapTextures(std::vector<TileIndex> const& savedTiles)
-    {
-        QStringList errors;
-        if (!isRetail())
-            return errors;
-        auto mv = mapView();
-        auto world = mv->getWorld();
-        auto const& projectPath = Project::CurrentProject::get()->ProjectPath;
-        constexpr unsigned flags = DerivedMapState::Diffuse | DerivedMapState::Normal;
-        std::vector<TileIndex> tiles;
-        try
-        {
-            std::vector<TileIndex> targets;
-            for (auto const& tile : savedTiles)
-                if (world->mapIndex.hasTile(tile)) targets.push_back(tile);
-            DerivedMapState::mark(projectPath, world->basename, targets, flags);
-            if (saving_minimap)
-                throw std::runtime_error("An export is already running; map textures remain pending.");
-            // Only the saved tiles; other pending tiles are processed by the Minimap Editor.
-            auto const pendingLod = DerivedMapState::pending(projectPath, world->basename, DerivedMapState::Lod);
-            for (auto const& tile : targets)
-            {
-                if (std::find(pendingLod.begin(), pendingLod.end(), tile) != pendingLod.end())
-                {
-                    auto const message = QString("LOD remains pending for tile %1_%2; existing map textures were retained. Rebuild LOD before retrying the save.")
-                        .arg(tile.x).arg(tile.z);
-                    errors.append(message);
-                    LogError << "Map texture save " << message.toStdString() << std::endl;
-                }
-                else tiles.push_back(tile);
-            }
-        }
-        catch (std::exception const& error)
-        {
-            errors.append(QString::fromUtf8(error.what()));
-            return errors;
-        }
-        if (tiles.empty())
-            return errors;
-
-        mv->makeCurrent();
-        OpenGL::context::scoped_setter const context(::gl, mv->context());
-        std::array<GLint, 4> viewport{};
-        gl.getIntegerv(GL_VIEWPORT, viewport.data());
-        GLint framebuffer = 0;
-        gl.getIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
-        for (auto const& tile : tiles)
-        {
-            try
-            {
-                if (!world->mapIndex.hasTile(tile))
-                    throw std::runtime_error("The pending tile is absent from the map.");
-                if (world->mapIndex.has_unsaved_changes(tile))
-                    throw std::runtime_error("The tile has unsaved ADT changes.");
-                writeMapTexturePair(tile);
-            }
-            catch (std::exception const& error)
-            {
-                auto const message = QString("%1_%2: %3").arg(tile.x).arg(tile.z).arg(QString::fromUtf8(error.what()));
-                errors.append(message);
-                LogError << "Map texture save " << message.toStdString() << std::endl;
-            }
-        }
-        gl.bindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(framebuffer));
-        gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-        mv->setCameraDirty();
-        return errors;
     }
 
     bool MinimapTool::preRenderLegacy()

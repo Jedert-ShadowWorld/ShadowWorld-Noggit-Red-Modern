@@ -73,10 +73,12 @@ layout (std140) uniform chunk_instances
 struct ChunkExtLayerParams
 {
   int params_packed; // bits 0-3: sampler id, bit 4: anim enabled,
-                     // bits 5-7: anim speed, bits 8-10: anim rotation
+                     // bits 5-7: anim speed, bits 8-10: anim rotation,
+                     // bits 11-14: UV scale, bits 15-18: height sampler,
+                     // bits 19-26: height array index
   int array_index;   // negative = layer texture has no specular map
-  float _unused0;    // reserved (mists heightmapping scale/offset)
-  float _unused1;
+  float height_scale;
+  float height_offset;
 };
 
 // texture layers 5+ of each chunk; the first 4 layers come from ChunkInstanceData
@@ -88,7 +90,7 @@ layout (std140) uniform chunk_layer_ext
 uniform sampler2DArray shadowmap;
 uniform sampler2DArray alphamap;
 uniform sampler2D stamp_brush;
-uniform sampler2DArray textures[11];
+uniform sampler2DArray textures[13];
 uniform vec3 camera;
 
 uniform int draw_cursor_circle;
@@ -98,6 +100,7 @@ uniform float outer_cursor_radius;
 uniform float inner_cursor_ratio;
 uniform vec4 cursor_color;
 uniform bool enable_mists_heightmapping;
+uniform bool retail_terrain;
 uniform int animtime;
 
 in vec3 vary_position;
@@ -174,6 +177,14 @@ vec4 get_tex_color(vec2 tex_coord, int tex_sampler, int array_index)
   {
     return texture(textures[10], vec3(tex_coord, array_index)).rgba;
   }
+  else if (tex_sampler == 11)
+  {
+    return texture(textures[11], vec3(tex_coord, array_index)).rgba;
+  }
+  else if (tex_sampler == 12)
+  {
+    return texture(textures[12], vec3(tex_coord, array_index)).rgba;
+  }
 
   return vec4(0);
 
@@ -208,12 +219,22 @@ vec4 get_tex_color(vec2 tex_coord, int tex_sampler, int array_index)
       return textureGrad(textures[9], uv, uvDx, uvDy);
     case 10:
       return textureGrad(textures[10], uv, uvDx, uvDy);
+    case 11:
+      return textureGrad(textures[11], uv, uvDx, uvDy);
+    case 12:
+      return textureGrad(textures[12], uv, uvDx, uvDy);
     default:
       return vec4(0.0);
   }
 
   */
 
+}
+
+int diffuse_array_index(int encoded_index)
+{
+  // Negative values encode non-specular slices as -(slice + 1), including zero.
+  return encoded_index < 0 ? -encoded_index - 1 : encoded_index;
 }
 
 const int numChunks = 16;
@@ -229,8 +250,11 @@ vec2 getAdjustedUV(vec2 uv, int textureScale) {
 }
 
 // mirrors animUVOffset() in the vertex shader, which feeds layers 1-4
-vec2 ext_anim_uv_offset(int spd, int dir)
+vec2 ext_anim_uv_offset(int do_animate, int spd, int dir)
 {
+  if (do_animate == 0 || spd <= 0 || spd > 7 || dir < 0 || dir > 7)
+    return vec2(0.0);
+
   const float texanimxtab[8] = float[8]( 0, 1, 1, 1, 0, -1, -1, -1 );
   const float texanimytab[8] = float[8]( 1, 1, 0, -1, -1, -1, 0, 1 );
   float fdx = -texanimxtab[dir];
@@ -241,8 +265,7 @@ vec2 ext_anim_uv_offset(int spd, int dir)
   return vec2(f * fdx, f * fdy);
 }
 
-// blends texture layers 5+ on top of the first 4 layers handled in
-// texture_blend() / mists_texture_blend(). their alphamaps live in the
+// Legacy alpha blending for texture layers 5+. Their alphamaps live in the
 // extension slices appended after the 256 base slices, packed 3 layers
 // per RGB slice.
 vec4 ext_texture_blend(int layer_count, out float ext_weight_sum)
@@ -268,9 +291,10 @@ vec4 ext_texture_blend(int layer_count, out float ext_weight_sum)
 
       ChunkExtLayerParams params = ext_layers[instanceID * 12 + (layer - 4)];
 
-      vec2 uv = vary_texcoord + ext_anim_uv_offset((params.params_packed >> 5) & 0x7, (params.params_packed >> 8) & 0x7);
-
-      vec4 t = get_tex_color(uv, params.params_packed & 0xF, abs(params.array_index));
+      vec2 uv = vary_texcoord + ext_anim_uv_offset((params.params_packed >> 4) & 0x1,
+                                                (params.params_packed >> 5) & 0x7,
+                                                (params.params_packed >> 8) & 0x7);
+      vec4 t = get_tex_color(uv, params.params_packed & 0xF, diffuse_array_index(params.array_index));
       t.a = mix(t.a, 0.f, int(params.array_index < 0));
 
       color += t * slice_alpha[channel];
@@ -281,6 +305,7 @@ vec4 ext_texture_blend(int layer_count, out float ext_weight_sum)
   return color;
 }
 
+// Non-Retail projects retain the original four-layer Mists height blend.
 vec4 mists_texture_blend()
 {
   vec3 alpha = texture(alphamap, vec3(vary_texcoord / 8.0, instanceID)).rgb;
@@ -323,24 +348,23 @@ vec4 mists_texture_blend()
     layer_pct = total > 0.00001 ? layer_pct / total : layer_weights;
   }
 
-  vec4 t0 = get_tex_color(worldScaled_vary_t0_uv, instances[instanceID].ChunkTextureSamplers.x, 
-                          abs(instances[instanceID].ChunkTextureArrayIDs.x)) * layer_pct.x;
+  vec4 t0 = get_tex_color(worldScaled_vary_t0_uv, instances[instanceID].ChunkTextureSamplers.x,
+                          diffuse_array_index(instances[instanceID].ChunkTextureArrayIDs.x)) * layer_pct.x;
   t0.a = mix(t0.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.x < 0));
 
-  vec4 t1 = get_tex_color(worldScaled_vary_t1_uv, instances[instanceID].ChunkTextureSamplers.y, 
-                        abs(instances[instanceID].ChunkTextureArrayIDs.y)) * layer_pct.y;
-  //vec4 t1 = get_tex_color(vary_t1_uv / 5 , instances[instanceID].ChunkTextureSamplers.y, abs(instances[instanceID].ChunkTextureArrayIDs.y));
+  vec4 t1 = get_tex_color(worldScaled_vary_t1_uv, instances[instanceID].ChunkTextureSamplers.y,
+                        diffuse_array_index(instances[instanceID].ChunkTextureArrayIDs.y)) * layer_pct.y;
   t1.a = mix(t1.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.y < 0));
 
-  vec4 t2 = get_tex_color(worldScaled_vary_t2_uv, instances[instanceID].ChunkTextureSamplers.z, 
-                        abs(instances[instanceID].ChunkTextureArrayIDs.z)) * layer_pct.z;
+  vec4 t2 = get_tex_color(worldScaled_vary_t2_uv, instances[instanceID].ChunkTextureSamplers.z,
+                        diffuse_array_index(instances[instanceID].ChunkTextureArrayIDs.z)) * layer_pct.z;
   t2.a = mix(t2.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.z < 0));
 
   vec4 t3 =get_tex_color(worldScaled_vary_t3_uv, instances[instanceID].ChunkTextureSamplers.w,
-                         abs(instances[instanceID].ChunkTextureArrayIDs.w)) * layer_pct.w;
+                         diffuse_array_index(instances[instanceID].ChunkTextureArrayIDs.w)) * layer_pct.w;
   t3.a = mix(t3.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.w < 0));
 
-  vec4 color = t0 + t1 + t2 + t3;//(t0 * (1.0 - (a0 + a1 + a2)) + t1 * a0 + t2 * a1 + t3 * a2);
+  vec4 color = t0 + t1 + t2 + t3;
 
   // heightmapping only covers the first 4 layers, layers 5+ are
   // composited on top with regular alpha blending
@@ -351,6 +375,80 @@ vec4 mists_texture_blend()
     color = color * (1.0 - ext_weight_sum) + ext_color;
   }
 
+  return color;
+}
+
+// Retail materials compete across all supported terrain layers.
+vec4 retail_texture_blend()
+{
+  int layer_count = clamp(instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.b, 1, 16);
+  float weights[16];
+  float scores[16];
+  vec4 colors[16];
+  vec3 alpha = texture(alphamap, vec3(vary_texcoord / 8.0, instanceID)).rgb;
+  float alpha_sum = 0.0;
+  for (int layer = 1; layer < layer_count; ++layer)
+  {
+    // Three absolute MCAL weights per slice; slot zero is the remainder.
+    if (layer >= 4 && (layer - 4) % 3 == 0)
+      alpha = texture(alphamap, vec3(vary_texcoord / 8.0, 256 + instanceID * 4 + (layer - 4) / 3)).rgb;
+    weights[layer] = alpha[(layer - 1) % 3];
+    alpha_sum += weights[layer];
+  }
+  weights[0] = 1.0 - clamp(alpha_sum, 0.0, 1.0);
+
+  vec2 base_uv[4] = vec2[4](vary_t0_uv, vary_t1_uv, vary_t2_uv, vary_t3_uv);
+  bool neutral_heights = true;
+  float max_score = 0.0;
+  for (int layer = 0; layer < layer_count; ++layer)
+  {
+    vec2 uv;
+    int diffuse_sampler, diffuse_index, height_sampler, height_index;
+    float height_scale, height_offset;
+    if (layer < 4)
+    {
+      uv = getAdjustedUV(base_uv[layer] / 8.0, instances[instanceID].ChunkTextureUVScale[layer]);
+      diffuse_sampler = instances[instanceID].ChunkTextureSamplers[layer];
+      diffuse_index = instances[instanceID].ChunkTextureArrayIDs[layer];
+      height_sampler = instances[instanceID].ChunkHeightTextureSamplers[layer];
+      height_index = instances[instanceID].ChunkHeightTextureArrayIDs[layer];
+      height_scale = instances[instanceID].ChunkTextureHeightScale[layer];
+      height_offset = instances[instanceID].ChunkTextureHeightOffset[layer];
+    }
+    else
+    {
+      ChunkExtLayerParams params = ext_layers[instanceID * 12 + layer - 4];
+      uv = vary_texcoord + ext_anim_uv_offset((params.params_packed >> 4) & 1,
+                                              (params.params_packed >> 5) & 7,
+                                              (params.params_packed >> 8) & 7);
+      uv = getAdjustedUV(uv / 8.0, (params.params_packed >> 11) & 15);
+      diffuse_sampler = params.params_packed & 15;
+      diffuse_index = params.array_index;
+      height_sampler = (params.params_packed >> 15) & 15;
+      height_index = (params.params_packed >> 19) & 255;
+      height_scale = params.height_scale;
+      height_offset = params.height_offset;
+    }
+    colors[layer] = get_tex_color(uv, diffuse_sampler, diffuse_array_index(diffuse_index));
+    colors[layer].a = mix(colors[layer].a, 0.0, float(diffuse_index < 0));
+    float height = height_scale != 0.0 ? get_tex_color(uv, height_sampler, height_index).a : 0.0;
+    scores[layer] = weights[layer] * (height * height_scale + height_offset);
+    max_score = max(max_score, scores[layer]);
+    neutral_heights = neutral_heights && height_scale == 0.0 && height_offset == 1.0;
+  }
+
+  // Height competition and normalization must include every layer. Splitting
+  // at slot four makes identical materials differ across adjacent chunks.
+  float total = 0.0;
+  for (int layer = 0; layer < layer_count; ++layer)
+  {
+    scores[layer] *= 1.0 - clamp(max_score - scores[layer], 0.0, 1.0);
+    total += scores[layer];
+  }
+  bool use_height = !neutral_heights && total > 0.00001 && !isinf(total);
+  vec4 color = vec4(0.0);
+  for (int layer = 0; layer < layer_count; ++layer)
+    color += colors[layer] * (use_height ? scores[layer] / total : weights[layer]);
   return color;
 }
 
@@ -368,16 +466,16 @@ vec4 texture_blend()
   float a1 = alpha.g;
   float a2 = alpha.b;
 
-  vec4 t0 = get_tex_color(vary_t0_uv, instances[instanceID].ChunkTextureSamplers.x, abs(instances[instanceID].ChunkTextureArrayIDs.x));
+  vec4 t0 = get_tex_color(vary_t0_uv, instances[instanceID].ChunkTextureSamplers.x, diffuse_array_index(instances[instanceID].ChunkTextureArrayIDs.x));
   t0.a = mix(t0.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.x < 0));
 
-  vec4 t1 = get_tex_color(vary_t1_uv, instances[instanceID].ChunkTextureSamplers.y, abs(instances[instanceID].ChunkTextureArrayIDs.y));
+  vec4 t1 = get_tex_color(vary_t1_uv, instances[instanceID].ChunkTextureSamplers.y, diffuse_array_index(instances[instanceID].ChunkTextureArrayIDs.y));
   t1.a = mix(t1.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.y < 0));
 
-  vec4 t2 = get_tex_color(vary_t2_uv, instances[instanceID].ChunkTextureSamplers.z, abs(instances[instanceID].ChunkTextureArrayIDs.z));
+  vec4 t2 = get_tex_color(vary_t2_uv, instances[instanceID].ChunkTextureSamplers.z, diffuse_array_index(instances[instanceID].ChunkTextureArrayIDs.z));
   t2.a = mix(t2.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.z < 0));
 
-  vec4 t3 = get_tex_color(vary_t3_uv, instances[instanceID].ChunkTextureSamplers.w, abs(instances[instanceID].ChunkTextureArrayIDs.w));
+  vec4 t3 = get_tex_color(vary_t3_uv, instances[instanceID].ChunkTextureSamplers.w, diffuse_array_index(instances[instanceID].ChunkTextureArrayIDs.w));
   t3.a = mix(t3.a, 0.f, int(instances[instanceID].ChunkTextureArrayIDs.w < 0));
 
   float ext_weight_sum = 0.0;
@@ -389,6 +487,14 @@ vec4 texture_blend()
   }
 
   return vec4 (t0 * (1.0 - (a0 + a1 + a2 + ext_weight_sum)) + t1 * a0 + t2 * a1 + t3 * a2 + ext_color);
+}
+
+// Keep project format separate from the optional modern-features setting.
+vec4 terrain_texture_blend()
+{
+  if (!enable_mists_heightmapping)
+    return texture_blend();
+  return retail_terrain ? retail_texture_blend() : mists_texture_blend();
 }
 
 float contour_alpha(float unit_size, float pos, float line_width)
@@ -433,14 +539,8 @@ void main()
   float specularFactor = max(dot(reflection, normalize(camera - vary_position)), 0.0);
 
   // blend textures
-  if(enable_mists_heightmapping)
-  {
-	  out_color = mix(vec4(1.0, 1.0, 1.0, 0.0), mists_texture_blend(), int(instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.b > 0));
-  }
-  else
-  {
-	  out_color = mix(vec4(1.0, 1.0, 1.0, 0.0), texture_blend(), int(instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.b > 0));
-  }
+  out_color = mix(vec4(1.0, 1.0, 1.0, 0.0), terrain_texture_blend(),
+                  int(instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.b > 0));
 
   vec3 spc = out_color.a * out_color.rgb * pow(specularFactor, 8);
   out_color.a = 1.0;

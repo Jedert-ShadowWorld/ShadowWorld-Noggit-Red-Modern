@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(NoggitRegressionTests LANGUAGES CXX)
+project(NoggitRegressionTests LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 enable_testing()
@@ -16,7 +16,7 @@ foreach(name IN ITEMS
     load_failures uid_repair retail_liquid_lod retail_asset_loading blp_bgra
     retail_skin wmo_group_ids map_preview_quality retail_m2_animation
     retail_world_tables retail_map_texture retail_root_layout
-    retail_object_tables retail_object_transfer)
+    retail_object_tables retail_object_transfer terrain_holes)
   noggit_test(${name} ${name}.cpp)
 endforeach()
 noggit_test(uid_geometry uid_geometry.cpp "${NOGGIT_SOURCE}/noggit/formats/adt/UidRepairGeometry.cpp")
@@ -42,6 +42,16 @@ if(Qt5_FOUND)
     "${NOGGIT_SOURCE}/opengl/texture.cpp" "${NOGGIT_SOURCE}/noggit/Log.cpp"
     "${NOGGIT_SOURCE}/noggit/Misc.cpp" "${NOGGIT_SOURCE}/math/bounding_box.cpp")
   noggit_gl_test(texture_upload_binding)
+  noggit_gl_test(modern_terrain_shader ARGS "${NOGGIT_SOURCE}/noggit/rendering/glsl")
+  file(GLOB_RECURSE png_blp_sources CONFIGURE_DEPENDS "${NOGGIT_SOURCE}/external/PNG2BLP/*.c" "${NOGGIT_SOURCE}/external/PNG2BLP/*.cpp")
+  noggit_test(map_texture_encoding map_texture_encoding.cpp ${png_blp_sources})
+  target_include_directories(map_texture_encoding PRIVATE
+    "${NOGGIT_SOURCE}/external/PNG2BLP/libimagequant"
+    "${NOGGIT_SOURCE}/external/PNG2BLP/libpng"
+    "${NOGGIT_SOURCE}/external/PNG2BLP/libtxc_dxtn"
+    "${NOGGIT_SOURCE}/external/PNG2BLP/pngpp"
+    "${NOGGIT_SOURCE}/external/PNG2BLP/zlib")
+  target_link_libraries(map_texture_encoding PRIVATE Qt5::Widgets)
   noggit_gl_test(model_buffer_state
     "${NOGGIT_SOURCE}/opengl/context.cpp" "${NOGGIT_SOURCE}/noggit/Log.cpp")
   noggit_test(log_archive log_archive.cpp "${NOGGIT_SOURCE}/noggit/Log.cpp")
@@ -71,10 +81,21 @@ if(WIN32)
   noggit_method_test(m2_texture_lifecycle m2-lifecycle
     "${NOGGIT_SOURCE}/noggit/rendering/ModelRender.cpp" "${NOGGIT_SOURCE}/noggit/Model.cpp")
   noggit_method_test(wmo_render_lifecycle wmo-render
+    "${NOGGIT_SOURCE}/noggit/WMO.cpp"
     "${NOGGIT_SOURCE}/noggit/rendering/WMOGroupRender.cpp"
     "${NOGGIT_SOURCE}/noggit/rendering/WMOGroupRender.hpp"
-    "${NOGGIT_SOURCE}/noggit/TextureManager.cpp")
+    "${NOGGIT_SOURCE}/noggit/rendering/TileRender.cpp"
+    "${NOGGIT_SOURCE}/noggit/rendering/TileRender.hpp"
+    "${NOGGIT_SOURCE}/noggit/TextureManager.cpp"
+    "${NOGGIT_SOURCE}/noggit/TextureManager.h"
+    "${NOGGIT_SOURCE}/noggit/texture_set.cpp"
+    "${NOGGIT_SOURCE}/opengl/types.hpp"
+    "${NOGGIT_SOURCE}/opengl/ScopedTextureArrayBinding.hpp")
   noggit_method_test(object_clipboard object-clipboard "${NOGGIT_SOURCE}/noggit/ui/ObjectEditor.cpp")
+  noggit_method_test(texture_paint texture-paint "${NOGGIT_SOURCE}/noggit/texture_set.cpp")
+  noggit_method_test(async_completion async-completion "${NOGGIT_SOURCE}/noggit/AsyncObject.cpp")
+  noggit_method_test(tile_removal tile-removal
+    "${NOGGIT_SOURCE}/noggit/world_tile_update_queue.cpp" "${NOGGIT_SOURCE}/noggit/world_model_instances_storage.cpp")
   if(Qt5_FOUND)
     noggit_method_test(terrain_export_lifecycle terrain-export
       "${NOGGIT_SOURCE}/noggit/tools/MinimapTool.cpp" "${NOGGIT_SOURCE}/noggit/MapView.cpp")

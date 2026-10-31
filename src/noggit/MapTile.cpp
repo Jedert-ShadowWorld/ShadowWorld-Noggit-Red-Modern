@@ -411,9 +411,8 @@ void MapTile::finishLoading()
   // - Really done. --------------------------------------
 
   LogDebug << "Done loading tile " << index.x << "," << index.z << "." << std::endl;
-  finished = true;
   _tile_is_being_reloaded = false;
-  _state_changed.notify_all();
+  complete_loading();
 }
 
 bool MapTile::isTile(int pX, int pZ)
@@ -574,7 +573,7 @@ void MapTile::getVertexInternal(float x, float z, glm::vec3* v)
 
 /// --- Only saving related below this line. --------------------------
 
-bool MapTile::saveTile(World* world)
+bool MapTile::saveTile(World* world, derived_save_policy derived)
 {
   // if we want to save a duplicate with mclq in a separate folder
   /*
@@ -589,10 +588,10 @@ bool MapTile::saveTile(World* world)
   QSettings settings;
   bool use_mclq = settings.value("use_mclq_liquids_export", false).toBool();
 
-  return save(world, use_mclq);
+  return save(world, use_mclq, derived);
 }
 
-bool MapTile::save(World* world, bool save_using_mclq_liquids)
+bool MapTile::save(World* world, bool save_using_mclq_liquids, derived_save_policy derived)
 {
   Log << "Saving ADT \"" << _file_key.stringRepr() << "\"." << std::endl;
 
@@ -1012,9 +1011,14 @@ bool MapTile::save(World* world, bool save_using_mclq_liquids)
         for (auto const* object : lObjectInstances)
           if (object->retail_source()) wmo_sources.emplace(object->uid, *object->retail_source());
       bool const lod_updated = Noggit::Formats::ADT::ShadowlandsADTCodec::saveFromLegacy(*modern_backing, serialized,
-        client_data->version() == BlizzardArchive::ClientVersion::RETAIL ? &wmo_sources : nullptr);
+        client_data->version() == BlizzardArchive::ClientVersion::RETAIL ? &wmo_sources : nullptr, derived);
       if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL)
       {
+        // Advance only after the complete split ADT was saved successfully;
+        // a deferred/failed LOD rebuild does not mean the ROOT write failed.
+        for (auto& row : mChunks)
+          for (auto& chunk : row)
+            chunk->commitSavedHoleMask();
         try
         {
           // An editor save makes the tile an edited tile, including tiles that

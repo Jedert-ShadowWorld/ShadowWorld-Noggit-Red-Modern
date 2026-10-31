@@ -13,6 +13,12 @@
 // of a destroyed one (previously a source of secondary access violations
 // masking the original crash whenever the SIGSEGV handler called exit()).
 
+// Texture destructors only enqueue GPU handles; these queues and their mutex
+// must outlive the manager even during static teardown without a GL context.
+decltype (TextureManager::_retired_mutex) TextureManager::_retired_mutex;
+decltype (TextureManager::_texture_generations) TextureManager::_texture_generations{};
+decltype (TextureManager::_retired_arrays) TextureManager::_retired_arrays;
+decltype (TextureManager::_tex_arrays) TextureManager::_tex_arrays;
 decltype (TextureManager::_) TextureManager::_;
 decltype (ModelManager::_) ModelManager::_;
 decltype (WMOManager::_) WMOManager::_;

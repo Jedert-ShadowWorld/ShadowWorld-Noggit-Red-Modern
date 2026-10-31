@@ -107,7 +107,8 @@ namespace
                          std::size_t payload_size,
                          bool has_header,
                          std::size_t chunk_index,
-                         std::string const& label)
+                         std::string const& label,
+                         bool verbose)
   {
     constexpr std::size_t mcnk_header_size = 128;
     std::size_t pos = has_header ? mcnk_header_size : 0;
@@ -141,9 +142,12 @@ namespace
         return;
       }
 
-      if (subchunk_count != 0)
-        subchunks << ' ';
-      subchunks << fourcc_name(magic) << '(' << declared_size << ')';
+      if (verbose)
+      {
+        if (subchunk_count != 0)
+          subchunks << ' ';
+        subchunks << fourcc_name(magic) << '(' << declared_size << ')';
+      }
       ++subchunk_count;
 
       pos = data_pos + declared_size;
@@ -156,14 +160,16 @@ namespace
                << std::endl;
     }
 
-    LogDebug << "[ModernADT] " << label << " MCNK[" << chunk_index << "] size="
-             << payload_size << " subchunks=" << subchunk_count << " :: "
-             << subchunks.str() << std::endl;
+    if (verbose)
+      LogDebug << "[ModernADT] " << label << " MCNK[" << chunk_index << "] size="
+               << payload_size << " subchunks=" << subchunk_count << " :: "
+               << subchunks.str() << '\n';
   }
 
   ModernAdtScanResult scan_modern_adt_file(std::string const& path,
                                            std::string const& label,
-                                           bool mcnk_has_header)
+                                           bool mcnk_has_header,
+                                           bool verbose)
   {
     ModernAdtScanResult result;
 
@@ -179,8 +185,9 @@ namespace
       std::size_t pos = 0;
       bool valid = true;
 
-      LogDebug << "[ModernADT] Scanning " << label << " file '" << path
-               << "' size=" << file_size << std::endl;
+      if (verbose)
+        LogDebug << "[ModernADT] Scanning " << label << " file '" << path
+                 << "' size=" << file_size << '\n';
 
       while (pos + 8 <= file_size)
       {
@@ -207,13 +214,13 @@ namespace
                             declared_size,
                             mcnk_has_header,
                             result.mcnk_count,
-                            label);
+                            label, verbose);
           ++result.mcnk_count;
         }
-        else
+        else if (verbose)
         {
           LogDebug << "[ModernADT] " << label << " chunk " << fourcc_name(magic)
-                   << " offset=" << pos << " size=" << declared_size << std::endl;
+                   << " offset=" << pos << " size=" << declared_size << '\n';
         }
 
         pos = payload_pos + declared_size;
@@ -228,9 +235,10 @@ namespace
       }
 
       result.structurally_valid = valid;
-      LogDebug << "[ModernADT] " << label << " summary: MCNK=" << result.mcnk_count
-               << " structurally_valid=" << (result.structurally_valid ? "yes" : "no")
-               << std::endl;
+      if (verbose || !result.structurally_valid)
+        LogDebug << "[ModernADT] " << label << " summary: MCNK=" << result.mcnk_count
+                 << " structurally_valid=" << (result.structurally_valid ? "yes" : "no")
+                 << '\n';
     }
     catch (std::exception const& e)
     {
@@ -246,24 +254,25 @@ namespace
     return result;
   }
 
-  bool run_shadowlands_split_adt_diagnostics(std::string const& root_path)
+  bool run_shadowlands_split_adt_diagnostics(std::string const& root_path, bool verbose)
   {
-    LogDebug << "[ModernADT] Shadowlands split-ADT diagnostic path engaged for '"
-             << root_path << "'." << std::endl;
+    if (verbose)
+      LogDebug << "[ModernADT] Shadowlands split-ADT diagnostic path engaged for '"
+               << root_path << "'." << '\n';
 
-    auto const root = scan_modern_adt_file(root_path, "ROOT", true);
-    auto const tex0 = scan_modern_adt_file(split_adt_path(root_path, "_tex0"), "TEX0", false);
-    auto const obj0 = scan_modern_adt_file(split_adt_path(root_path, "_obj0"), "OBJ0", false);
+    auto const root = scan_modern_adt_file(root_path, "ROOT", true, verbose);
+    auto const tex0 = scan_modern_adt_file(split_adt_path(root_path, "_tex0"), "TEX0", false, verbose);
+    auto const obj0 = scan_modern_adt_file(split_adt_path(root_path, "_obj0"), "OBJ0", false, verbose);
 
     bool const complete = root.opened && tex0.opened && obj0.opened
       && root.structurally_valid && tex0.structurally_valid && obj0.structurally_valid
       && root.mcnk_count == 256 && tex0.mcnk_count == 256 && obj0.mcnk_count == 256;
 
-    LogDebug << "[ModernADT] Tile summary ROOT=" << root.mcnk_count
+    LogDebug << "[ModernADT] Tile '" << root_path << "' summary ROOT=" << root.mcnk_count
              << " TEX0=" << tex0.mcnk_count
              << " OBJ0=" << obj0.mcnk_count
              << " verified_256x3=" << (complete ? "yes" : "no")
-             << std::endl;
+             << '\n';
 
     if (!complete)
     {
@@ -297,6 +306,7 @@ void AsyncLoader::process()
 
   QSettings settings;
   bool additional_log = settings.value("additional_file_loading_log", true).toBool();
+  bool const detailed_adt_log = settings.value("diagnostics/adt_chunk_details", false).toBool();
 
   while (!_stop)
   {
@@ -339,13 +349,12 @@ void AsyncLoader::process()
     {
       if (additional_log)
       {
-        std::lock_guard<std::mutex> const lock(_guard);
-        LogDebug << "Loading file '" << object_name << "'" << std::endl;
+        LogDebug << "Loading file '" << object_name << "'" << '\n';
       }
 
       if (is_shadowlands_root_adt(object_name))
       {
-        bool const split_verified = run_shadowlands_split_adt_diagnostics(object_name);
+        bool const split_verified = run_shadowlands_split_adt_diagnostics(object_name, detailed_adt_log);
         if (!split_verified)
         {
           std::lock_guard<std::mutex> const lock(_guard);
@@ -366,9 +375,8 @@ void AsyncLoader::process()
 
           if (additional_log)
           {
-            std::lock_guard<std::mutex> const lock(_guard);
             LogDebug << "[ModernADT] Loaded terrain-only Shadowlands tile '"
-                     << object_name << "'." << std::endl;
+                     << object_name << "'." << '\n';
           }
 
           {
@@ -400,8 +408,7 @@ void AsyncLoader::process()
 
       if (additional_log && (!retail || !object->loading_failed()))
       {
-        std::lock_guard<std::mutex> const lock(_guard);
-        LogDebug << "Loaded  file '" << object_name << "'" << std::endl;
+        LogDebug << "Loaded  file '" << object_name << "'" << '\n';
       }
 
       {

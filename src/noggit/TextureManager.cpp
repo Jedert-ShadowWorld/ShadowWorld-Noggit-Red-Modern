@@ -14,12 +14,12 @@
 #include <noggit/formats/BlpBgra.hpp>
 
 #include <algorithm>
+#include <limits>
+#include <stdexcept>
 #include <glm/vec2.hpp>
 
-// TextureManager::_ is defined in AsyncObjectManagers.cpp to fix static destruction order.
-decltype (TextureManager::_tex_arrays) TextureManager::_tex_arrays;
-
-constexpr unsigned N_ARRAY_TEX = 1;
+// TextureManager storage is defined in AsyncObjectManagers.cpp to preserve
+// destruction order when releasing the final texture references.
 
 void TextureManager::report()
 {
@@ -55,95 +55,163 @@ void TextureManager::unload_all(Noggit::NoggitRenderContext context)
 
   for (auto& pair : arrays_for_context)
   {
-    gl.deleteTextures(static_cast<GLuint>(pair.second.arrays.size()), pair.second.arrays.data());
+    for (auto& page : pair.second.pages)
+      gl.deleteTextures(1, &page.array);
   }
   arrays_for_context.clear();
+  // Synchronous CPU reload may have replaced height-map objects and retired
+  // their old handles. The bulk delete above already released those arrays.
+  std::lock_guard<std::mutex> lock(_retired_mutex);
+  _retired_arrays[context].clear();
+  ++_texture_generations[context];
 }
 
-TexArrayParams& TextureManager::get_tex_array(int width, int height, int mip_level,
-                                              Noggit::NoggitRenderContext context)
+std::uint64_t TextureManager::texture_generation(Noggit::NoggitRenderContext context)
 {
-  TexArrayParams& array_params = _tex_arrays[context][std::make_tuple(-1, width, height, mip_level)];
-
-  GLint n_layers = N_ARRAY_TEX;
-  //gl.getIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &n_layers);
-
-  int index_x = array_params.n_used / n_layers;
-
-  if (array_params.arrays.size() <= index_x)
-  {
-    GLuint array;
-
-    gl.genTextures(1, &array);
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, array);
-
-    array_params.arrays.emplace_back(array);
-
-    int width_ = width;
-    int height_ = height;
-
-    for (int i = 0; i < mip_level; ++i)
-    {
-      gl.texImage3D(GL_TEXTURE_2D_ARRAY, i, GL_RGBA8, width_, height_, n_layers, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                    nullptr);
-
-      width_ = std::max(width_ >> 1, 1);
-      height_ = std::max(height_ >> 1, 1);
-    }
-
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, mip_level - 1);
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  }
-  else
-  {
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, array_params.arrays[index_x]);
-  }
-
-  return array_params;
+  std::lock_guard<std::mutex> lock(_retired_mutex);
+  return _texture_generations[context];
 }
 
-TexArrayParams& TextureManager::get_tex_array(GLint compression, int width, int height, int mip_level,
-                              std::map<int, std::vector<uint8_t>>& comp_data, Noggit::NoggitRenderContext context)
+void TextureManager::retire_texture(Noggit::NoggitRenderContext context, GLuint texture,
+                                  unsigned layer, std::uint64_t generation)
 {
+  if (!texture) return;
+  std::lock_guard<std::mutex> lock(_retired_mutex);
+  if (generation != _texture_generations[context]) return;
+  _retired_arrays[context].push_back({texture, layer});
+}
 
-  TexArrayParams& array_params = _tex_arrays[context][std::make_tuple(compression, width, height, mip_level)];
-
-  GLint n_layers = N_ARRAY_TEX;
-  //gl.getIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &n_layers);
-
-  int index_x = array_params.n_used / n_layers;
-
-  if (array_params.arrays.size() <= index_x)
+void TextureManager::release_retired_textures(Noggit::NoggitRenderContext context)
+{
+  // A worker may release a texture, but only its render context frees the slice.
+  // Keep shared pages alive until their last texture has released its slot.
+  std::vector<TexArrayAllocation> retired;
   {
-    GLuint array;
-
-    gl.genTextures(1, &array);
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, array);
-
-    array_params.arrays.emplace_back(array);
-
-    int width_ = width;
-    int height_ = height;
-
-    for (int i = 0; i < mip_level; ++i)
+    std::lock_guard<std::mutex> lock(_retired_mutex);
+    retired.swap(_retired_arrays[context]);
+  }
+  if (retired.empty()) return;
+  std::sort(retired.begin(), retired.end(), [](auto const& a, auto const& b) {
+    return std::tie(a.array, a.layer) < std::tie(b.array, b.layer);
+  });
+  for (auto& [key, params] : _tex_arrays[context])
+  {
+    auto end = std::remove_if(params.pages.begin(), params.pages.end(), [&](TexArrayPage& page)
     {
-      gl.compressedTexImage3D(GL_TEXTURE_2D_ARRAY, i, compression, width_, height_, n_layers, 0, static_cast<GLsizei>(comp_data[i].size() * n_layers), nullptr);
+      auto it = std::lower_bound(retired.begin(), retired.end(), page.array,
+        [](auto const& allocation, GLuint array) { return allocation.array < array; });
+      for (; it != retired.end() && it->array == page.array; ++it)
+        if (it->layer < page.used.size())
+          page.used[it->layer] = false;
+      if (std::any_of(page.used.begin(), page.used.end(), [](bool used) { return used; }))
+        return false;
+      gl.deleteTextures(1, &page.array);
+      return true;
+    });
+    params.pages.erase(end, params.pages.end());
+  }
+}
 
-      width_ = std::max(width_ >> 1, 1);
-      height_ = std::max(height_ >> 1, 1);
+TexArrayAllocation TextureManager::allocate_texture_array(GLint compression, int width, int height,
+    std::vector<std::size_t> const& mip_sizes, Noggit::NoggitRenderContext context)
+{
+  if (width <= 0 || height <= 0 || mip_sizes.empty() || mip_sizes.size() > 16)
+    throw std::runtime_error("Invalid texture array dimensions or mip chain.");
+  for (auto size : mip_sizes)
+    if (!size || size > static_cast<std::size_t>(std::numeric_limits<GLsizei>::max()))
+      throw std::runtime_error("Invalid texture array mip size.");
+  // The caller drains retired pages before saving GL bindings. Allocation must
+  // not delete a page after the binding guard has captured its name.
+  auto& params = _tex_arrays[context][std::make_tuple(compression, width, height, static_cast<int>(mip_sizes.size()))];
+  bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL;
+  for (auto& page : params.pages)
+  {
+    // A project switch can leave live references in the same render context.
+    // Non-Retail uploads must not reuse spare slices from a Retail page.
+    if (!retail && page.used.size() != 1)
+      continue;
+    auto free = std::find(page.used.begin(), page.used.end(), false);
+    if (free != page.used.end())
+    {
+      gl.bindTexture(GL_TEXTURE_2D_ARRAY, page.array);
+      *free = true;
+      return {page.array, static_cast<unsigned>(free - page.used.begin())};
     }
+  }
 
-    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, mip_level - 1);
+  // Retail layers share compatible storage, without resizing or decoding BLPs.
+  // Bound unused storage on large assets, and keep legacy allocations unchanged.
+  unsigned capacity = 1;
+  if (retail)
+  {
+    constexpr std::size_t page_budget = 16u * 1024u * 1024u;
+    std::size_t bytes = 0;
+    for (auto size : mip_sizes)
+      bytes += std::min(size, page_budget - bytes);
+    GLint layer_limit = 1;
+    gl.getIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &layer_limit);
+    capacity = static_cast<unsigned>(std::min<std::size_t>(
+      std::min(16, std::max(1, layer_limit)), std::max<std::size_t>(1, page_budget / std::max<std::size_t>(1, bytes))));
+  }
+
+  TexArrayPage page;
+  page.used.resize(capacity, false);
+  page.used[0] = true;
+  gl.genTextures(1, &page.array);
+  try
+  {
+    gl.bindTexture(GL_TEXTURE_2D_ARRAY, page.array);
+    for (std::size_t i = 0; i < mip_sizes.size(); ++i)
+    {
+      if (compression == -1)
+        gl.texImage3D(GL_TEXTURE_2D_ARRAY, static_cast<GLint>(i), GL_RGBA8, width, height,
+          capacity, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+      else
+        gl.compressedTexImage3D(GL_TEXTURE_2D_ARRAY, static_cast<GLint>(i), compression, width, height,
+          capacity, 0, static_cast<GLsizei>(mip_sizes[i] * capacity), nullptr);
+      width = std::max(width >> 1, 1);
+      height = std::max(height >> 1, 1);
+    }
+    gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(mip_sizes.size()) - 1);
     gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    params.pages.push_back(std::move(page));
   }
-  else
+  catch (...)
   {
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, array_params.arrays[index_x]);
+    gl.deleteTextures(1, &page.array);
+    throw;
   }
+  return {params.pages.back().array, 0};
+}
 
-  return array_params;
+TexArrayAllocation TextureManager::get_tex_array(int width, int height, int mip_level,
+                                               Noggit::NoggitRenderContext context)
+{
+  if (width <= 0 || height <= 0 || mip_level <= 0 || mip_level > 16)
+    throw std::runtime_error("Invalid texture dimensions or mip count.");
+  std::vector<std::size_t> mip_sizes;
+  int mip_width = width, mip_height = height;
+  for (int i = 0; i < mip_level; ++i)
+  {
+    if (static_cast<std::size_t>(mip_width) > std::numeric_limits<std::size_t>::max() / 4 / mip_height)
+      throw std::runtime_error("Texture mip size overflow.");
+    mip_sizes.push_back(static_cast<std::size_t>(mip_width) * mip_height * 4);
+    mip_width = std::max(mip_width >> 1, 1);
+    mip_height = std::max(mip_height >> 1, 1);
+  }
+  return allocate_texture_array(-1, width, height, mip_sizes, context);
+}
+
+TexArrayAllocation TextureManager::get_tex_array(GLint compression, int width, int height, int mip_level,
+    std::map<int, std::vector<uint8_t>> const& comp_data, Noggit::NoggitRenderContext context)
+{
+  if (mip_level <= 0 || mip_level > 16 || comp_data.size() != static_cast<std::size_t>(mip_level))
+    throw std::runtime_error("Invalid compressed texture mip count.");
+  std::vector<std::size_t> mip_sizes;
+  for (int i = 0; i < mip_level; ++i) mip_sizes.push_back(comp_data.at(i).size());
+  return allocate_texture_array(compression, width, height, mip_sizes, context);
 }
 
 #include <cstdint>
@@ -166,7 +234,7 @@ struct BLPHeader
 
 void blp_texture::bind()
 {
-  if (!finished)
+  if (!finished || loading_failed())
   {
     return;
   }
@@ -215,7 +283,7 @@ void blp_texture::uploadToArray(unsigned layer)
 
 void blp_texture::upload()
 {
-  if (!finished)
+  if (!finished || loading_failed())
   {
     return;
   }
@@ -225,6 +293,9 @@ void blp_texture::upload()
     return;
   }
 
+  // Drain before capturing the binding: allocation may reuse a just-deleted GL
+  // name. Worker releases after this point stay queued until the next upload.
+  TextureManager::release_retired_textures(_context);
   // Uploads use the active texture unit, which may hold another stage of a Retail material.
   auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
   bool const preserve_binding = client->version() == BlizzardArchive::ClientVersion::RETAIL;
@@ -232,55 +303,49 @@ void blp_texture::upload()
 
   int width = _width, height = _height;
 
-  GLint n_layers = N_ARRAY_TEX;
-  //gl.getIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &n_layers);
+  _texture_generation = TextureManager::texture_generation(_context);
 
-  if (!_compression_format)
+  try
   {
-    auto& params = TextureManager::get_tex_array( _width, _height, static_cast<int>(_data.size()), _context);
-
-    int index_x = params.n_used / n_layers;
-    int index_y = params.n_used % n_layers;
-
-    _texture_array = params.arrays[index_x];
-    _array_index = index_y;
-
-    for (int i = 0; i < _data.size(); ++i)
+    if (!_compression_format)
     {
-      gl.texSubImage3D(GL_TEXTURE_2D_ARRAY, i, 0, 0, index_y, width, height, 1, GL_RGBA, GL_UNSIGNED_BYTE, _data[i].data());
+      auto const allocation = TextureManager::get_tex_array(_width, _height, static_cast<int>(_data.size()), _context);
+      _texture_array = allocation.array;
+      _array_index = static_cast<int>(allocation.layer);
 
-      width = std::max(width >> 1, 1);
-      height = std::max(height >> 1, 1);
+      for (int i = 0; i < _data.size(); ++i)
+      {
+        gl.texSubImage3D(GL_TEXTURE_2D_ARRAY, i, 0, 0, _array_index, width, height, 1, GL_RGBA, GL_UNSIGNED_BYTE, _data[i].data());
+
+        width = std::max(width >> 1, 1);
+        height = std::max(height >> 1, 1);
+      }
+
+      _data.clear();
     }
+    else
+    {
+      auto const allocation = TextureManager::get_tex_array(_compression_format.value(), _width, _height, static_cast<int>(_compressed_data.size()), _compressed_data, _context);
+      _texture_array = allocation.array;
+      _array_index = static_cast<int>(allocation.layer);
 
-    params.n_used++;
+      for (int i = 0; i < _compressed_data.size(); ++i)
+      {
+        gl.compressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, i, 0, 0, _array_index, width, height, 1, _compression_format.value(), static_cast<GLsizei>(_compressed_data[i].size()), _compressed_data[i].data());
 
-    //LogDebug << "Mip level: " << std::to_string(_data.size()) << std::endl;
-
-    _data.clear();
+        width = std::max(width >> 1, 1);
+        height = std::max(height >> 1, 1);
+      }
+      _compressed_data.clear();
+    }
   }
-  else
+  catch (...)
   {
-    auto& params = TextureManager::get_tex_array(_compression_format.value(), _width, _height, static_cast<int>(_compressed_data.size()), _compressed_data, _context);
-
-    int index_x = params.n_used / n_layers;
-    int index_y = params.n_used % n_layers;
-
-    _texture_array = params.arrays[index_x];
-    _array_index = index_y;
-
-    for (int i = 0; i < _compressed_data.size(); ++i)
-    {
-      gl.compressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, i, 0, 0, index_y, width, height, 1, _compression_format.value(), static_cast<GLsizei>(_compressed_data[i].size()), _compressed_data[i].data());
-
-      width = std::max(width >> 1, 1);
-      height = std::max(height >> 1, 1);
-    }
-
-    params.n_used++;
-
-    //LogDebug << "Mip level (compressed): " << std::to_string(_compressed_data.size()) << std::endl;
-    _compressed_data.clear();
+    // Keep CPU mip data for a retry, but return its reserved GPU slice first.
+    TextureManager::retire_texture(_context, _texture_array, static_cast<unsigned>(_array_index), _texture_generation);
+    _texture_array = 0;
+    _array_index = -1;
+    throw;
   }
 
   _uploaded = true;
@@ -289,19 +354,27 @@ void blp_texture::upload()
 void blp_texture::unload()
 {
   _uploaded = false;
-  finished = false;
-  if (hasHeightMap() && heightMap)
-  {
-      heightMap->unload();
-  }
-  _compression_format.reset();
+  reset_loading();
   _texture_array = 0;
   _array_index = -1;
-  _data.clear();
-  _compressed_data.clear();
+  try
+  {
+    if (hasHeightMap() && heightMap)
+      heightMap->unload();
+    _compression_format.reset();
+    _data.clear();
+    _compressed_data.clear();
 
-  // load data back from file. pretty sad. maybe keep it after loading?
-  finishLoading();
+    // load data back from file. pretty sad. maybe keep it after loading?
+    finishLoading();
+  }
+  catch (...)
+  {
+    // Context reload is synchronous and does not pass through AsyncLoader's
+    // exception handler. It must still wake waiters and publish failure.
+    complete_loading(true);
+    throw;
+  }
 }
 
 bool blp_texture::is_uploaded() const
@@ -496,6 +569,13 @@ blp_texture::blp_texture(BlizzardArchive::Listfile::FileKey const& file_key, Nog
 {
 }
 
+blp_texture::~blp_texture()
+{
+  // Last references may disappear on a loader thread. GL deletion is deferred
+  // until the next allocation in the owning render context.
+  TextureManager::retire_texture(_context, _texture_array, static_cast<unsigned>(_array_index), _texture_generation);
+}
+
 void blp_texture::finishLoading()
 {
   auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
@@ -571,7 +651,6 @@ void blp_texture::finishLoading()
   auto& f = *file;
   if (f.isEof())
   {
-    finished = true;
     throw std::runtime_error ("File " + _file_key.stringRepr() + " does not exist");
   }
 
@@ -618,7 +697,6 @@ void blp_texture::finishLoading()
       }
       else
       {
-          finished = true;
           throw std::logic_error("Unsupported BLP compression");
       }
 
@@ -628,8 +706,7 @@ void blp_texture::finishLoading()
   }
 
   f.close();
-  finished = true;
-  _state_changed.notify_all();
+  complete_loading();
 }
 
 namespace Noggit

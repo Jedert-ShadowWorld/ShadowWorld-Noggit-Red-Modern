@@ -10,6 +10,7 @@ function Slice([string]$start, [string]$end) {
   $source.Substring($a, $b - $a)
 }
 $fixture = [IO.File]::ReadAllText((Join-Path $root 'tests\terrain-export-regression.inc'))
+$fixture = $fixture.Replace('// ACTUAL_EXPORT_START', (Slice '    bool MinimapTool::queueSavedTerrain(' '    void MinimapTool::setExportActive('))
 $fixture = $fixture.Replace('// ACTUAL_EXPORT_FRAME', (Slice '    void MinimapTool::setExportActive(' '    void MinimapTool::writeMapTexturePair('))
 $fixture = $fixture.Replace('// ACTUAL_EXPORT_FINISH', (Slice '    void MinimapTool::finishSaving(' '    void MinimapTool::saveSettings('))
 $source = [IO.File]::ReadAllText((Join-Path $root 'src\noggit\MapView.cpp'))

@@ -8,6 +8,8 @@
 #include <glm/glm.hpp>
 
 #include <map>
+#include <span>
+#include <cstdint>
 
 namespace OpenGL::Scoped
 {
@@ -47,6 +49,7 @@ namespace Noggit::Rendering
         , bool interior_only
         , bool draw_select_group_bounds
         , bool grouped
+        , std::span<std::uint16_t const> selected_doodad_sets = {}
     );
 
     bool drawSkybox(glm::mat4x4 const& model_view

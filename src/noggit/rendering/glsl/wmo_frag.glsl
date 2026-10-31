@@ -9,6 +9,8 @@
 #define eWMOBatch_SIDN 0x20u
 #define eWMOBatch_RetailMaterials 0x40u
 #define eWMOBatch_NoEnvironment 0x80u
+// Bits 8..16 identify authored zero FileDataIDs, not failed texture loads.
+#define eWMOBatch_MissingTextureShift 8u
 
 layout (std140) uniform lighting
 {
@@ -25,6 +27,8 @@ layout (std140) uniform lighting
 uniform vec3 camera;
 uniform sampler2DArray texture_samplers[15];
 uniform vec3 ambient_color;
+uniform vec3 ambient_horizon_color;
+uniform vec3 ambient_ground_color;
 uniform float sidn_intensity;
 // Preview sampling only; terrain and water use their own shaders.
 uniform float preview_texture_lod_bias;
@@ -127,6 +131,14 @@ vec3 unpack_rgb(uint value)
     ) / 255.0;
 }
 
+vec4 get_optional_tex_color(vec2 uv, uint sampler_index, int layer, uint slot, vec4 absent)
+{
+  if (bool(flags & eWMOBatch_RetailMaterials) &&
+      bool(flags & (1u << (eWMOBatch_MissingTextureShift + slot))))
+    return absent;
+  return get_tex_color(uv, sampler_index, layer);
+}
+
 vec3 apply_lighting(vec3 material, float ambient_visibility)
 {
   vec3 ambient_term;
@@ -145,6 +157,15 @@ vec3 apply_lighting(vec3 material, float ambient_visibility)
   else
   {
     ambient_term = ambient_color;
+    if (bool(flags & eWMOBatch_RetailMaterials))
+    {
+      // Retail MAVG/MAVD carry authored sky/horizon/ground indoor ambient.
+      // The CPU supplies the same fallback color in all three slots when the
+      // selected doodad set has no directional ambient record.
+      float up = clamp(normalize(f_normal).y, -1.0, 1.0);
+      ambient_term = mix(ambient_horizon_color,
+          up >= 0.0 ? ambient_color : ambient_ground_color, abs(up));
+    }
     diffuse_term = vec3(0.0);
   }
 
@@ -155,7 +176,12 @@ vec3 apply_lighting(vec3 material, float ambient_visibility)
 
   if(!bool(flags & eWMOBatch_Unlit))
   {
-    float nDotL = clamp(dot(normalize(f_normal), -normalize(vec3(-LightDir_FogRate.x, LightDir_FogRate.z, -LightDir_FogRate.y))), 0.0, 1.0);
+    // Terrain stores MCNR normals in (-world.z, world.y, -world.x).
+    // Convert its shared light vector into the model's world-normal basis.
+    vec3 light_dir = bool(flags & eWMOBatch_RetailMaterials)
+        ? vec3(-LightDir_FogRate.z, LightDir_FogRate.y, -LightDir_FogRate.x)
+        : vec3(-LightDir_FogRate.x, LightDir_FogRate.z, -LightDir_FogRate.y);
+    float nDotL = clamp(dot(normalize(f_normal), -normalize(light_dir)), 0.0, 1.0);
 
     vec3 ambientColor = ambient_term * ambient_visibility + vertex_color;
 
@@ -186,7 +212,13 @@ void main()
   bool fog = FogColor_FogOn.w != 0 && !bool(flags & eWMOBatch_Unfogged);
 
   vec4 tex = get_tex_color(f_texcoord, tex_array0, int(tex0));
-  vec4 tex_2 = get_tex_color(f_texcoord_2, tex_array1, int(tex1));
+  // An authored zero secondary FDID binds transparent black, including in
+  // two-layer diffuse materials. It must not contribute the debug checker.
+  // Primary diffuse and failed nonzero references retain their diagnostics.
+  vec4 tex_2 = get_optional_tex_color(f_texcoord_2, tex_array1, int(tex1), 1u, vec4(0.0));
+  if (bool(flags & eWMOBatch_RetailMaterials) && bool(flags & eWMOBatch_NoEnvironment) &&
+      (shader == 3u || shader == 5u || shader == 12u))
+    tex_2 = vec4(0.0);
 
   float alpha_test = !bool(alpha_test_mode) ? -1.f : (alpha_test_mode < 2 ? 0.878431372 : 0.003921568);
 
@@ -223,7 +255,8 @@ void main()
   }
   else if (shader == 7 && bool(flags & eWMOBatch_RetailMaterials))
   {
-    vec4 environment = bool(flags & eWMOBatch_NoEnvironment) ? vec4(0.0) : get_tex_color(f_env_texcoord, extra_textures[0].x, int(extra_textures[0].y));
+    vec4 environment = bool(flags & eWMOBatch_NoEnvironment) ? vec4(0.0) :
+        get_optional_tex_color(f_env_texcoord, extra_textures[0].x, int(extra_textures[0].y), 2u, vec4(0.0));
     vec4 mixed = mix(tex, tex_2, 1.0 - blend_alpha);
     out_color = vec4(apply_lighting(mixed.rgb) + mixed.rgb * mixed.a * environment.rgb, 1.0);
   }
@@ -232,6 +265,8 @@ void main()
        shader == 17u || shader == 18u || shader == 19u || shader == 20u))
   {
     vec4 third = get_tex_color(f_texcoord_3, extra_textures[0].x, int(extra_textures[0].y));
+    if (shader == 12u)
+      third = get_optional_tex_color(f_texcoord_3, extra_textures[0].x, int(extra_textures[0].y), 2u, vec4(0.0));
     vec3 diffuse = tex.rgb;
     vec3 emission = vec3(0.0);
     if (shader == 8u) diffuse = mix(tex_2.rgb, tex.rgb, blend_alpha);
@@ -260,7 +295,8 @@ void main()
   }
   else if (shader == 13 && bool(flags & eWMOBatch_RetailMaterials))
   {
-    // TwoLayerDiffuseOpaque uses vertex alpha, not either texture's alpha.
+    // TwoLayerDiffuseOpaque uses the material-blend stream, not lighting alpha
+    // or either texture's alpha (the same stream as the other two-layer modes).
     out_color = vec4(apply_lighting(mix(tex_2.rgb, tex.rgb, blend_alpha)), 1.0);
   }
   else if (shader == 23 && bool(flags & eWMOBatch_RetailMaterials))
@@ -276,13 +312,15 @@ void main()
         1.0 - clamp(dot(f_material_weights.rgb, vec3(1.0)), 0.0, 1.0));
     vec4 heights;
     for (int i = 0; i < 4; ++i)
-      heights[i] = max(get_tex_color(uv[i], extra_textures[i + 3].x, int(extra_textures[i + 3].y)).a, 0.004);
+      heights[i] = max(get_optional_tex_color(uv[i], extra_textures[i + 3].x,
+          int(extra_textures[i + 3].y), uint(i + 5), vec4(0.0, 0.0, 0.0, 1.0)).a, 0.004);
     vec4 weighted = weights * heights;
     float peak = max(max(weighted.x, weighted.y), max(weighted.z, weighted.w));
     weighted *= 1.0 - clamp(vec4(peak) - weighted, 0.0, 1.0);
     weighted /= max(dot(weighted, vec4(1.0)), 0.000001);
     vec4 mixed = layers[0] * weighted.x + layers[1] * weighted.y + layers[2] * weighted.z + layers[3] * weighted.w;
-    vec3 environment = bool(flags & eWMOBatch_NoEnvironment) ? vec3(0.0) : get_tex_color(f_env_texcoord, tex_array0, int(tex0)).rgb;
+    vec3 environment = bool(flags & eWMOBatch_NoEnvironment) ? vec3(0.0) :
+        get_optional_tex_color(f_env_texcoord, tex_array0, int(tex0), 0u, vec4(0.0)).rgb;
     // Preview approximation: treat MOC2 alpha as ambient occlusion, preserving
     // direct light, authored vertex lighting, emission and unlit materials.
     float ambient_visibility = 1.0 - clamp(f_material_weights.a, 0.0, 1.0);

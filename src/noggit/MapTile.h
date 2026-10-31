@@ -105,10 +105,10 @@ public:
   void getVertexInternal(float x, float z, glm::vec3* v);
 
 	void CropWater();
-  bool saveTile(World* world);
+  bool saveTile(World* world, derived_save_policy derived = derived_save_policy::rebuild);
 
 private:
-  bool save(World* world, bool save_using_mclq_liquids);
+  bool save(World* world, bool save_using_mclq_liquids, derived_save_policy derived);
 
 public:
 

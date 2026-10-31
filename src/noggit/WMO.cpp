@@ -139,6 +139,20 @@ void WMO::finishLoading ()
   ambient_light_color.y = static_cast<float>(ambient_color.g) / 255.f;
   ambient_light_color.z = static_cast<float>(ambient_color.b) / 255.f;
   ambient_light_color.w = static_cast<float>(ambient_color.a) / 255.f;
+  ambient_volumes.clear();
+  if (retail)
+  {
+    if (auto const* chunk = find_root_chunk('MAVG'))
+      ambient_volumes = Noggit::Format::read_wmo_ambient_volumes(
+          {reinterpret_cast<std::uint8_t const*>(f.getBuffer() + chunk->payload_offset), chunk->size});
+    if (ambient_volumes.empty())
+      if (auto const* chunk = find_root_chunk('MAVD'))
+      {
+        ambient_volumes = Noggit::Format::read_wmo_ambient_volumes(
+            {reinterpret_cast<std::uint8_t const*>(f.getBuffer() + chunk->payload_offset), chunk->size});
+        if (!ambient_volumes.empty()) ambient_volumes.resize(1);
+      }
+  }
 
   // Modern WMOs store FileDataIDs directly in MOMT and omit MOTX.
   f.read (&fourcc, 4);
@@ -166,6 +180,7 @@ void WMO::finishLoading ()
   std::size_t const num_materials (size / 0x40);
   materials.resize (num_materials);
   material_textures.resize(num_materials);
+  material_missing_textures.assign(num_materials, 0);
 
   // note: used to map to size_t, but our other values don't support that.
   //std::map<std::uint32_t, std::size_t> texture_offset_to_inmem_index;
@@ -219,6 +234,8 @@ void WMO::finishLoading ()
     std::array<std::uint32_t, 9> const refs{m.texture_offset_1, m.texture_offset_2,
         m.texture_offset_3, m.color_2, m.flag_2, m.runtime_data[0], m.runtime_data[1], m.texture1, m.texture2};
     auto const count = Noggit::Format::wmo_texture_count(shader, retail && uses_file_data_ids);
+    if (retail && uses_file_data_ids)
+      material_missing_textures[i] = Noggit::Format::wmo_missing_texture_mask(refs, count);
     for (unsigned slot = 0; slot < count; ++slot)
       material_textures[i][slot] = load_texture(refs[slot]);
     materials[i].texture1 = material_textures[i][0];
@@ -340,8 +357,7 @@ void WMO::finishLoading ()
     for (auto& group : groups)
       group.load();
 
-    finished = true;
-    _state_changed.notify_all();
+    complete_loading();
     return;
   }
 
@@ -572,8 +588,7 @@ void WMO::finishLoading ()
   for (auto& group : groups)
     group.load();
 
-  finished = true;
-  _state_changed.notify_all();
+  complete_loading();
 }
 
 void WMO::waitForChildrenLoaded()
@@ -1180,7 +1195,7 @@ void WMOGroup::load()
     if (color_streams.lighting)
     {
       f.seek(mocv_chunks.front()->payload_offset);
-      load_mocv(f, mocv_chunks.front()->size);
+      load_mocv(f, mocv_chunks.front()->size, retail);
     }
     if (color_streams.blending)
     {
@@ -1503,7 +1518,7 @@ void WMOGroup::load()
     }
     else
     {
-      load_mocv(f, size);
+      load_mocv(f, size, retail);
     }
 
   }
@@ -1661,7 +1676,7 @@ void WMOGroup::load()
   }
 }
 
-void WMOGroup::load_mocv(BlizzardArchive::ClientFile& f, uint32_t size)
+void WMOGroup::load_mocv(BlizzardArchive::ClientFile& f, uint32_t size, bool retail)
 {
   if (size % sizeof(uint32_t) != 0)
   {
@@ -1678,6 +1693,13 @@ void WMOGroup::load_mocv(BlizzardArchive::ClientFile& f, uint32_t size)
 
   if (wmo->flags.do_not_fix_vertex_color_alpha)
   {
+    // The client doubles precomputed light in its shader. Our shader consumes
+    // light directly: the other path folds that factor into its fixup, but
+    // roots that skip RGB fixup still need it (without scaling blend alpha).
+    if (retail)
+      for (auto& color : _vertex_colors)
+        color = glm::vec4(glm::vec3(color) * 2.f, color.w);
+
     int interior_batchs_start = 0;
 
     if (header.transparency_batches_count > 0 && header.transparency_batches_count <= _batches.size())
@@ -1687,19 +1709,19 @@ void WMOGroup::load_mocv(BlizzardArchive::ClientFile& f, uint32_t size)
 
     for (int n = interior_batchs_start; n < _vertex_colors.size(); ++n)
     {
-      _vertex_colors[n].w = header.flags.exterior ? 1.f : 0.f;
+      _vertex_colors[n].w = (header.flags.exterior || (retail && header.flags.exterior_lit)) ? 1.f : 0.f;
     }
   }
   else
   {
-    fix_vertex_color_alpha();
+    fix_vertex_color_alpha(retail);
   }
 
   // there's no read so this is required
   f.seekRelative(size);
 }
 
-void WMOGroup::fix_vertex_color_alpha()
+void WMOGroup::fix_vertex_color_alpha(bool retail)
 {
   int interior_batchs_start = 0;
 
@@ -1732,9 +1754,12 @@ void WMOGroup::fix_vertex_color_alpha()
     // I removed the color = color/2 because it's just multiplied by 2 in the shader afterward in blizzard's code
     if (i >= interior_batchs_start)
     {
-      r += ((r * a / 64.f) - wmo_ambient_color.x);
-      g += ((g * a / 64.f) - wmo_ambient_color.y);
-      b += ((b * a / 64.f) - wmo_ambient_color.z);
+      // MOCV RGB is normalized, but the authored intensity is byte alpha / 64.
+      // Keep the original path for older clients.
+      float const intensity = a * (retail ? 255.f : 1.f) / 64.f;
+      r += ((r * intensity) - wmo_ambient_color.x);
+      g += ((g * intensity) - wmo_ambient_color.y);
+      b += ((b * intensity) - wmo_ambient_color.z);
     }
     else
     {
@@ -1747,9 +1772,12 @@ void WMOGroup::fix_vertex_color_alpha()
       b = (b * (1.f - a));
     }
 
-    color.x = std::min(255.f, std::max(0.f, r));
-    color.y = std::min(255.f, std::max(0.f, g));
-    color.z = std::min(255.f, std::max(0.f, b));
+    // Removing the client's divide-by-two and shader multiply-by-two leaves
+    // a normalized upper bound of two, not a byte-domain bound of 255.
+    float const maximum = retail ? 2.f : 255.f;
+    color.x = std::min(maximum, std::max(0.f, r));
+    color.y = std::min(maximum, std::max(0.f, g));
+    color.z = std::min(maximum, std::max(0.f, b));
     color.w = 1.f; // default value used in the shader so I simplified it here,
                    // it can be overriden by the 2nd mocv chunk
   }

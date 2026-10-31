@@ -20,7 +20,7 @@ struct ChunkInstanceData
   ivec4 ChunkHoles_DrawImpass_TexLayerCount_CantPaint;
   ivec4 ChunkTexDoAnim;
   ivec4 ChunkTexAnimSpeed;
-  ivec4 AreaIDColor_Pad2_DrawSelection;
+  ivec4 AreaIDColor_Pad2_DrawSelection; // y/z: Retail 8x8 hole mask, low/high words.
   ivec4 ChunkXZ_TileXZ;
   ivec4 ChunkTexAnimDir;
 
@@ -46,6 +46,7 @@ uniform sampler2D mccv;
 uniform int base_instance;
 uniform int animtime;
 uniform int lod_level;
+uniform bool retail_terrain;
 
 out vec3 vary_position;
 out vec2 vary_texcoord;
@@ -57,6 +58,18 @@ out vec3 vary_mccv;
 out vec3 vary_normal;
 flat out int instanceID;
 flat out vec3 triangle_normal;
+
+bool isFineHoleVertex(uint vertexId, uvec2 holes)
+{
+  // Each 8x8 cell is a four-triangle fan with its own center vertex.
+  // Corner vertices are shared and must remain intact for neighboring cells.
+  uint row = vertexId / 17u;
+  uint column = vertexId % 17u;
+  if (row >= 8u || column < 9u)
+    return false;
+  uint bit = row * 8u + column - 9u;
+  return (holes[bit / 32u] & (1u << (bit % 32u))) != 0u;
+}
 
 bool isHoleVertex(uint vertexId, uint hole)
 {
@@ -153,6 +166,9 @@ float makeNaN(float nonneg)
 
 vec2 animUVOffset(int do_animate, int spd, int dir)
 {
+  if (do_animate == 0 || spd <= 0 || spd > 7 || dir < 0 || dir > 7)
+    return vec2(0.0);
+
   const float texanimxtab[8] = float[8]( 0, 1, 1, 1, 0, -1, -1, -1 );
   const float texanimytab[8] = float[8]( 1, 1, 0, -1, -1, -1, 0, 1 );
   float fdx = -texanimxtab[dir];
@@ -180,7 +196,9 @@ void main()
                       + position.y
                     );
 
-  bool is_hole = isHoleVertex(gl_VertexID, instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.r);
+  bool is_hole = retail_terrain
+    ? isFineHoleVertex(uint(gl_VertexID), uvec2(instances[instanceID].AreaIDColor_Pad2_DrawSelection.yz))
+    : isHoleVertex(gl_VertexID, instances[instanceID].ChunkHoles_DrawImpass_TexLayerCount_CantPaint.r);
 
   float NaN = makeNaN(1);
 

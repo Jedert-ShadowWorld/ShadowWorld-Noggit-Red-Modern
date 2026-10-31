@@ -27,6 +27,8 @@ uniform uint fixtureShader;
 uniform uint fixtureAlphaMode;
 uniform vec4 fixtureWeights;
 uniform float fixtureBlendAlpha;
+uniform float fixtureLightingAlpha;
+uniform vec3 fixtureNormal;
 out vec3 f_position;
 out vec3 f_normal;
 out vec2 f_texcoord;
@@ -51,7 +53,7 @@ void main()
   vec2 positions[3] = vec2[3](vec2(-1.,-1.), vec2(3.,-1.), vec2(-1.,3.));
   gl_Position = vec4(positions[gl_VertexID], 0., 1.);
   f_position = vec3(0.);
-  f_normal = vec3(0.,0.,1.);
+  f_normal = fixtureNormal;
   f_texcoord = vec2(.5);
   f_texcoord_2 = vec2(.5);
   f_texcoord_3 = vec2(.5);
@@ -59,7 +61,7 @@ void main()
   f_env_texcoord = vec2(.5);
   f_material_weights = fixtureWeights;
   for (uint i = 0u; i < 7u; ++i) extra_textures[i] = uvec2(i + 2u, 0u);
-  f_vertex_color = vec4(1., 1., 1., fixtureBlendAlpha);
+  f_vertex_color = vec4(1., 1., 1., fixtureLightingAlpha);
   f_material_blend_alpha = fixtureBlendAlpha;
   flags = fixtureFlags;
   shader = fixtureShader;
@@ -163,6 +165,8 @@ int main(int argc, char** argv)
     f->glDeleteShader(pixel);
     f->glUseProgram(program);
     f->glUniform1f(f->glGetUniformLocation(program, "fixtureBlendAlpha"), 1.f);
+    f->glUniform1f(f->glGetUniformLocation(program, "fixtureLightingAlpha"), 1.f);
+    f->glUniform3f(f->glGetUniformLocation(program, "fixtureNormal"), 0.f, 0.f, 1.f);
 
     GLuint vao = 0, lightingBuffer = 0, framebuffer = 0, color = 0;
     std::array<GLuint, 9> textures{};
@@ -180,6 +184,12 @@ int main(int argc, char** argv)
     f->glUniform1f(f->glGetUniformLocation(program, "sidn_intensity"), 0.f);
     f->glUniform3f(f->glGetUniformLocation(program, "camera"), 0.f, 0.f, 1.f);
     f->glUniform3f(f->glGetUniformLocation(program, "ambient_color"), 0.f, 0.f, 0.f);
+    auto indoorAmbient = [&](std::array<float, 3> sky, std::array<float, 3> horizon, std::array<float, 3> ground)
+    {
+      f->glUniform3fv(f->glGetUniformLocation(program, "ambient_color"), 1, sky.data());
+      f->glUniform3fv(f->glGetUniformLocation(program, "ambient_horizon_color"), 1, horizon.data());
+      f->glUniform3fv(f->glGetUniformLocation(program, "ambient_ground_color"), 1, ground.data());
+    };
 
     std::array<unsigned char, 4> const diffuse{64, 128, 192, 255}, darkLightmap{0, 0, 0, 255};
     std::array<std::array<unsigned char, 4>, 9> pixels{diffuse, darkLightmap,
@@ -237,6 +247,7 @@ int main(int argc, char** argv)
     };
     constexpr unsigned unlitUnfogged = 0x4u | 0x8u;
     constexpr unsigned retail = 0x40u;
+    auto absentTexture = [](unsigned slot) { return 1u << (8u + slot); };
     draw(21, unlitUnfogged | retail, diffuse);
     draw(21, unlitUnfogged, darkLightmap);
     draw(0, unlitUnfogged | retail, diffuse);
@@ -257,6 +268,12 @@ int main(int argc, char** argv)
     auto lowHeight = pixels[6]; lowHeight[3] = 0;
     f->glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, lowHeight.data());
     weights(0, .5f, .5f); draw(23, unlitUnfogged | retail, std::array<unsigned char, 4>{20, 180, 40, 255});
+    // Authored FDID 0 means no height modulation. A debug/fallback texture's
+    // alpha must not choose the other diffuse layer (the ship has zero height slots).
+    weights(0, .5f, .5f); draw(23, unlitUnfogged | retail | absentTexture(6),
+        std::array<unsigned char, 4>{100, 100, 40, 255});
+    weights(0, .5f, .5f); draw(23, unlitUnfogged | retail | absentTexture(6) | absentTexture(7),
+        std::array<unsigned char, 4>{100, 100, 40, 255});
     // Height alpha 0 must remain finite; MOC2 alpha must not darken unlit materials.
     for (unsigned i = 5; i < 9; ++i)
     {
@@ -271,7 +288,7 @@ int main(int argc, char** argv)
     {
       lighting.fill(0.f);
       for(unsigned channel=0;channel<3;++channel) {lighting[channel]=direct;lighting[4+channel]=ambient;}
-      lighting[13]=1.f; // Shader's world-light transform gives a +Z direction.
+      lighting[12]=1.f; // MCNR-space +X points toward model-world +Z after conversion.
       f->glBindBuffer(GL_UNIFORM_BUFFER,lightingBuffer);
       f->glBufferSubData(GL_UNIFORM_BUFFER,0,sizeof(lighting),lighting.data());
     };
@@ -287,10 +304,10 @@ int main(int argc, char** argv)
     weights(0,1,0,0);draw(23,retail|exteriorUnfogged|0x2u,std::array<unsigned char,4>{198,22,44,255});
     weights(0,1,0,1);draw(23,retail|exteriorUnfogged|0x2u,std::array<unsigned char,4>{198,22,44,255});
     // The same ambient-only rule applies to interior ambient_color.
-    f->glUniform3f(f->glGetUniformLocation(program,"ambient_color"),.5f,.5f,.5f);
+    indoorAmbient({.5f,.5f,.5f}, {.5f,.5f,.5f}, {.5f,.5f,.5f});
     weights(0,1,0,0);draw(23,retail|0x8u,std::array<unsigned char,4>{99,11,22,255});
     weights(0,1,0,1);draw(23,retail|0x8u,darkLightmap);
-    f->glUniform3f(f->glGetUniformLocation(program,"ambient_color"),0.f,0.f,0.f);
+    indoorAmbient({0.f,0.f,0.f}, {0.f,0.f,0.f}, {0.f,0.f,0.f});
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindTexture(GL_TEXTURE_2D_ARRAY,textures[0]);
     weights(0,1,0,0);draw(23,retail|exteriorUnfogged,std::array<unsigned char,4>{45,10,30,255});
@@ -298,6 +315,50 @@ int main(int argc, char** argv)
 
     f->glActiveTexture(GL_TEXTURE0);
     f->glBindTexture(GL_TEXTURE_2D_ARRAY, textures[0]);
+    // Directional interior ambient must follow the normal, rather than an
+    // exterior sun or a zero MOHD color. Non-Retail retains its single color.
+    indoorAmbient({.4f,.2f,.1f}, {.1f,.3f,.2f}, {.2f,.1f,.5f});
+    auto normal = [&](float x, float y, float z)
+    { f->glUniform3f(f->glGetUniformLocation(program, "fixtureNormal"), x, y, z); };
+    normal(0.f,1.f,0.f);
+    draw(0,retail|0x8u,std::array<unsigned char,4>{23,23,17,255});
+    normal(0.f,0.f,1.f);
+    draw(0,retail|0x8u,std::array<unsigned char,4>{7,42,42,255});
+    draw(0,0x8u,std::array<unsigned char,4>{23,23,17,255});
+    normal(0.f,-1.f,0.f);
+    draw(0,retail|0x8u,std::array<unsigned char,4>{12,12,86,255});
+    draw(0,retail|unlitUnfogged,diffuse);
+    normal(0.f,0.f,1.f);
+    indoorAmbient({0.f,0.f,0.f}, {0.f,0.f,0.f}, {0.f,0.f,0.f});
+    // MCNR stores world normals in the basis (-z,y,-x). Match its lighting dot
+    // product for the editor's no-directional-light vector and an oblique one.
+    for (std::array<float,3> direction : {std::array<float,3>{0,-1,0}, {-2,-3,1}})
+    {
+      float const length=std::sqrt(direction[0]*direction[0]+direction[1]*direction[1]+direction[2]*direction[2]);
+      for (auto& component : direction) component/=length;
+      for (std::array<float,3> faceNormal : {std::array<float,3>{0,1,0}, {0,-1,0}, {2,1,-3}})
+      {
+        float const normalLength=std::sqrt(faceNormal[0]*faceNormal[0]+faceNormal[1]*faceNormal[1]+faceNormal[2]*faceNormal[2]);
+        for (auto& component : faceNormal) component/=normalLength;
+        normal(faceNormal[0],faceNormal[1],faceNormal[2]);
+        lighting.fill(0.f);
+        for (unsigned channel=0;channel<3;++channel) {lighting[channel]=.6f;lighting[4+channel]=.1f;lighting[12+channel]=direction[channel];}
+        f->glBindBuffer(GL_UNIFORM_BUFFER,lightingBuffer);
+        f->glBufferSubData(GL_UNIFORM_BUFFER,0,sizeof(lighting),lighting.data());
+        for (bool modern : {true,false})
+        {
+          auto const light=modern ? direction : std::array<float,3>{-direction[0],direction[2],-direction[1]};
+          auto const lightingNormal=modern ? std::array<float,3>{-faceNormal[2],faceNormal[1],-faceNormal[0]} : faceNormal;
+          float const nDotL=std::max(-(lightingNormal[0]*light[0]+lightingNormal[1]*light[1]+lightingNormal[2]*light[2]),0.f);
+          float const expectedLight=.1f*(.9f+.2f*nDotL)+.6f*nDotL;
+          std::array<unsigned char,4> expected{0,0,0,255};
+          for (unsigned channel=0;channel<3;++channel) expected[channel]=static_cast<unsigned char>(std::lround(diffuse[channel]*expectedLight));
+          draw(0,exteriorUnfogged|(modern ? retail : 0u),expected);
+        }
+      }
+    }
+    normal(0.f,0.f,1.f);
+    setLighting(0.f,0.f);
     weights(0, 1, 0);
     draw(23, unlitUnfogged | retail | 0x80u, pixels[2]); // absent environment stays black
     auto blendAlpha = [&](float alpha)
@@ -312,18 +373,33 @@ int main(int argc, char** argv)
     blendAlpha(.5f);
     draw(7, unlitUnfogged | retail | hasMocv | 0x80u, std::array<unsigned char, 4>{32, 64, 96, 255});
     draw(7, unlitUnfogged | retail | hasMocv, std::array<unsigned char, 4>{55, 69, 111, 255});
-    // MOMT 13 is an opaque two-layer blend, including when layer 2 has zero alpha.
+    // MOMT 13 uses the material-blend MOCV, independently of lighting alpha.
+    // The ship's authored second-stream values 127/178 legitimately blend its
+    // second texture; copying wow.export's first-stream shortcut would hide that.
     f->glActiveTexture(GL_TEXTURE1);
     f->glBindTexture(GL_TEXTURE_2D_ARRAY, textures[1]);
     std::array<unsigned char, 4> const secondLayer{20, 40, 60, 0};
     f->glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, secondLayer.data());
     blendAlpha(0.f);
     draw(13, unlitUnfogged | retail | hasMocv, std::array<unsigned char, 4>{20, 40, 60, 255});
+    blendAlpha(127.f / 255.f);
+    draw(13, unlitUnfogged | retail | hasMocv, std::array<unsigned char, 4>{42, 84, 126, 255});
+    blendAlpha(178.f / 255.f);
+    draw(13, unlitUnfogged | retail | hasMocv, std::array<unsigned char, 4>{51, 101, 152, 255});
+    auto lightingAlpha = [&](float alpha)
+    { f->glUniform1f(f->glGetUniformLocation(program, "fixtureLightingAlpha"), alpha); };
+    lightingAlpha(0.f);
+    draw(13, unlitUnfogged | retail | hasMocv, std::array<unsigned char, 4>{51, 101, 152, 255});
+    lightingAlpha(.5f);
     blendAlpha(.5f);
     draw(13, unlitUnfogged | retail | hasMocv, std::array<unsigned char, 4>{42, 84, 126, 255});
+    lightingAlpha(1.f);
     blendAlpha(1.f);
     draw(13, unlitUnfogged | retail | hasMocv, diffuse);
+    lightingAlpha(0.f);
+    draw(13, unlitUnfogged | retail, diffuse); // no lighting stream is required
     draw(13, unlitUnfogged | hasMocv, diffuse); // legacy behavior is unchanged
+    lightingAlpha(1.f);
     // MOMT 9 emissive must remain visible with both ambient and diffuse at zero.
     // No MOCV lighting contribution: the default material blend alpha is one.
     std::array<unsigned char, 4> const emissiveLayer{80, 120, 160, 128};
@@ -350,6 +426,37 @@ int main(int argc, char** argv)
       draw(test.shader,retail|unlitUnfogged,test.expected);
       draw(test.shader,unlitUnfogged,std::array<unsigned char,4>{64,128,192,255});
     }
+    // Poison absent bindings with bright green to detect placeholder sampling.
+    std::array<unsigned char, 4> const greenPlaceholder{128, 255, 0, 255};
+    f->glActiveTexture(GL_TEXTURE1);
+    f->glTexSubImage3D(GL_TEXTURE_2D_ARRAY,0,0,0,0,1,1,1,GL_RGBA,GL_UNSIGNED_BYTE,greenPlaceholder.data());
+    // The ship's MOMT 7 mast and building MOMT 15 have an authored zero second
+    // diffuse FDID. Transparent black retains their distinct blend equations.
+    blendAlpha(.5f);
+    draw(7,retail|unlitUnfogged|0x80u|absentTexture(1),std::array<unsigned char,4>{32,64,96,128});
+    draw(13,retail|unlitUnfogged|absentTexture(1),std::array<unsigned char,4>{32,64,96,255});
+    draw(15,retail|unlitUnfogged|absentTexture(1),std::array<unsigned char,4>{32,64,96,128});
+    draw(6,retail|unlitUnfogged|absentTexture(1),compositionPixels[0]);
+    // Without an absence flag a present green texture must remain observable.
+    draw(7,retail|unlitUnfogged|0x80u,std::array<unsigned char,4>{96,192,96,128});
+    draw(15,unlitUnfogged|absentTexture(1),std::array<unsigned char,4>{64,128,192,255});
+    f->glTexSubImage3D(GL_TEXTURE_2D_ARRAY,0,0,0,0,1,1,1,GL_RGBA,GL_UNSIGNED_BYTE,compositionPixels[1].data());
+    blendAlpha(.25f);
+    // Retail building 5947466 uses MOMT 12 with a zero third (emissive) FDID.
+    // Absence removes emission, retaining diffuse and the valid environment.
+    f->glActiveTexture(GL_TEXTURE2);
+    f->glTexSubImage3D(GL_TEXTURE_2D_ARRAY,0,0,0,0,1,1,1,GL_RGBA,GL_UNSIGNED_BYTE,greenPlaceholder.data());
+    draw(12,retail|unlitUnfogged|absentTexture(2),std::array<unsigned char,4>{76,140,201,128});
+    draw(12,retail|unlitUnfogged|absentTexture(1)|absentTexture(2),compositionPixels[0]);
+    draw(12,unlitUnfogged|absentTexture(1)|absentTexture(2),std::array<unsigned char,4>{64,128,192,255});
+    f->glTexSubImage3D(GL_TEXTURE_2D_ARRAY,0,0,0,0,1,1,1,GL_RGBA,GL_UNSIGNED_BYTE,compositionPixels[2].data());
+    draw(12,retail|unlitUnfogged|absentTexture(1),std::array<unsigned char,4>{70,158,207,128});
+    draw(12,retail|unlitUnfogged|0x80u,std::array<unsigned char,4>{70,158,207,128});
+    draw(9,retail|unlitUnfogged|absentTexture(1),compositionPixels[0]);
+    draw(3,retail|unlitUnfogged|absentTexture(1),std::array<unsigned char,4>{64,128,192,255});
+    draw(5,retail|unlitUnfogged|absentTexture(1),std::array<unsigned char,4>{64,128,192,255});
+    draw(3,retail|unlitUnfogged|0x80u,std::array<unsigned char,4>{64,128,192,255});
+    draw(5,retail|unlitUnfogged|0x80u,std::array<unsigned char,4>{64,128,192,255});
     draw(3,retail|unlitUnfogged,std::array<unsigned char,4>{112,152,204,255});
     f->glUniform1ui(f->glGetUniformLocation(program,"fixtureAlphaMode"),1u);
     draw(3,retail|unlitUnfogged,std::array<unsigned char,4>{112,152,204,255}); // Env alpha is reflection strength, not opacity.

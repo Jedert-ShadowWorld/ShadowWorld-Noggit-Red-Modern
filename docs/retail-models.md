@@ -32,6 +32,28 @@ material blend alpha are kept separate, including groups with a blend-only
 color stream. Missing environment textures are handled explicitly. Supported
 compositions: 7, 8, 9, 11, 12, 13, 15, 17, 18, 19, 20 and 23.
 
+Authored zero FileDataIDs are retained separately from runtime texture indices.
+Absent optional environment, emissive and second texture stages contribute
+transparent black; absent shader 23 height stages use unit height. This
+prevents the diagnostic texture from appearing as emission, tinting a layered
+material or changing layer weights. Nonzero references that fail to load and
+missing primary diffuse textures remain visible for diagnosis.
+Material blend alpha remains separate from the first
+MOCV stream used for lighting.
+
+Retail vertex lighting uses the byte-domain alpha intensity and precomputed
+light gain, while preserving separate material blend alpha. Indoor ambient
+light reads MAVG records for the instance's active doodad sets, including
+separate sky, horizon and ground colors when supplied. If MAVG is absent,
+the first MAVD record is used, then the original MOHD color. These changes
+are preview-only and do not rewrite WMO files or ADTs.
+
+Retail M2 and WMO lighting convert the shared light direction from terrain's
+MCNR basis into the models' world-normal basis. Upward and sloped surfaces now
+receive the same directional-light intensity as matching terrain normals.
+This fixes a lighting discontinuity at model/terrain joins; texture projection
+and authored material layers are unchanged.
+
 Retail M2 keeps authored batches instead of applying the legacy layer reducer.
 Supported high-bit shader IDs are 0-17, 21, 23, 24, 26-28, 30 and 32-34, with up
 to three texture stages, per-stage UV animation, emission and edge fade where
@@ -119,13 +141,22 @@ exports ignore the presets. Texture mip bias does not free allocated textures,
 and preview quality does not reduce the CPU memory needed for full asset
 loading and validation.
 
+Retail terrain preview retains each cell of the authored 8x8 hole mask.
+The editor's 4x4 hole tools and undo keep their existing semantics; untouched
+blocks retain their fine mask, matching the save codec. Ground-effect doodads
+use the same exact mask. Distant draw batches containing holes retain the full
+terrain mesh because its coarse mesh cannot represent individual fine cells.
+Hole serialization is unchanged; this corrects oversized viewport cutouts on
+otherwise valid maps. Other client previews keep their original hole handling.
+
 ## Limitations and validation
 
 WMO modes 10/14 and parallax mode 22 use diffuse fallbacks. Exact specular,
 material clamp flags, global transparent-object sorting and shader 23 ambient
 occlusion are not fully reproduced. Terrain projection is a preview
 approximation. Particle and ribbon rendering uses the existing implementation,
-not modern effects.
+not modern effects. Modern WMO local-light and spatial ambient-volume behavior
+is not fully reproduced by the global indoor ambient support.
 
 The [standalone regressions](../tests/README.md) cover delayed texture
 readiness, context restoration, unused and failed texture slots, material
@@ -144,7 +175,23 @@ Map serialization and UID handling are documented in
 [derived map results](derived-map-results.md) and [UID repair](uid-repair.md).
 Model and texture asset files are not rewritten.
 
+The object editor's clipboard display wraps long filenames without truncating
+their basenames and exposes the complete text in a tooltip. FileKey values,
+FileDataID fallback and copy/paste placement behavior are unchanged. This UI
+layout correction applies to all clients.
+
 ## Reference and attribution
 
 Format and material handling use wow.export as a source reference. Adapted parts
 retain its [MIT license notice](third-party/wow.export-MIT.txt).
+Optional texture stages were checked against its
+[WMO shader](https://github.com/Kruithne/wow.export/blob/c2fd7bde36a712be78a5da896c995b84fbfa2545/src/shaders/wmo.fragment.shader).
+MAVG layout, ambient selection and MOCV stream roles were independently
+checked against
+[WebWowViewerCpp](https://github.com/Deamon87/WebWowViewerCpp/blob/1a8cccbeffc46231c6497e6b3f5bfbf3507d8071/wowViewerLib/src/engine/objects/wmo/wmoObject.cpp#L1923).
+The transparent-black fallback for absent second textures follows its
+[null texture binding](https://github.com/Deamon87/WebWowViewerCpp/blob/1a8cccbeffc46231c6497e6b3f5bfbf3507d8071/wowViewerLib/src/gapi/vulkan/descriptorSets/GDescriptorSet.cpp#L77).
+The wow.export standalone model preview uses fixed lighting and disables
+vertex lighting; its brightness is not a reference for the full game scene.
+Its shader 7 preview also mixes the first texture with itself; Noggit retains
+the authored second diffuse layer, so dark source layers remain dark.

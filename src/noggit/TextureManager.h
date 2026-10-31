@@ -10,6 +10,8 @@
 
 #include <QtGui/QPixmap>
 #include <optional>
+#include <mutex>
+#include <cstdint>
 #include <map>
 #include <unordered_map>
 #include <string>
@@ -52,6 +54,7 @@ struct BLPHeader;
 struct blp_texture : public AsyncObject
 {
   blp_texture (BlizzardArchive::Listfile::FileKey const& filename, Noggit::NoggitRenderContext context);
+  ~blp_texture() override;
   void finishLoading() override;
   virtual void waitForChildrenLoaded() override {};
 
@@ -101,14 +104,26 @@ private:
   std::optional<GLint> _compression_format;
   int _array_index = -1;
   GLuint _texture_array = 0;
+  std::uint64_t _texture_generation = 0;
 
   std::unique_ptr<blp_texture> heightMap;
 };
 
+struct TexArrayAllocation
+{
+  GLuint array = 0;
+  unsigned layer = 0;
+};
+
+struct TexArrayPage
+{
+  GLuint array = 0;
+  std::vector<bool> used;
+};
+
 struct TexArrayParams
 {
-  std::vector<GLuint> arrays;
-  int n_used = 0;
+  std::vector<TexArrayPage> pages;
 };
 
 class TextureManager
@@ -116,11 +131,21 @@ class TextureManager
 public:
   static void report();
   static void unload_all(Noggit::NoggitRenderContext context);
-  static TexArrayParams& get_tex_array(int width, int height, int mip_level, Noggit::NoggitRenderContext context);
-  static TexArrayParams& get_tex_array(GLint compression, int width, int height, int mip_level, std::map<int, std::vector<uint8_t>>& comp_data, Noggit::NoggitRenderContext context);
+  static TexArrayAllocation get_tex_array(int width, int height, int mip_level, Noggit::NoggitRenderContext context);
+  static TexArrayAllocation get_tex_array(GLint compression, int width, int height, int mip_level, std::map<int, std::vector<uint8_t>> const& comp_data, Noggit::NoggitRenderContext context);
 
 private:
   friend struct scoped_blp_texture_reference;
+  friend struct blp_texture;
+  static void retire_texture(Noggit::NoggitRenderContext context, GLuint texture, unsigned layer, std::uint64_t generation);
+  static TexArrayAllocation allocate_texture_array(GLint compression, int width, int height,
+      std::vector<std::size_t> const& mip_sizes, Noggit::NoggitRenderContext context);
+  static std::uint64_t texture_generation(Noggit::NoggitRenderContext context);
+  // Called only while the owning render context is current.
+  static void release_retired_textures(Noggit::NoggitRenderContext context);
+  static std::mutex _retired_mutex;
+  static std::array<std::uint64_t, Noggit::NoggitRenderContext::count> _texture_generations;
+  static std::array<std::vector<TexArrayAllocation>, Noggit::NoggitRenderContext::count> _retired_arrays;
   static Noggit::AsyncObjectMultimap<blp_texture> _;
   static std::array<std::unordered_map<std::tuple<GLint, int, int, int>, TexArrayParams, tuple_hash>, Noggit::NoggitRenderContext::count> _tex_arrays;
 

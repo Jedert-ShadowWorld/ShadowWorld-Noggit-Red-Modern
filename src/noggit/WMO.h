@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <noggit/formats/WmoAmbient.hpp>
 #include <vector>
 
 struct scoped_blp_texture_reference;
@@ -214,8 +215,8 @@ public:
   ::glm::vec3 center;
 
 private:
-  void load_mocv(BlizzardArchive::ClientFile& f, uint32_t size);
-  void fix_vertex_color_alpha();
+  void load_mocv(BlizzardArchive::ClientFile& f, uint32_t size, bool retail);
+  void fix_vertex_color_alpha(bool retail);
 
   WMO *wmo;
   wmo_group_header header;
@@ -327,6 +328,8 @@ public:
   std::vector<WMOMaterial> materials;
   // Runtime texture indices, kept separate from the 64-byte MOMT disk layout.
   std::vector<std::array<std::uint32_t, 9>> material_textures;
+  std::vector<std::uint16_t> material_missing_textures;
+  std::vector<Noggit::Format::WmoAmbientVolume> ambient_volumes;
   glm::vec3 extents[2]; // local extents, not axis aligned
   std::vector<scoped_blp_texture_reference> textures;
   std::vector<std::string> models;

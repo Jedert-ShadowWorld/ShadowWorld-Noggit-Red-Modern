@@ -1,24 +1,46 @@
 # Retail derived map results
 
-For Retail projects, Noggit regenerates derived map data after ADT saves:
-diffuse and normal map textures, terrain LOD heights and holes, liquid LOD and
-WDL heights. Rendering uses Noggit's terrain renderer; files are written by the
-ADT writer. Other clients keep their existing behavior.
+For Retail projects, Noggit tracks derived map data independently of source
+saves: diffuse and normal map textures, terrain LOD heights and holes, liquid
+LOD, WDL heights and terrain occlusion. Rendering uses Noggit's terrain renderer;
+files are written by the ADT writer. Other clients keep their existing behavior.
 
 ## Saving a map
 
 **Save current tile**, **Save changed tiles** and **Save all tiles** save the
-ADTs, then generate both map textures for saved tiles whose LOD is ready. The map is
-reported as saved, and the undo history cleared, after generation finishes. A
-texture or LOD failure reports an incomplete save and keeps the tiles pending; the
-ADTs may already be written. Tiles with unsaved changes must be saved before
-their textures are generated.
+ADTs and dirty database files before any optional generation. By default,
+generated LOD, map textures, WDL and occlusion files are retained and their
+pending flags persist. Placement references and required OBJ1 placement metadata
+are still saved. The source save is reported as complete and the undo history
+cleared; intentionally deferred results are not a failed save.
+
+**Settings > Retail > Update LOD, map textures and heightmap after saving**
+enables automatic generation (off by default, key
+`retail/generate_derived_on_save`). It schedules only the saved tiles on the
+existing terrain export queue, after source saving succeeds. It does not expand
+the scope to all project tiles or other pending tiles. The normal scene pauses
+while the queue runs. Failure or cancellation leaves results pending and does not
+undo the completed source save or skip database writes. A new save must wait for
+the active export to finish or be cancelled.
+
+With automatic generation disabled, use **Update project LOD + map textures +
+heightmap** before testing or publishing the map. Tiles with unsaved changes
+must be saved before their derived results are generated.
 
 **Save all tiles** covers loaded tiles. A regular save does not process pending
 tiles outside the saved set; use the Minimap Editor controls for those.
 
-Bulk/import code that writes a tile directly marks its results as pending
-without rendering. Saving the tile again or an explicit export processes them.
+Bulk/import code that writes a tile directly retains its existing LOD-rebuild
+policy and marks other results as pending without rendering. An explicit export
+processes them. The editor's ordinary source saves pass a deferred policy to the
+codec rather than reading UI settings inside the file writer.
+
+Before the first deferred save, a coherent source ROOT/LOD pair is staged in
+`.noggit/lod-reference/` if no retained reference files exist. This preserves a
+fully custom map's baseline even when the client archives contain no original.
+It validates the pair without regenerating LOD. Existing reference files are
+not replaced by this capture; an incoherent pair leaves generation pending and
+can still be repaired using a reference folder.
 
 The Minimap Editor offers **Both map textures: selected tiles** and
 **Both map textures: changed / pending tiles** for Retail projects. Both
@@ -32,6 +54,48 @@ require saved terrain.
 Normal maps encode terrain orientation. Objects and water are excluded from
 both images. Map textures do not update the minimap MD5 lookup. Files under
 `textures/maptextures/` are neither migrated nor deleted.
+
+Retail map-texture rendering prepares only the target tile and the neighbour
+needed by the slightly tilted projection. Both must have ready terrain textures
+before the image is accepted; unrelated loaded tiles are not uploaded or drawn
+for each image. Normal viewport rendering and ordinary minimap rendering,
+including legacy clients, retain their existing tile selection.
+
+The captured RGBA image is passed directly to the existing BLP encoder, avoiding
+an intermediate PNG encode/decode. Synthetic fixtures compare complete BLP bytes
+against the PNG path, including alpha, mipmaps and padded image rows. This checks
+encoding equivalence, not total export time or game-client appearance.
+
+Terrain preview and map-texture export use the same layer metadata. Retail
+layers above the first four now retain their MTXP UV scale and world phase
+when modern features are enabled; other clients keep their previous UV path.
+Animation metadata is
+refreshed when layers move or disappear, and disabled animation cannot read
+undefined direction data. These changes do not rewrite the source textures.
+
+Retail terrain with modern features enabled uses one height-based blend across
+all active layers, up to 16.
+The MCAL weights, MHID alpha and MTXP scale/offset participate in the same
+maximum and normalization calculation. Moving a material between the fourth
+and fifth slots no longer changes its blending rule. The calculation was
+cross-checked against the local wow.export 0.2.19
+[ADT shader](https://github.com/Kruithne/wow.export/blob/c2fd7bde36a712be78a5da896c995b84fbfa2545/src/shaders/adt.fragment.shader).
+Noggit retains its neutral-height and zero-total fallbacks and legacy alpha path.
+The renderer selects this behavior using the actual client version, independently
+of the shared `modern_features` setting. Non-Retail clients with that setting
+enabled keep the previous four-layer height blend followed by ordinary alpha
+blending for additional layers; their additional height maps are not uploaded.
+General resource-lifetime and binding-safety fixes remain shared.
+
+Retail textures share array pages only when compression, dimensions and mip
+counts match; no resizing or recompression is involved. Pages hold at most 16
+slices, bounded by a 16 MiB mip-chain budget unless a single texture is already
+larger. Released slices can be reused without deleting live neighbours. Legacy
+clients retain single-slice allocations, including after switching away from
+a Retail project while old array pages still exist. The terrain draw still supports 13
+distinct array bindings per chunk, with three other fragment samplers reserved
+for alpha, shadows and the brush. A chunk exceeding that capacity is reported
+as unsupported and is not exported with a partial texture mapping.
 
 Explicit paired export renders one texture pair per frame and can be cancelled
 between jobs. Both images are first rendered into a private temporary directory
@@ -63,6 +127,10 @@ ROOT/TEX0/OBJ0 are not rewritten; OBJ1 water heights may be updated. Progress
 and cancellation are shown in the status bar; failed and cancelled work stays
 pending. Rendering runs on the render thread.
 
+The log records the start and finish of each terrain export job, including the
+tile, LOD/map-texture/WDL stage and elapsed time. These markers identify the last
+active stage in an interrupted session without logging every terrain chunk.
+
 During the Retail queue, normal scene rendering is paused. The frame timer
 continues advancing jobs, and OpenGL still renders exported textures into an
 offscreen framebuffer. The previous widget update behavior is restored on
@@ -78,10 +146,9 @@ A successful export does not validate the installed patch.
 diffuse=1, normal=2, LOD=4, WDL=8. All four are marked before each Retail tile
 save, including direct bulk/import saves and object-only changes. Explicit
 selected export marks both textures. WDL is cleared only after the WDL file is
-written and the referenced terrain occlusion table is updated; the next save
-writes WDL heights for pending tiles whose LOD is ready,
-reloading them from the saved ADTs. Tiles with unsaved edits or unsuccessful
-LOD updates stay pending.
+written and the referenced terrain occlusion table is updated by the export
+queue. A source save alone does not retry pending derived work. Tiles with
+unsaved edits or unsuccessful LOD updates stay pending.
 
 Flag 16 is provenance, not pending work: the tile's only project files are
 OBJ0/OBJ1 written by a project-scope UID repair of a neighbour. It is recorded
@@ -89,7 +156,7 @@ before those files are written and removed on rollback or the next tile save.
 
 State writes use a lock and atomic replacement. A failed state write aborts the
 tile save. Corrupt or unknown state is reported and left unchanged. Paired
-export and automatic save clear both texture flags only after both files are
+export and automatic queued generation clear both texture flags only after both files are
 written; single-output controls clear only their own flag. A committed LOD
 update clears only LOD. Flags persist across restarts and are independent of
 the unsaved-ADT flag. External file changes are not detected.
@@ -125,14 +192,16 @@ most 16 refinement passes and a triangle budget of
 LOD pending. These are sample-error bounds, not a continuous-surface or
 game-client visual guarantee.
 
-Explicit **Update LOD + map textures + heightmap** checks this error even on
-already height-updated LOD, so earlier sparse results can be repaired. Ordinary
-saves keep unchanged authored terrain topology. Repeated successful rebuilds
+The terrain export queue checks this error even on already height-updated LOD,
+so earlier sparse results can be repaired. Ordinary source saves keep the
+existing LOD unchanged. Repeated successful rebuilds
 do not continue adding triangles. Hole repair can increase the number of
 triangles locally; each level remains limited to 65,536 terrain triangles.
 
-Updated LOD is staged with the ROOT/TEX0/OBJ parts. The split-ADT writer
-attempts rollback on commit failure; the tile save is not crash-atomic.
+Explicit and queued generation stage LOD with its reference and updated OBJ1
+water data. Direct callers that request an immediate rebuild stage it with the
+ROOT/TEX0/OBJ parts. The split-ADT writer attempts rollback on commit failure;
+these multi-file writes are not crash-atomic.
 
 Liquid LOD (MLLN/MLLI/MLLV meshes, MLLD depth and visibility) is rebuilt from
 MH2O, including added, removed, raised and partial layers. Flat water is merged

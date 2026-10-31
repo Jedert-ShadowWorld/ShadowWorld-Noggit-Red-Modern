@@ -5,7 +5,6 @@
 #include <noggit/Tool.hpp>
 #include <noggit/TileIndex.hpp>
 #include <noggit/MinimapRenderSettings.hpp>
-#include <QStringList>
 #include <QOpenGLWidget>
 #include <map>
 
@@ -53,8 +52,9 @@ namespace Noggit
 
         void saveSettings() override;
 
-        // Call after a successful ADT save. Failed tiles remain pending.
-        QStringList saveRetailMapTextures(std::vector<TileIndex> const& savedTiles);
+        // Schedule only the successfully saved set using the existing export queue.
+        // Source saves are already complete; failures/cancellation remain pending.
+        bool queueSavedTerrain(std::vector<TileIndex> const& savedTiles);
 
     private:
         Ui::MinimapCreator* _minimapTool = nullptr;
@@ -68,7 +68,7 @@ namespace Noggit
         unsigned _failed = 0;
         unsigned _blocked = 0;
         std::map<TileIndex, std::string> _terrain_errors;
-        void beginSaving();
+        bool beginSaving(std::vector<TileIndex> const* savedTiles = nullptr);
         void writeMapTexturePair(TileIndex const& tile);
         bool preRenderLegacy();
         void finishSavingLegacy(QProgressBar* progress, QPushButton* cancel_btn, World* world, MinimapRenderSettings* settings);

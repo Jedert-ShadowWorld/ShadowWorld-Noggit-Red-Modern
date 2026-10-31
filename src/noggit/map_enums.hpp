@@ -17,3 +17,11 @@ enum class model_update
   remove,
   none
 };
+
+// Source saves can defer expensive Retail terrain outputs to the export queue.
+// Other client formats retain their existing save behavior.
+enum class derived_save_policy
+{
+  rebuild,
+  defer
+};

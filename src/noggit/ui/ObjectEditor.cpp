@@ -23,6 +23,7 @@
 #include <noggit/World.h>
 
 #include <QButtonGroup>
+#include <QAbstractTextDocumentLayout>
 #include <QCheckBox>
 #include <QDockWidget>
 #include <QFormLayout>
@@ -34,6 +35,8 @@
 #include <QToolButton>
 #include <QLineEdit>
 #include <QSettings>
+#include <QTextEdit>
+#include <QtMath>
 #include <QApplication>
 #include <QtWidgets/qcombobox.h>
 #include <QtWidgets/QDoubleSpinBox>
@@ -161,9 +164,23 @@ namespace Noggit
       // clipboard_box->setWindowIcon(Noggit::Ui::FontAwesomeIcon(Noggit::Ui::FontAwesome::clipboard));
       auto clipboard_layout = new QVBoxLayout(clipboard_box);
 
-      _filename = new QLabel(this);
-      _filename->setWordWrap(true);
-      _filename->setText("Empty (0 objects copied)");
+      _filename = new QTextEdit(this);
+      _filename->setReadOnly(true);
+      _filename->setAcceptRichText(false);
+      _filename->setFrameShape(QFrame::NoFrame);
+      _filename->setStyleSheet("QTextEdit { background: transparent; }");
+      _filename->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+      _filename->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+      _filename->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+      _filename->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+      // QLabel's word wrapping clips long, unbroken Retail basenames in the tool panel.
+      // Let the document wrap anywhere and grow with the actual panel width.
+      connect(_filename->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged,
+        this, [this](QSizeF const& size)
+        {
+          _filename->setFixedHeight(qCeil(size.height()) + 2 * _filename->frameWidth());
+        });
+      _filename->setPlainText("Empty (0 objects copied)");
       layout->addWidget(clipboard_box);
 
       clipboard_layout->addWidget(_filename);
@@ -913,7 +930,8 @@ namespace Noggit
       
       if (_model_instance_created.empty())
       {
-        _filename->setText("Empty (0 objects copied)");
+        _filename->setPlainText("Empty (0 objects copied)");
+        _filename->setToolTip("");
         return;
       }
 
@@ -937,7 +955,8 @@ namespace Noggit
         ss << _model_instance_created.size() << " objects selected";
       }
 
-      _filename->setText(ss.str().c_str());
+      _filename->setPlainText(ss.str().c_str());
+      _filename->setToolTip(ss.str().c_str());
     }
 
     void object_editor::copy(std::string const& filename)

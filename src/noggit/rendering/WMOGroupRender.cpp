@@ -594,8 +594,11 @@ void WMOGroupRender::initRenderBatches()
     auto const material_to_use = Noggit::Format::wmo_material_index(
         batch, modern_wmo, _wmo_group->wmo->materials.size());
     WMOMaterial const& mat (_wmo_group->wmo->materials[material_to_use]);
+    if (retail)
+      flags |= std::uint32_t(_wmo_group->wmo->material_missing_textures[material_to_use]) << 8;
 
-    if (retail && ((mat.shader == 23 && mat.texture_offset_1 == 0) ||
+    if (retail && (((mat.shader == 3 || mat.shader == 5 || mat.shader == 12) && mat.texture_offset_2 == 0) ||
+        (mat.shader == 23 && mat.texture_offset_1 == 0) ||
         (mat.shader == 7 && mat.texture_offset_3 == 0)))
       flags |= WMORenderBatchFlags::eWMOBatch_NoEnvironment;
 

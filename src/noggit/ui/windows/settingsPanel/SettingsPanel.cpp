@@ -14,6 +14,7 @@
 #include <noggit/application/NoggitApplication.hpp>
 #include <QtCore/QSettings>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QPushButton>
 
@@ -79,8 +80,16 @@ namespace Noggit
           "Exports retain full detail."), previewTab);
       explanation->setWordWrap(true);
       previewLayout->addWidget(explanation);
+      _retail_generate_derived_on_save = new QCheckBox(
+          tr("Update LOD, map textures and heightmap after saving"), previewTab);
+      _retail_generate_derived_on_save->setToolTip(tr(
+          "Retail only. Source edits are saved first. When enabled, saved tiles are then processed "
+          "by the terrain export queue while scene rendering is paused. When disabled, use "
+          "Update project LOD + map textures + heightmap before testing or publishing the map. "
+          "Existing generated files are kept until that update succeeds."));
+      previewLayout->addWidget(_retail_generate_derived_on_save);
       previewLayout->addStretch();
-      ui->tabWidget->addTab(previewTab, tr("Retail preview"));
+      ui->tabWidget->addTab(previewTab, tr("Retail"));
       setWindowTitle("Settings");
 
       // dev QOL, selecting another tab when editing the UI file makes it the default
@@ -327,6 +336,7 @@ namespace Noggit
       _retail_preview_animation->setCurrentIndex(qBound(0, _settings->value("retail/model_preview_animation", 0).toInt(), 2));
       _retail_preview_lod->setCurrentIndex(qBound(0, _settings->value("retail/model_preview_lod", 0).toInt(), 3));
       _retail_preview_decals->setCurrentIndex(qBound(0, _settings->value("retail/model_preview_decals", 0).toInt(), 2));
+      _retail_generate_derived_on_save->setChecked(_settings->value("retail/generate_derived_on_save", false).toBool());
       update_retail_preview_description();
     }
 
@@ -434,6 +444,7 @@ namespace Noggit
         _settings->setValue("retail/model_preview_animation", _retail_preview_animation->currentIndex());
         _settings->setValue("retail/model_preview_lod", _retail_preview_lod->currentIndex());
         _settings->setValue("retail/model_preview_decals", _retail_preview_decals->currentIndex());
+        _settings->setValue("retail/generate_derived_on_save", _retail_generate_derived_on_save->isChecked());
       }
       _settings->setValue("project/import_file", ui->importPathField->text());
       _settings->setValue("project/wmv_log_file", ui->wmvLogPathField->text());

@@ -50,6 +50,7 @@ namespace Noggit::Rendering
     eWMOBatch_RetailMaterials = 0x40,
     eWMOBatch_NoEnvironment = 0x80
   };
+  // Retail flags bits 8..16 indicate absent on-disk texture slots 0..8.
 
   struct WMOCombinedDrawCall
   {

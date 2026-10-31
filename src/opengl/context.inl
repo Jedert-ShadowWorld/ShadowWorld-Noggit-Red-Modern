@@ -307,6 +307,13 @@ void OpenGL::context::bindTexture (GLenum target, GLuint texture)
 #endif
   return _current_context->functions()->glBindTexture (target, texture);
 }
+GLboolean OpenGL::context::isTexture (GLuint texture)
+{
+#ifndef NOGGIT_DO_NOT_CHECK_FOR_OPENGL_ERRORS
+  verify_context_and_check_for_gl_errors const _ (_current_context, NOGGIT_CURRENT_FUNCTION);
+#endif
+  return _current_context->functions()->glIsTexture (texture);
+}
 void OpenGL::context::texImage2D (GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLvoid const* data)
 {
 #ifndef NOGGIT_DO_NOT_CHECK_FOR_OPENGL_ERRORS

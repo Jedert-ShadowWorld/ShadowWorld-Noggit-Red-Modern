@@ -5,6 +5,8 @@
 #include <noggit/ActionManager.hpp>
 #include <noggit/Action.hpp>
 #include <noggit/TileIndex.hpp>
+#include <noggit/MapTile.h>
+#include <stdexcept>
 
 namespace Noggit
 {
@@ -195,6 +197,60 @@ namespace Noggit
 
   void world_model_instances_storage::delete_instance(std::uint32_t uid, bool action)
   {
+    // Pending additions may attach a streamed tile and acquire this storage's
+    // mutex. Drain them before locking; the instance remains owned by storage
+    // until the synchronous removal below has finished.
+    _world->wait_for_all_tile_updates();
+    std::vector<TileIndex> fallback_tiles;
+    {
+      std::lock_guard<std::mutex> lock(_mutex);
+      if (auto instance = get_instance(uid, false))
+      {
+        auto* object = std::get<selected_object_type>(*instance);
+        if (object->getTiles().empty())
+        {
+          // Retain the old extent-based fallback for an unattached instance.
+          // Snapshot indices only; do not keep SceneObject pointers across
+          // loading, which can attach new placements and modify storage.
+          auto* model = object->instance_model();
+          model->wait_until_loaded();
+          if (model->loading_failed())
+          {
+            LogError << "Cannot delete unattached instance " << uid << ": its model failed to load." << std::endl;
+            return;
+          }
+          auto const& extents = object->getExtents();
+          TileIndex const start(extents[0]), end(extents[1]);
+          if (!start.is_valid() || !end.is_valid() || start.x > end.x || start.z > end.z)
+          {
+            LogError << "Cannot delete unattached instance " << uid << ": invalid tile bounds." << std::endl;
+            return;
+          }
+          for (std::size_t z = start.z; z <= end.z; ++z)
+            for (std::size_t x = start.x; x <= end.x; ++x)
+              fallback_tiles.emplace_back(x, z);
+        }
+      }
+    }
+    try
+    {
+      for (auto const& index : fallback_tiles)
+      {
+        if (!_world->mapIndex.hasTile(index)) continue;
+        auto* tile = _world->mapIndex.loadTile(index);
+        if (!tile) throw std::runtime_error("Extent tile could not be loaded");
+        tile->wait_until_loaded();
+        if (tile->loading_failed() || !tile->finishedLoading())
+          throw std::runtime_error("Extent tile could not be attached");
+        tile->changed = true;
+      }
+      if (!fallback_tiles.empty()) _world->wait_for_all_tile_updates();
+    }
+    catch (std::exception const& error)
+    {
+      LogError << "Cannot delete unattached instance " << uid << ": " << error.what() << std::endl;
+      return;
+    }
     std::unique_lock<std::mutex> const lock (_mutex);
 
     if (auto instance = get_instance(uid, false))

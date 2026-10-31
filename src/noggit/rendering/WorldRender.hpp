@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <memory>
+#include <span>
 #include <QString>
 
 namespace OpenGL
@@ -27,6 +28,7 @@ namespace OpenGL
 }
 
 struct TileIndex;
+class MapTile;
 class World;
 struct MinimapRenderSettings;
 
@@ -92,6 +94,7 @@ namespace Noggit::Rendering
         , glm::vec3 const& camera_pos
         , MinimapRenderSettings* minimap_render_settings
         , WorldRenderParams const& render_settings
+        , std::span<MapTile* const> terrain_tiles = {}
     );
 
     bool saveMinimap (TileIndex const& tile_idx

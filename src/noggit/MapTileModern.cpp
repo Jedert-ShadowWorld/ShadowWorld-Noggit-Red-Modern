@@ -740,9 +740,8 @@ void MapTile::finishLoadingShadowlandsTerrainOnly()
   root_file.close();
   recalcExtents();
 
-  finished = true;
   _tile_is_being_reloaded = false;
-  _state_changed.notify_all();
+  complete_loading();
 
   LogDebug << "[ModernADT] Shadowlands tile loaded: " << index.x << ',' << index.z
            << ". Direct MCVT terrain + TEX0 MCLY/MCAL textures on "

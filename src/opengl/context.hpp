@@ -88,6 +88,7 @@ namespace OpenGL
 
     NOGGIT_FORCEINLINE void genTextures (GLuint, GLuint*);
     NOGGIT_FORCEINLINE void deleteTextures (GLuint, GLuint*);
+    NOGGIT_FORCEINLINE GLboolean isTexture (GLuint);
     NOGGIT_FORCEINLINE void bindTexture (GLenum target, GLuint);
     NOGGIT_FORCEINLINE void texImage2D (GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLvoid const* data);
     NOGGIT_FORCEINLINE void texSubImage2D(GLenum target,

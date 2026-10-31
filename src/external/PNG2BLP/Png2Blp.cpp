@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <cmath>
 #include <sstream>
+#include <cstring>
+#include <limits>
 #include "Png2Blp.h"
 #include "PngReader.h"
 #include "BinaryWriter.h"
@@ -18,6 +20,26 @@ extern "C" {
 
 
 Png2Blp::Png2Blp() {
+}
+
+void Png2Blp::loadRgba(const void* pixels, std::size_t size, uint32_t width, uint32_t height, std::size_t stride) {
+    if (!pixels || !width || !height || width > std::numeric_limits<uint32_t>::max() / height
+        || width > std::numeric_limits<std::size_t>::max() / 4)
+        throw std::invalid_argument("Invalid RGBA image dimensions");
+
+    auto const rowBytes = std::size_t(width) * 4;
+    if (stride < rowBytes || size < rowBytes || height - 1 > (size - rowBytes) / stride)
+        throw std::invalid_argument("Incomplete RGBA image buffer");
+
+    // Match PngReader's RGBA byte order, including alpha, without a PNG roundtrip.
+    std::vector<uint32_t> colors(std::size_t(width) * height);
+    auto const* bytes = static_cast<uint8_t const*>(pixels);
+    for (uint32_t y = 0; y < height; ++y)
+        std::memcpy(colors.data() + std::size_t(y) * width, bytes + std::size_t(y) * stride, rowBytes);
+
+    mColors = std::move(colors);
+    mWidth = width;
+    mHeight = height;
 }
 
 void* Png2Blp::createBlpPalettedInMemory(bool generateMipMaps, uint8_t alphaDepth, uint8_t minQuality,

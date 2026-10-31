@@ -10,17 +10,30 @@
 #include <QDir>
 #include <QFile>
 
-std::ostream& _LogError(const char * pFile, int pLine)
+namespace
 {
-  return std::cerr << clock() * 1000 / CLOCKS_PER_SEC << " - (" << ((strrchr(pFile, '/') ? strrchr(pFile, '/') : (strrchr(pFile, '\\') ? strrchr(pFile, '\\') : pFile - 1)) + 1) << ":" << pLine << "): [Error] ";
+  std::osyncstream log_message(std::ostream& target, char const* file, int line, char const* level)
+  {
+    auto const* basename = strrchr(file, '/');
+    if (!basename) basename = strrchr(file, '\\');
+    std::osyncstream message(target);
+    message << clock() * 1000 / CLOCKS_PER_SEC << " - (" << (basename ? basename + 1 : file)
+            << ':' << line << "): " << level;
+    return message;
+  }
 }
-std::ostream& _LogDebug(const char * pFile, int pLine)
+
+std::osyncstream _LogError(const char * pFile, int pLine)
 {
-  return std::clog << clock() * 1000 / CLOCKS_PER_SEC << " - (" << ((strrchr(pFile, '/') ? strrchr(pFile, '/') : (strrchr(pFile, '\\') ? strrchr(pFile, '\\') : pFile - 1)) + 1) << ":" << pLine << "): [Debug] ";
+  return log_message(std::cerr, pFile, pLine, "[Error] ");
 }
-std::ostream& _Log(const char * pFile, int pLine)
+std::osyncstream _LogDebug(const char * pFile, int pLine)
 {
-  return std::cout << clock() * 1000 / CLOCKS_PER_SEC << " - (" << ((strrchr(pFile, '/') ? strrchr(pFile, '/') : (strrchr(pFile, '\\') ? strrchr(pFile, '\\') : pFile - 1)) + 1) << ":" << pLine << "): ";
+  return log_message(std::clog, pFile, pLine, "[Debug] ");
+}
+std::osyncstream _Log(const char * pFile, int pLine)
+{
+  return log_message(std::cout, pFile, pLine, "");
 }
 
 #if DEBUG__LOGGINGTOCONSOLE
@@ -69,8 +82,7 @@ void ConfigureProjectLogging(bool retail)
     LogError << "Cannot archive preceding session to " << name.toStdString() << std::endl;
     auto text = gPreviousSession;
     text.replace("\r\n", "\n");
-    std::cerr.write(text.constData(), text.size());
-    std::cerr << std::endl;
+    std::osyncstream(std::cerr).write(text.constData(), text.size()) << std::endl;
   }
   gPreviousSession.clear();
   gPreviousSession.squeeze();

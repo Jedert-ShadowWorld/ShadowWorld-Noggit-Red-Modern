@@ -12,6 +12,7 @@
 #include <noggit/MapChunk.h>
 #include <noggit/MapHeaders.h>
 #include <noggit/MapTile.h> // MapTile
+#include <noggit/formats/TerrainHoles.hpp>
 #include <noggit/Misc.h>
 #include <noggit/ModelInstance.h>
 #include <noggit/texture_set.hpp>
@@ -153,18 +154,9 @@ MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAl
 
     if (tmp_chunk_header.flags.flags.high_res_holes)
     {
-      auto const high_res = static_cast<std::uint64_t>(tmp_chunk_header.ofsHeight)
-                          | (static_cast<std::uint64_t>(tmp_chunk_header.ofsNormal) << 32);
-      holes = 0;
-      for (int y = 0; y < 4; ++y)
-        for (int x = 0; x < 4; ++x)
-        {
-          auto const first = 2 * y * 8 + 2 * x;
-          auto const block = (std::uint64_t{3} << first)
-                           | (std::uint64_t{3} << (first + 8));
-          if (high_res & block)
-            holes |= 1 << (y * 4 + x);
-        }
+      _high_res_holes = static_cast<std::uint64_t>(tmp_chunk_header.ofsHeight)
+                     | (static_cast<std::uint64_t>(tmp_chunk_header.ofsNormal) << 32);
+      holes = Noggit::TerrainHoles::coarse_mask(_high_res_holes);
     }
     else
       holes = tmp_chunk_header.holes & 0xFFFF;
@@ -435,6 +427,18 @@ MapChunk::MapChunk(MapTile* maintile, BlizzardArchive::ClientFile* f, bool bigAl
 auto MapChunk::getHoleMask(void) const -> unsigned
 {
   return static_cast<unsigned>(holes);
+}
+
+auto MapChunk::getHighResHoleMask() const -> std::uint64_t
+{
+  return Noggit::TerrainHoles::apply_coarse_edits(_high_res_holes, static_cast<std::uint16_t>(holes));
+}
+
+void MapChunk::commitSavedHoleMask()
+{
+  // The next save reads the newly written ROOT as its baseline. Undo still
+  // restores the coarse mask, so its preview must use that same baseline.
+  _high_res_holes = getHighResHoleMask();
 }
 
 int MapChunk::indexLoD(int x, int y)

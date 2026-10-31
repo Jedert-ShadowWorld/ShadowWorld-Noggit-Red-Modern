@@ -1492,6 +1492,45 @@ namespace Noggit::Formats::ADT
 
       return lod_updated;
     }
+
+    bool prepare_lod_for_save(ShadowlandsADTBackingStore const& backing,
+      std::vector<std::uint8_t> const& root, std::vector<std::uint8_t>& obj1,
+      std::vector<std::uint8_t>& lod,
+      std::vector<std::pair<std::string, LodBytes>>& reference_parts,
+      derived_save_policy policy)
+    {
+      auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+      if (client->version() != BlizzardArchive::ClientVersion::RETAIL
+          || policy != derived_save_policy::defer)
+        return update_lod(backing, root, obj1, lod, reference_parts);
+
+      // A custom map may have no archive baseline. Keep its original coherent
+      // pair before the first deferred ROOT replacement, without rebuilding it.
+      // Existing (even invalid/incomplete) references remain available for diagnosis.
+      auto const base = ".noggit/lod-reference/" + backing.source.root_path;
+      if (backing.has(ShadowlandsADTPart::Lod)
+          && !QFileInfo::exists(project_file(base + ".root"))
+          && !QFileInfo::exists(project_file(base + ".lod"))
+          && !QFileInfo::exists(project_file(base + ".json")))
+      {
+        try
+        {
+          retain_lod_reference(backing.source.root_path,
+            backing.part(ShadowlandsADTPart::Root).bytes,
+            backing.part(ShadowlandsADTPart::Lod).bytes,
+            "before deferred save", reference_parts);
+        }
+        catch (std::exception const& error)
+        {
+          // Stale/unsupported LOD must not prevent saving source edits. A later
+          // rebuild can still use the configured reference folder or archives.
+          reference_parts.clear();
+          LogError << "[Terrain LOD] Could not retain a coherent pre-save reference for "
+                   << backing.source.root_path << ": " << error.what() << std::endl;
+        }
+      }
+      return false;
+    }
   }
 
   bool ShadowlandsADTBackingStore::has(ShadowlandsADTPart part) const noexcept
@@ -1653,7 +1692,8 @@ namespace Noggit::Formats::ADT
   bool ShadowlandsADTCodec::saveFromLegacy(
     ShadowlandsADTBackingStore const& backing,
     std::vector<std::uint8_t> const& legacy_adt,
-    RetailObjectTransfer::WmoSources const* wmo_sources)
+    RetailObjectTransfer::WmoSources const* wmo_sources,
+    derived_save_policy derived)
   {
     auto root = rewrite_mcnks(backing.part(ShadowlandsADTPart::Root).bytes, legacy_adt, true);
     auto tex0 = rewrite_mcnks(backing.part(ShadowlandsADTPart::Tex0).bytes, legacy_adt, false);
@@ -1740,7 +1780,8 @@ namespace Noggit::Formats::ADT
 
     std::vector<std::uint8_t> lod;
     std::vector<std::pair<std::string, std::vector<std::uint8_t>>> lod_reference_parts;
-    bool const lod_updated = update_lod(backing, root, obj1, lod, lod_reference_parts);
+    bool const defer_lod = retail_objects && derived == derived_save_policy::defer;
+    bool const lod_updated = prepare_lod_for_save(backing, root, obj1, lod, lod_reference_parts, derived);
 
     // Stage the complete tile before replacing any project override.
     std::vector<std::pair<std::string, std::vector<std::uint8_t>>> parts;
@@ -1749,15 +1790,15 @@ namespace Noggit::Formats::ADT
     parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Obj0)], std::move(obj0));
     if (backing.has(ShadowlandsADTPart::Obj1))
       parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Obj1)], std::move(obj1));
-    if (backing.has(ShadowlandsADTPart::Lod))
+    if (!defer_lod && backing.has(ShadowlandsADTPart::Lod))
       parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Lod)],
                          std::move(lod));
     for (auto& reference_part : lod_reference_parts)
       parts.push_back(std::move(reference_part));
     save_parts(parts);
 
-    Log << "[ModernADT][Save] Saved split tile ROOT/TEX0/OBJ0/OBJ1/LOD to the project override: "
-        << backing.source.root_path << std::endl;
+    Log << "[ModernADT][Save] Saved split tile to the project override: "
+        << backing.source.root_path << (defer_lod ? "; derived results deferred" : "") << std::endl;
     return lod_updated;
   }
 

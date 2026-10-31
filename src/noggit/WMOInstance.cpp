@@ -176,6 +176,9 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
     }
 
     wmo_shader.uniform("transform", _transform_mat);
+    auto const selected_doodad_sets = _retail_source && (mFlags & 0x80)
+        ? std::span<std::uint16_t const>(_retail_source->primary.sets)
+        : std::span<std::uint16_t const>(&_doodadset, 1);
 
     // render WDL model
     [[unlikely]]
@@ -198,6 +201,7 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
         , !draw_exterior
         , render_group_bounds
         , _grouped
+        , selected_doodad_sets
       );
     }
     else // regular model
@@ -218,6 +222,7 @@ void WMOInstance::draw ( OpenGL::Scoped::use_program& wmo_shader
                 , !draw_exterior
                 , render_group_bounds
                 , _grouped
+                , selected_doodad_sets
                 );
       }
 

@@ -305,6 +305,10 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
     return dm;
   };
 
+  bool const retail_holes = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+    == BlizzardArchive::ClientVersion::RETAIL;
+  auto const fine_holes = retail_holes ? chunk->getHighResHoleMask() : 0;
+
   // pass 2: per pick, masks -> layer -> effect record -> spawn attempts
   for (int i = 0; i < D; ++i)
   {
@@ -315,7 +319,8 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
     {
       continue;
     }
-    if (chunk->holes & (1 << (4 * (row >> 1) + (col >> 1))))
+    if (retail_holes ? (fine_holes & (std::uint64_t{1} << (row * 8 + col))) != 0
+                     : (chunk->holes & (1 << (4 * (row >> 1) + (col >> 1)))) != 0)
     {
       continue;
     }

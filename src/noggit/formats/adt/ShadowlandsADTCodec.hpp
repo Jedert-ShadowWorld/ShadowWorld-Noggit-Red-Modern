@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <noggit/map_enums.hpp>
 #include "RetailObjectTransfer.hpp"
 
 namespace Noggit::Formats::ADT
@@ -83,11 +84,12 @@ namespace Noggit::Formats::ADT
 
     // Converts Noggit's canonical legacy serialization back into the modern
     // split layout while retaining chunks that the editor does not own.
-    // Retail: also updates terrain LOD and returns whether it was updated; on
-    // failure the existing LOD is kept and the primary parts are still saved.
+    // Retail: optionally updates terrain LOD and returns whether it was updated;
+    // deferred or failed updates retain LOD and save the primary parts normally.
     // Other clients keep their LOD bytes and return false.
     static bool saveFromLegacy(ShadowlandsADTBackingStore const& backing,
                                std::vector<std::uint8_t> const& legacy_adt,
-                               RetailObjectTransfer::WmoSources const* wmo_sources = nullptr);
+                               RetailObjectTransfer::WmoSources const* wmo_sources = nullptr,
+                               derived_save_policy derived = derived_save_policy::rebuild);
   };
 }

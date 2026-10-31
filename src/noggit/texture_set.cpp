@@ -8,14 +8,105 @@
 #include <noggit/Misc.h>
 #include <noggit/texture_set.hpp>
 #include <noggit/TextureManager.h> // TextureManager, Texture
+#include <noggit/application/NoggitApplication.hpp>
 
 #include <ClientFile.hpp>
+#include <ClientData.hpp>
 
 #include <QSettings>
 
 #include <algorithm>    // std::min
+#include <cmath>
+#include <numeric>
 #include <set>
 #include <sstream>
+
+namespace
+{
+  // Both brush modes edit absolute layer weights, including the implicit base.
+  bool paint_alpha(tmp_edit_alpha_values& amaps, std::size_t layer_count,
+                   std::size_t target, std::size_t offset, float strength, double pressure)
+  {
+    if (!(pressure > 0.0))
+      return false;
+
+    std::array<double, MAX_TEXTURE_LAYERS> values{};
+    double total = 0.0;
+    for (std::size_t layer = 0; layer < layer_count; ++layer)
+      total += values[layer] = amaps[layer][offset];
+
+    double const current = values[target];
+    if (misc::float_equals(current, strength))
+      return false;
+
+    double const other = total - current;
+    double change = (strength - current) * pressure;
+    if (change < 0.0 && current + change < 1.0)
+      change = -current;
+
+    if (other < 1.0)
+    {
+      if (change > 0.0)
+      {
+        for (std::size_t layer = 0; layer < layer_count; ++layer)
+          values[layer] = layer == target ? 255.0 : 0.0;
+      }
+      else
+      {
+        bool change_applied = false;
+        for (std::size_t layer = 0; layer < layer_count; ++layer)
+        {
+          if (layer == target)
+            values[layer] += change;
+          else
+          {
+            if (!change_applied)
+              values[layer] -= change;
+            else
+            {
+              values[target] += values[layer];
+              values[layer] = 0.0;
+            }
+            change_applied = true;
+          }
+        }
+      }
+    }
+    else
+    {
+      for (std::size_t layer = 0; layer < layer_count; ++layer)
+      {
+        if (layer == target)
+          values[layer] += change;
+        else
+        {
+          values[layer] -= change * values[layer] / other;
+          if (values[layer] < 1.0)
+          {
+            values[target] += values[layer];
+            values[layer] = 0.0;
+          }
+        }
+      }
+    }
+
+    double const result_total = std::accumulate(values.begin(), values.begin() + layer_count, 0.0);
+    if (!std::isfinite(result_total) || result_total <= 0.0)
+      return false;
+    if (std::abs(result_total - 255.0) > 0.001)
+      for (std::size_t layer = 0; layer < layer_count; ++layer)
+        values[layer] *= 255.0 / result_total;
+
+    bool changed = false;
+    for (std::size_t layer = 0; layer < layer_count; ++layer)
+    {
+      float const value = static_cast<float>(values[layer]);
+      changed |= amaps[layer][offset] != value;
+      amaps[layer][offset] = value;
+    }
+    return changed;
+  }
+}
 
 TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base
                         , bool use_big_alphamaps, bool do_not_fix_alpha_map, bool do_not_convert_alphamaps
@@ -93,7 +184,14 @@ void TextureSet::setHeightTextureOverride(std::size_t layer, std::unique_ptr<sco
 
 blp_texture* TextureSet::heightTexture(std::size_t layer)
 {
-  if (layer >= BASE_RENDER_TEXTURE_LAYERS || layer >= textures.size())
+  if (layer >= heightTextures.size() || layer >= textures.size())
+    return nullptr;
+
+  // Extended height layers are part of the Retail terrain path. Other clients
+  // retain the existing four-layer Mists heightmapping behaviour.
+  if (layer >= BASE_RENDER_TEXTURE_LAYERS
+      && Noggit::Application::NoggitApplication::instance()->clientData()->version()
+         != BlizzardArchive::ClientVersion::RETAIL)
     return nullptr;
 
   if (heightTextureOverrides[layer])
@@ -628,15 +726,19 @@ std::vector<scoped_blp_texture_reference>* TextureSet::getTextures()
 bool TextureSet::stampTexture(float xbase, float zbase, float x, float z, Brush* brush, float strength, float pressure, scoped_blp_texture_reference texture, QImage* image, bool paint)
 {
 
+  if (!(pressure > 0.f) || !(brush->getRadius() > 0.f))
+    return false;
+
   bool changed = false;
 
   float zPos, xPos, dist, radius;
 
+  auto const previous_layer_count = nTextures;
   int tex_layer = get_texture_index_or_add (std::move (texture), strength);
 
   if (tex_layer == -1 || nTextures == 1)
   {
-    return nTextures == 1;
+    return nTextures != previous_layer_count;
   }
 
   radius = brush->getRadius();
@@ -676,109 +778,8 @@ bool TextureSet::stampTexture(float xbase, float zbase, float x, float z, Brush*
         image_factor = 0;
       }
 
-      std::size_t offset = i + 64 * j;
-      // use double for more precision
-      std::vector<double> alpha_values(nTextures);
-      double total = 0.;
-
-      for (int n = 0; n < nTextures; ++n)
-      {
-        total += alpha_values[n] = amaps[n][i + 64 * j];
-      }
-
-      double current_alpha = alpha_values[tex_layer];
-      double sum_other_alphas = (total - current_alpha);
-      double alpha_change = image_factor * (strength - current_alpha) * pressure;
-
-      // alpha too low, set it to 0 directly
-      if (alpha_change < 0. && current_alpha + alpha_change < 1.)
-      {
-        alpha_change = -current_alpha;
-      }
-
-      if (misc::float_equals(current_alpha, strength))
-      {
-        xPos += TEXDETAILSIZE;
-        continue;
-      }
-
-      if (sum_other_alphas < 1.)
-      {
-        // alpha is currently at 254/255 -> set it at 255 and clear the rest of the values
-        if (alpha_change > 0.f)
-        {
-          for (int layer = 0; layer < nTextures; ++layer)
-          {
-            alpha_values[layer] = layer == tex_layer ? 255. : 0.f;
-          }
-        }
-          // all the other textures amount for less an 1/255 -> add the alpha_change (negative) to current texture and remove it from the first non current texture, clear the rest
-        else
-        {
-          bool change_applied = false;
-
-          for (int layer = 0; layer < nTextures; ++layer)
-          {
-            if (layer == tex_layer)
-            {
-              alpha_values[layer] += alpha_change;
-            }
-            else
-            {
-              if (!change_applied)
-              {
-                alpha_values[layer] -= alpha_change;
-              }
-              else
-              {
-                alpha_values[tex_layer] += alpha_values[layer];
-                alpha_values[layer] = 0.;
-              }
-
-              change_applied = true;
-            }
-          }
-        }
-      }
-      else
-      {
-        for (int layer = 0; layer < nTextures; ++layer)
-        {
-          if (layer == tex_layer)
-          {
-            alpha_values[layer] += alpha_change;
-          }
-          else
-          {
-            alpha_values[layer] -= alpha_change * alpha_values[layer] / sum_other_alphas;
-
-            // clear values too low to be visible
-            if (alpha_values[layer] < 1.)
-            {
-              alpha_values[tex_layer] += alpha_values[layer];
-              alpha_values[layer] = 0.f;
-            }
-          }
-        }
-      }
-
-      double total_final = std::accumulate(alpha_values.begin(), alpha_values.end(), 0.);
-
-      // failsafe in case the sum of all alpha values deviate
-      if (std::abs(total_final - 255.) > 0.001)
-      {
-        for (double& d : alpha_values)
-        {
-          d = d * 255. / total_final;
-        }
-      }
-
-      for (int n = 0; n < nTextures; ++n)
-      {
-        amaps[n][i + 64 * j] = static_cast<float>(alpha_values[n]);
-      }
-
-      changed = true;
+      changed |= paint_alpha(amaps, nTextures, tex_layer, i + 64 * j,
+                             strength, image_factor * pressure);
 
 
       xPos += TEXDETAILSIZE;
@@ -799,122 +800,13 @@ bool TextureSet::stampTexture(float xbase, float zbase, float x, float z, Brush*
 
   return true;
 
-  /*
-  bool changed = false;
-
-  float zPos, xPos, dist, radius;
-
-  int tex_layer = get_texture_index_or_add (std::move (texture), strength);
-
-  if (tex_layer == -1 || nTextures == 1)
-  {
-    return nTextures == 1;
-  }
-
-  radius = brush->getRadius();
-
-  if (misc::getShortestDist(x, z, xbase, zbase, CHUNKSIZE) > radius)
-  {
-    return changed;
-  }
-
-  create_temporary_alphamaps_if_needed();
-  auto& amaps = tmp_edit_values.get();
-
-  zPos = zbase;
-
-  for (int j = 0; j < 64; j++)
-  {
-    xPos = xbase;
-    for (int i = 0; i < 64; ++i)
-    {
-      if(std::abs(x - (xPos + TEXDETAILSIZE / 2.0)) > radius || std::abs(z - (zPos + TEXDETAILSIZE / 2.0f)) > radius)
-        continue;
-
-      dist = misc::dist(x, z, xPos + TEXDETAILSIZE / 2.0f, zPos + TEXDETAILSIZE / 2.0f);
-
-      glm::vec3 const diff{glm::vec3{xPos + TEXDETAILSIZE / 2.0f, 0.f, zPos + TEXDETAILSIZE / 2.0f} - glm::vec3{x, 0.f, z}};
-
-      int pixel_x = std::floor(diff.x + radius);
-      int pixel_y = std::floor(diff.z + radius);
-
-      auto color = image->pixelColor(pixel_x, pixel_y);
-      float image_factor = (color.redF() + color.greenF() + color.blueF()) / 3.0f;
-
-      std::size_t offset = i + 64 * j;
-
-      float current_alpha = amaps[tex_layer][i + 64 * j];
-      float sum_other_alphas = 1.f - current_alpha;
-      float alpha_change = image_factor * ((strength - current_alpha) * pressure * brush->getValue(dist));
-
-      if (misc::float_equals(current_alpha, strength))
-        continue;
-
-      float totOthers = 0.0f;
-      for (int layer = 0; layer < nTextures; ++layer)
-      {
-        if (layer == tex_layer)
-        {
-          amaps[layer][offset] += alpha_change;
-        }
-        else
-        {
-          amaps[layer][offset] -= alpha_change * (amaps[layer][offset] / sum_other_alphas);
-        }
-
-        if (amaps[layer][offset] > 1.0f)
-          amaps[layer][offset] = 1.0f;
-        else if (amaps[layer][offset] < 0.0f || isnan(amaps[layer][offset]))
-          amaps[layer][offset] = 0.0f;
-
-        if(layer != 0)
-          totOthers += amaps[layer][offset];
-      }
-      if (totOthers > 1)
-      {
-        float mul = (1 / totOthers);
-
-        amaps[1][offset] = amaps[1][offset] * mul;
-        totOthers = amaps[1][offset];
-        if (nTextures > 2)
-        {
-          amaps[2][offset] = amaps[2][offset] * mul;
-          totOthers += amaps[2][offset];
-        }
-        if (nTextures > 3)
-        {
-          amaps[3][offset] = amaps[3][offset] * mul;
-          totOthers += amaps[3][offset];
-
-        }
-      }
-
-      amaps[0][offset] = std::max(0.0f, std::min(1.0f - totOthers, 1.0f));
-      changed = true;
-
-      xPos += TEXDETAILSIZE;
-    }
-    zPos += TEXDETAILSIZE;
-  }
-
-  if (!changed)
-  {
-    return false;
-  }
-
-  // cleanup
-  eraseUnusedTextures();
-
-  _chunk->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP); 
-  _need_lod_texture_map_update = true;
-
-  return true;
-
-   */
 }
 
 bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush* brush, float strength, float pressure, scoped_blp_texture_reference texture)
 {
+  if (!(pressure > 0.f) || !(brush->getRadius() > 0.f))
+    return false;
+
   bool changed = false;
 
   float zPos, xPos, dist, radius;
@@ -942,11 +834,12 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
       z -= TEXDETAILSIZE * chunk_dist;
   }
 
+  auto const previous_layer_count = nTextures;
   int tex_layer = get_texture_index_or_add (std::move (texture), strength);
 
   if (tex_layer == -1 || nTextures == 1)
   {
-    return nTextures == 1;
+    return nTextures != previous_layer_count;
   }
 
   radius = brush->getRadius();
@@ -970,106 +863,8 @@ bool TextureSet::paintTexture(float xbase, float zbase, float x, float z, Brush*
 
       if (dist <= radius)
       {
-        std::size_t offset = i + 64 * j;
-        // use double for more precision
-        std::vector<double> alpha_values(nTextures);
-        double total = 0.;
-
-        for (int n = 0; n < nTextures; ++n)
-        {
-          total += alpha_values[n] = amaps[n][i + 64 * j];
-        }
-
-        double current_alpha = alpha_values[tex_layer];
-        double sum_other_alphas = (total - current_alpha);
-        double alpha_change = (strength - current_alpha) * pressure * brush->getValue(dist);
-
-        // alpha too low, set it to 0 directly
-        if (alpha_change < 0. && current_alpha + alpha_change < 1.)
-        {
-          alpha_change = -current_alpha;
-        }
-
-        if (!misc::float_equals(current_alpha, strength))
-        {
-          if (sum_other_alphas < 1.)
-          {
-            // alpha is currently at 254/255 -> set it at 255 and clear the rest of the values
-            if (alpha_change > 0.f)
-            {
-              for (int layer = 0; layer < nTextures; ++layer)
-              {
-                alpha_values[layer] = layer == tex_layer ? 255. : 0.f;
-              }
-            }
-            // all the other textures amount for less an 1/255 -> add the alpha_change (negative) to current texture and remove it from the first non current texture, clear the rest
-            else
-            {
-              bool change_applied = false;
-
-              for (int layer = 0; layer < nTextures; ++layer)
-              {
-                if (layer == tex_layer)
-                {
-                  alpha_values[layer] += alpha_change;
-                }
-                else
-                {
-                  if (!change_applied)
-                  {
-                    alpha_values[layer] -= alpha_change;
-                  }
-                  else
-                  {
-                    alpha_values[tex_layer] += alpha_values[layer];
-                    alpha_values[layer] = 0.;
-                  }
-
-                  change_applied = true;
-                }
-              }
-            }
-          }
-          else
-          {
-            for (int layer = 0; layer < nTextures; ++layer)
-            {
-              if (layer == tex_layer)
-              {
-                alpha_values[layer] += alpha_change;
-              }
-              else
-              {
-                alpha_values[layer] -= alpha_change * alpha_values[layer] / sum_other_alphas;
-
-                // clear values too low to be visible
-                if (alpha_values[layer] < 1.)
-                {
-                  alpha_values[tex_layer] += alpha_values[layer];
-                  alpha_values[layer] = 0.f;
-                }
-              }
-            }
-          }
-
-          double total_final = std::accumulate(alpha_values.begin(), alpha_values.end(), 0.);
-
-          // failsafe in case the sum of all alpha values deviate
-          if (std::abs(total_final - 255.) > 0.001)
-          {
-            for (double& d : alpha_values)
-            {
-              d = d * 255. / total_final;
-            }
-          }
-
-          for (int n = 0; n < nTextures; ++n)
-          {
-            amaps[n][i + 64 * j] = static_cast<float>(alpha_values[n]);
-          }
-
-          changed = true;
-        }
+        changed |= paint_alpha(amaps, nTextures, tex_layer, i + 64 * j,
+                               strength, pressure * brush->getValue(dist));
       }
 
       xPos += TEXDETAILSIZE;
@@ -1143,6 +938,11 @@ bool TextureSet::replace_texture( float xbase
   {
     return false;
   }
+
+  // Cleanup above can remove layers before the source and shift its index.
+  old_tex_level = texture_id(texture_to_replace);
+  if (old_tex_level == -1)
+    return false;
 
   if (new_tex_level == -1)
   {

@@ -2720,7 +2720,7 @@ MapView::MapView( math::degrees camera_yaw0
 
   int _fps_limit = _settings->value("fps_limit", 60).toInt();
   int _frametime = static_cast<int>((1.f / static_cast<float>(_fps_limit)) * 1000.f);
-  std::cout << "FPS limit is set to : " << _fps_limit << " (" << _frametime << ")" << std::endl;
+  Log << "FPS limit is set to : " << _fps_limit << " (" << _frametime << ")" << std::endl;
 
   _update_every_event_loop.start (_frametime);
   connect(&_update_every_event_loop, &QTimer::timeout,[=]
@@ -4348,6 +4348,13 @@ void MapView::save(save_mode mode)
   activeTool()->saveSettings();
 
   bool const retail = usesRetailMapWorkflow();
+  auto* terrain_export = retail
+    ? static_cast<Noggit::MinimapTool*>(_tools[static_cast<int>(editing_mode::minimap)].get()) : nullptr;
+  if (terrain_export && terrain_export->isExportActive())
+  {
+    _main_window->statusBar()->showMessage("Finish or cancel the terrain export before saving.", 10000);
+    return;
+  }
   if (retail)
   {
     auto const failures = AsyncLoader::instance->loading_failures();
@@ -4441,9 +4448,9 @@ void MapView::save(save_mode mode)
     OpenGL::context::scoped_setter const _ (::gl, context());
 
     bool tiles_saved = false;
+    std::vector<TileIndex> saved_tiles;
     try
     {
-      std::vector<TileIndex> saved_tiles;
       if (retail)
       {
         _world->wait_for_all_tile_updates();
@@ -4453,11 +4460,13 @@ void MapView::save(save_mode mode)
           for (auto* tile : _world->mapIndex.loaded_tiles())
             if (mode == save_mode::all || tile->changed.load()) saved_tiles.push_back(tile->index);
       }
+      // Required source writes finish before any optional rendering/generation.
+      auto const derived = retail ? derived_save_policy::defer : derived_save_policy::rebuild;
       switch (mode)
       {
-      case save_mode::current: tiles_saved = _world->mapIndex.saveTile(TileIndex(_camera.position), _world.get()); break;
-      case save_mode::changed: tiles_saved = _world->mapIndex.saveChanged(_world.get()); break;
-      case save_mode::all:     tiles_saved = _world->mapIndex.saveall(_world.get()); break;
+      case save_mode::current: tiles_saved = _world->mapIndex.saveTile(TileIndex(_camera.position), _world.get(), false, derived); break;
+      case save_mode::changed: tiles_saved = _world->mapIndex.saveChanged(_world.get(), false, derived); break;
+      case save_mode::all:     tiles_saved = _world->mapIndex.saveall(_world.get(), derived); break;
       }
       if (!tiles_saved)
       {
@@ -4466,59 +4475,6 @@ void MapView::save(save_mode mode)
           "One or more tiles could not be saved. Failed tiles remain marked as changed.\n\n"
           "Keep the map open and check log.txt for the failing tile and reason before retrying.");
         return;
-      }
-      if (retail)
-      {
-        auto const& project_path = Noggit::Project::CurrentProject::get()->ProjectPath;
-        try
-        {
-          // Pending WDL tiles without unsaved changes are rebuilt from their saved ADTs.
-          auto const pending_lod = Noggit::DerivedMapState::pending(
-            project_path, _world->basename, Noggit::DerivedMapState::Lod);
-          auto lod_ready = [&](TileIndex const& tile) {
-            return std::find(pending_lod.begin(), pending_lod.end(), tile) == pending_lod.end();
-          };
-          std::vector<TileIndex> wdl_tiles;
-          for (auto const& tile : saved_tiles)
-            if (lod_ready(tile)) wdl_tiles.push_back(tile);
-          for (auto const& tile : Noggit::DerivedMapState::pending(
-                 project_path, _world->basename, Noggit::DerivedMapState::Wdl))
-            if (lod_ready(tile) && !_world->mapIndex.has_unsaved_changes(tile)
-                && std::find(wdl_tiles.begin(), wdl_tiles.end(), tile) == wdl_tiles.end())
-              wdl_tiles.push_back(tile);
-          _world->horizon.save_wdl(_world.get(), true, &wdl_tiles);
-          Noggit::DerivedMapState::clear(project_path, _world->basename, wdl_tiles,
-            Noggit::DerivedMapState::Wdl);
-        }
-        catch (std::exception const& error)
-        {
-          try
-          {
-            Noggit::DerivedMapState::mark(project_path, _world->basename, saved_tiles,
-              Noggit::DerivedMapState::Wdl);
-          }
-          catch (std::exception const& state_error)
-          {
-            LogError << "[Map Save] Could not record pending WDL update: " << state_error.what() << std::endl;
-          }
-          throw std::runtime_error(std::string(error.what())
-            + " Use Update LOD + map textures + heightmap in the Minimap Editor after resolving the error.");
-        }
-        auto* textures = static_cast<Noggit::MinimapTool*>(_tools[static_cast<int>(editing_mode::minimap)].get());
-        auto const errors = textures->saveRetailMapTextures(saved_tiles);
-        if (!errors.empty())
-        {
-          LogError << "[Map Save] Map textures incomplete: " << errors.join("; ").toStdString() << std::endl;
-          _main_window->statusBar()->showMessage("ADTs saved; derived map results are incomplete", 15000);
-          QMessageBox warning(QMessageBox::Warning, "Map save incomplete",
-            "ADTs were saved, but LOD or map texture generation did not finish.\n"
-            "See Details for the affected tiles. Use Update project LOD + map textures + heightmap "
-            "after resolving the reported problem.",
-            QMessageBox::Ok, this);
-          warning.setDetailedText(errors.join("\n"));
-          warning.exec();
-          return;
-        }
       }
       // Update the WDL only after every requested tile has been saved.
       if (!retail) _world->horizon.save_wdl(_world.get());
@@ -4546,6 +4502,20 @@ void MapView::save(save_mode mode)
       return;
     }
 
+    if (!saved_tiles.empty() && QSettings().value("retail/generate_derived_on_save", false).toBool())
+    {
+      if (terrain_export->queueSavedTerrain(saved_tiles))
+      {
+        _main_window->statusBar()->showMessage(
+          QString("Map saved. Updating terrain results for %1 saved tile(s)...").arg(saved_tiles.size()), 15000);
+        return;
+      }
+      // Source files and DB changes are already saved. Queue setup failures
+      // leave the persistent flags available for a later manual retry.
+      _main_window->statusBar()->showMessage("Map saved; terrain update was not started. Results remain pending.", 15000);
+      return;
+    }
+
     try
     {
       auto const& project_path = Noggit::Project::CurrentProject::get()->ProjectPath;
@@ -4556,13 +4526,9 @@ void MapView::save(save_mode mode)
       auto const wdl = Noggit::DerivedMapState::pending(
         project_path, _world->basename, Noggit::DerivedMapState::Wdl);
       _main_window->statusBar()->showMessage(
-        QString("Map and textures saved. Pending textures: %1 tile(s); pending LOD: %2 tile(s); pending WDL: %3 tile(s).")
+        QString("Map saved. Pending textures: %1 tile(s); pending LOD: %2 tile(s); pending heightmap: %3 tile(s). Use Update project terrain results when ready.")
           .arg(static_cast<qulonglong>(textures.size())).arg(static_cast<qulonglong>(lod.size()))
           .arg(static_cast<qulonglong>(wdl.size())), 15000);
-      if (!lod.empty())
-        LogError << "[Terrain LOD] " << lod.size()
-                 << " tile(s) remain stale. See the per-tile diagnostics; missing or unsupported templates are not rebuilt."
-                 << std::endl;
     }
     catch (std::exception const& error)
     {
