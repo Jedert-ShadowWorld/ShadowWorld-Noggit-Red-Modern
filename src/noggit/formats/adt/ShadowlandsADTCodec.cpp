@@ -645,19 +645,21 @@ namespace Noggit::Formats::ADT
             throw std::runtime_error("Ambiguous Retail LOD placement identity.");
         auto source = [&](bool wmo, auto const& entry)
         { return sources.find({wmo, placement_key(entry.nameID, entry.uniqueID)}); };
-        bool existing = std::all_of(doodads.begin(), doodads.end(),
-          [&](auto const& entry) { return source(false, entry) != sources.end(); })
+        bool existing = (wmo_sources || std::all_of(doodads.begin(), doodads.end(),
+          [&](auto const& entry) { return source(false, entry) != sources.end(); }))
           && std::all_of(map_objects.begin(), map_objects.end(),
           [&](auto const& entry) { return source(true, entry) != sources.end()
             || primary_only_wmos.count(placement_key(entry.nameID, entry.uniqueID)) || wmo_sources; });
-        if (wmo_sources && !existing)
-          throw std::runtime_error("Retail M2 placement has no source LOD metadata; cannot rebuild this tile safely");
         if (existing)
         {
           std::vector<RetailObjectTransfer::Row> rows;
           for (auto const& placement : doodads)
           {
-            auto at = source(false, placement)->second;
+            auto const found = source(false, placement);
+            // Newly placed and primary-only M2s have no OBJ1 membership. Keep
+            // them in OBJ0 rather than inventing LOD groups or rejecting save.
+            if (found == sources.end()) continue;
+            auto at = found->second;
             auto data = metadata.at(at);
             auto index = (at - mldd_chunk->payload) / sizeof(ENTRY_MDDF);
             auto const& old = old_doodads[index];

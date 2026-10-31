@@ -108,10 +108,11 @@ int main(int argc, char** argv)
         }
       require(foundCopy,"Pasted WMO LOD placement was omitted");
       auto newM2=a;newM2.uniqueID=123456;
-      bool mixedRejected=false;
-      try { rewrite_obj1(mwdsOriginal,record_bytes(std::vector<ENTRY_MDDF>{a,b,newM2}),record_bytes(pasted),nullptr,{},&runtimeSources); }
-      catch(std::runtime_error const& error) { mixedRejected=std::string(error.what()).find("M2 placement has no source LOD metadata")!=std::string::npos; }
-      require(mixedRejected,"Mixed new M2 and copied WMO fell through to a writer without WMO source metadata");
+      auto mixedSaved=rewrite_obj1(mwdsOriginal,record_bytes(std::vector<ENTRY_MDDF>{a,b,newM2}),record_bytes(pasted),nullptr,{},&runtimeSources);
+      require(mixedSaved==pastedLod,"New primary-only M2 changed existing M2/WMO LOD metadata");
+      RetailObjectTables::validate(mixedSaved,true);
+      require(rewrite_obj1(mixedSaved,record_bytes(std::vector<ENTRY_MDDF>{a,b,newM2}),record_bytes(pasted),nullptr,{},&runtimeSources)==mixedSaved,
+        "Repeated save with new primary-only M2 changed OBJ1 bytes");
       require(rewrite_obj1(pastedLod,record_bytes(std::vector<ENTRY_MDDF>{a,b}),record_bytes(pasted),nullptr,{},&runtimeSources)==pastedLod,
         "Repeated pasted WMO save changed bytes");
       auto directSelection=primary;
