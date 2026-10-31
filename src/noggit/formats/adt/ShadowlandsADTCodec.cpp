@@ -7,6 +7,7 @@
 #include <noggit/formats/adt/RetailRootLayout.hpp>
 #include <noggit/formats/adt/TerrainLodUpdater.hpp>
 #include <noggit/formats/adt/RetailLiquidLod.hpp>
+#include <noggit/formats/RetailWorldTables.hpp>
 
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapHeaders.h>
@@ -1435,6 +1436,26 @@ namespace Noggit::Formats::ADT
       parts.emplace_back(base + ".json", json_bytes(metadata));
     }
 
+    bool terrain_lod_not_applicable(ShadowlandsADTBackingStore const& backing)
+    {
+      if (backing.has(ShadowlandsADTPart::Lod)) return false;
+      auto const slash = backing.source.root_path.find_last_of('/');
+      if (slash == std::string::npos) return false;
+      auto const directory = backing.source.root_path.substr(0, slash);
+      auto const name = directory.substr(directory.find_last_of('/') + 1);
+      auto const path = directory + "/" + name + ".wdt";
+      auto wdt = read_reference_file(project_file(path));
+      if (!wdt)
+      {
+        std::vector<char> bytes;
+        if (!Noggit::Application::NoggitApplication::instance()->clientData()->readFile(
+              BlizzardArchive::Listfile::FileKey(path), bytes)) return false;
+        wdt = LodBytes(bytes.begin(), bytes.end());
+      }
+      return RetailWorldTables::legacyMapWithoutTerrainLod(
+        RetailWorldTables::Bytes(wdt->begin(), wdt->end()));
+    }
+
     bool update_lod(ShadowlandsADTBackingStore const& backing,
       std::vector<std::uint8_t> const& root, std::vector<std::uint8_t>& obj1,
       std::vector<std::uint8_t>& lod,
@@ -1487,6 +1508,12 @@ namespace Noggit::Formats::ADT
       }
       else
       {
+        if (terrain_lod_not_applicable(backing))
+        {
+          Log << "[Terrain LOD] Legacy split map has no terrain LOD asset: "
+              << backing.source.root_path << "; map textures and WDL can be updated." << std::endl;
+          return true;
+        }
         if (failure) *failure = "No LOD template exists for this tile.";
         LogError << "[Terrain LOD] No template; result remains stale for "
                  << backing.source.root_path << std::endl;
@@ -1505,6 +1532,8 @@ namespace Noggit::Formats::ADT
       if (client->version() != BlizzardArchive::ClientVersion::RETAIL
           || policy != derived_save_policy::defer)
         return update_lod(backing, root, obj1, lod, reference_parts);
+
+      if (terrain_lod_not_applicable(backing)) return true;
 
       // A custom map may have no archive baseline. Keep its original coherent
       // pair before the first deferred ROOT replacement, without rebuilding it.

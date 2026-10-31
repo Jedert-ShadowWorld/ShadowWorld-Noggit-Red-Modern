@@ -23,7 +23,14 @@ int main(int argc, char** argv)
   put(wdt, add(wdt,"MVER",4),18);
   auto mphd=add(wdt,"MPHD",32); put(wdt,mphd,0x3ca); put(wdt,mphd+4,123);
   auto main=add(wdt,"MAIN",32768); put(wdt,main,0x81); put(wdt,main+4,42);
+  auto legacyWdt=wdt; put(legacyWdt,mphd,0xe);
+  check(legacyMapWithoutTerrainLod(legacyWdt));
+  check(!legacyMapWithoutTerrainLod(wdt));
   auto maid=add(wdt,"MAID",131072); put(wdt,maid,999);
+  auto referencedWdt=wdt; put(referencedWdt,mphd,0xe);
+  check(!legacyMapWithoutTerrainLod(referencedWdt));
+  auto malformedLegacy=legacyWdt; malformedLegacy.pop_back();
+  rejects([&]{legacyMapWithoutTerrainLod(malformedLegacy);});
   auto unknown=add(wdt,"TEST",4); put(wdt,unknown,333);
   std::vector<std::uint32_t> tiles(4096); tiles[1]=1;
   auto result=updateWdt(wdt,0xa,tiles);

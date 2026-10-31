@@ -6,6 +6,7 @@
 #undef main
 #include <noggit/formats/adt/ShadowlandsADTCodec.hpp>
 #include <noggit/formats/adt/RetailLiquidLod.hpp>
+#include <noggit/formats/RetailWorldTables.hpp>
 
 #include <QCryptographicHash>
 #include <QDir>

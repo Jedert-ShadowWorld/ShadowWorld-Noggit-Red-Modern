@@ -46,6 +46,20 @@ namespace Noggit::Formats::RetailWorldTables
     if (count != 1 || result.size != size) throw std::runtime_error("Invalid world table " + tag);
     return result;
   }
+  // Older path-addressed split maps have no terrain-LOD asset at all. Only
+  // recognize their conservative legacy header; missing modern assets must
+  // continue to fail rather than being reported as successfully rebuilt.
+  inline bool legacyMapWithoutTerrainLod(Bytes const& wdt)
+  {
+    auto list = chunks(wdt);
+    auto version = required(list, "MVER", 4);
+    auto header = required(list, "MPHD", 32);
+    required(list, "MAIN", 32768);
+    return read(wdt, version.payload) == 18
+      && (read(wdt, header.payload) & ~0xfu) == 0
+      && std::none_of(list.begin(), list.end(), [](auto const& c) { return c.tag == "MAID"; });
+  }
+
   inline Bytes updateWdt(Bytes original, std::uint32_t flags, std::vector<std::uint32_t> const& tiles)
   {
     auto list = chunks(original);

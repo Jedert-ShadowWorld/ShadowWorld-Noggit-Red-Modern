@@ -2,6 +2,7 @@
 #include <QGuiApplication>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
+#include <QOpenGLShaderProgram>
 #include <QOpenGLFunctions_4_1_Core>
 #include <algorithm>
 #include <array>
@@ -147,12 +148,42 @@ int main(int argc, char** argv)
       for (unsigned layer = 0; layer < blocks.size(); ++layer)
         require(std::equal(blocks[layer].begin(), blocks[layer].end(), compressed.begin() + layer * 8),
                 "Shared compressed array changed another slice's blocks");
-      std::array<unsigned char, 3 * 4 * 4 * 4> pixels{};
-      f->glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-      for (unsigned layer = 0; layer < colors.size(); ++layer)
-        for (unsigned i = 0; i < 16; ++i)
-          require(std::equal(colors[layer].begin(), colors[layer].end(), pixels.begin() + (layer * 16 + i) * 4),
-                  "Shared compressed array decoded the wrong slice");
+      // Sample every layer as the renderer does. Some drivers' glGetTexImage
+      // compressed-array decompression only returns layer zero; compressed
+      // byte readback above still verifies the complete stored payload.
+      QOpenGLShaderProgram program;
+      require(program.addShaderFromSourceCode(QOpenGLShader::Vertex,
+        "#version 410 core\nvoid main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);gl_Position=vec4(p*2.-1.,0.,1.);}"), "Texture test vertex shader failed");
+      require(program.addShaderFromSourceCode(QOpenGLShader::Fragment,
+        "#version 410 core\nuniform sampler2DArray source;uniform int layer;out vec4 color;void main(){color=texelFetch(source,ivec3(ivec2(gl_FragCoord.xy),layer),0);}"), "Texture test fragment shader failed");
+      require(program.link() && program.bind(), "Texture test shader link failed");
+      program.setUniformValue("source", 2);
+      GLuint framebuffer=0, target=0, vao=0;
+      f->glGenFramebuffers(1, &framebuffer);
+      f->glGenTextures(1, &target);
+      f->glBindTexture(GL_TEXTURE_2D, target);
+      f->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+      f->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+      f->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target, 0);
+      require(f->glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE, "Texture test framebuffer incomplete");
+      f->glGenVertexArrays(1, &vao);
+      f->glBindVertexArray(vao);
+      f->glViewport(0, 0, 4, 4);
+      for (unsigned layer=0; layer<colors.size(); ++layer)
+      {
+        program.setUniformValue("layer", int(layer));
+        f->glDrawArrays(GL_TRIANGLES, 0, 3);
+        std::array<unsigned char, 64> pixels{};
+        f->glReadPixels(0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        for (unsigned i=0; i<16; ++i)
+          require(std::equal(colors[layer].begin(), colors[layer].end(), pixels.begin()+i*4), "Shared compressed array sampled the wrong slice");
+      }
+      f->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      f->glBindVertexArray(0);
+      program.release();
+      f->glDeleteVertexArrays(1, &vao);
+      f->glDeleteFramebuffers(1, &framebuffer);
+      f->glDeleteTextures(1, &target);
     }
     require(read() == second, "Compressed array upload clobbered the previous material binding");
 
