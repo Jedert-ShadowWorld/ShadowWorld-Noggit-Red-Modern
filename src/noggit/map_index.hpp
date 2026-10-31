@@ -17,7 +17,8 @@ enum class uid_fix_status
 {
   done,
   done_with_errors,
-  failed
+  failed,
+  cancelled
 };
 
 class MapTile;
@@ -200,7 +201,7 @@ public:
 
   uint32_t newGUID();
 
-  uid_fix_status fixUIDs (World*, bool);
+  uid_fix_status fixUIDs (World*, bool, bool projectOnly = false);
   void searchMaxUID();
   void saveMaxUID();
   void loadMaxUID();
@@ -222,6 +223,7 @@ public:
   void saveMinimapMD5translate();
 
 private:
+  uid_fix_status reviewAndFixUIDs(World*, bool projectOnly);
 	void ensureModernWdtInProject();
 	uint32_t getHighestGUIDFromFile(const std::string& pFilename) const;
 

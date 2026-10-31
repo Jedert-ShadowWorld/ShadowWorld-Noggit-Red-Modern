@@ -2,6 +2,8 @@
 #include <noggit/DBC.h>
 #include <noggit/client_data/ModernMapDB2Writer.hpp>
 #include <noggit/DetailDoodads.hpp>
+#include <noggit/GroundEffectAsset.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/project/CurrentProject.hpp>
 #include <noggit/MapTile.h>
@@ -977,9 +979,12 @@ namespace Noggit
                 // Load preview render. A few stock records reference models that
                 // no longer ship (dead Tirisfal/Silverpine/Arathi entries) - a
                 // failed render must not abort filling the other slots
-                QString filepath(("world/nodxt/detail/" + filename.toStdString()).c_str());
+                bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+                    == BlizzardArchive::ClientVersion::RETAIL;
+                QString filepath = filename;
                 try
                 {
+                    filepath = QString::fromStdString((retail ? Noggit::DetailDoodads::modelReference(filename.toStdString(), true) : "world/nodxt/detail/" + filename.toStdString()));
                     _preview_renderer->setModelOffscreen(filepath.toStdString());
                     list_item->setIcon(*_preview_renderer->renderToPixmap());
                     list_item->setToolTip(filepath);

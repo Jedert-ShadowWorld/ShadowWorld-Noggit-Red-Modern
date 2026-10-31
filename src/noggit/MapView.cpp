@@ -37,6 +37,7 @@
 #include <noggit/ui/texture_palette_small.hpp>
 #include <noggit/ui/MinimapCreator.hpp>
 #include <noggit/project/CurrentProject.hpp>
+#include <noggit/DerivedMapState.hpp>
 #include <opengl/scoped.hpp>
 #include <noggit/ui/tools/ViewToolbar/Ui/ViewToolbar.hpp>
 #include <noggit/ui/tools/AssetBrowser/Ui/AssetBrowser.hpp>
@@ -126,6 +127,15 @@
 #include <random>
 #include <format>
 
+
+namespace
+{
+  bool usesRetailMapWorkflow()
+  {
+    auto* app = Noggit::Application::NoggitApplication::instance();
+    return app->hasClientData() && app->clientData()->version() == BlizzardArchive::ClientVersion::RETAIL;
+  }
+}
 
 /* Some ugly macros we use */
 // TODO: make those methods instead???
@@ -1918,7 +1928,52 @@ void MapView::setupViewMenu()
                      _world->renderer()->markTerrainParamsUniformBlockDirty();
                    });
 
-  ADD_TOGGLE (view_menu, "Toggle Animation", Qt::Key_F11, _draw_model_animations);
+  if (usesRetailMapWorkflow())
+  {
+    auto previewMenu = view_menu->addMenu(tr("Model preview"));
+    auto addPreviewChoices = [this, previewMenu](QString const& title, QString const& key,
+                                                QStringList const& labels, int defaultValue)
+    {
+      auto menu = previewMenu->addMenu(title);
+      for (int i = 0; i < labels.size(); ++i)
+      {
+        auto action = menu->addAction(labels[i]);
+        action->setCheckable(true);
+        connect(action, &QAction::triggered, this, [this, key, i]
+        {
+          _settings->setValue(key, i);
+          if (key == "retail/model_preview_animation")
+            _draw_model_animations.set(true);
+          update();
+        });
+        connect(menu, &QMenu::aboutToShow, action, [this, action, key, i, defaultValue]
+        {
+          action->setChecked(_settings->value(key, defaultValue).toInt() == i);
+        });
+      }
+    };
+    addPreviewChoices(tr("Quality"), "retail/model_preview_quality",
+        {tr("Low — layout"), tr("Medium — editing"), tr("High — review"), tr("Ultra — full detail")}, 3);
+    addPreviewChoices(tr("Model geometry (LOD)"), "retail/model_preview_lod",
+        {tr("From quality preset"), tr("Highest"), tr("Reduced"), tr("Lowest available")}, 0);
+    addPreviewChoices(tr("Animation playback"), "retail/model_preview_animation",
+        {tr("Running"), tr("Paused — hold current pose"), tr("Off — static pose")}, 0);
+    addPreviewChoices(tr("Surface decals (identified)"), "retail/model_preview_decals",
+        {tr("Full"), tr("Reduced texture detail"), tr("Hidden")}, 0);
+    auto pauseModels = previewMenu->addAction(tr("Pause / resume model animations"));
+    pauseModels->setShortcut(Qt::Key_F11);
+    connect(pauseModels, &QAction::triggered, this, [this]
+    {
+      int const mode = _settings->value("retail/model_preview_animation", 0).toInt();
+      _settings->setValue("retail/model_preview_animation", mode == 0 ? 1 : 0);
+      _draw_model_animations.set(true);
+      update();
+    });
+  }
+  else
+  {
+    ADD_TOGGLE (view_menu, "Toggle Animation", Qt::Key_F11, _draw_model_animations);
+  }
   ADD_TOGGLE (view_menu, "Draw fog", Qt::Key_F12, _draw_fog);
 
   ADD_TOGGLE_POST (view_menu, "Hole lines", Qt::SHIFT | Qt::Key_F1, _draw_hole_lines,
@@ -2764,14 +2819,64 @@ void MapView::move_camera_with_auto_height (glm::vec3 const& pos)
 
 void MapView::on_uid_fix_fail()
 {
-  emit uid_fix_failed();
-
+  if (!usesRetailMapWorkflow())
+  {
+    emit uid_fix_failed();
+    _uid_fix_failed = true;
+    deleteLater();
+    return;
+  }
   _uid_fix_failed = true;
-  deleteLater();
+  // The failure UI must not run inside the GL callback.
+  QTimer::singleShot(0, this, [this]()
+  {
+    emit uid_fix_failed();
+    deleteLater();
+  });
 }
 
 void MapView::initializeGL()
 {
+  if (usesRetailMapWorkflow())
+  {
+    if (_uid_fix_failed || _uid_fix_pending) return;
+    if (_uid_fix != uid_fix_mode::none)
+    {
+      _uid_fix_pending = true;
+      QTimer::singleShot(0, this, [this]()
+      {
+        makeCurrent();
+        OpenGL::context::scoped_setter const scoped_context(::gl, context());
+        uid_fix_status result = uid_fix_status::done;
+        try
+        {
+          if (_uid_fix == uid_fix_mode::max_uid) _world->mapIndex.searchMaxUID();
+          else result = _world->mapIndex.fixUIDs(_world.get(), false,
+            _uid_fix == uid_fix_mode::fix_project_tiles);
+        }
+        catch (std::exception const& error)
+        {
+          LogError << "[UID repair] " << error.what() << std::endl;
+          result = uid_fix_status::failed;
+        }
+        _uid_fix_pending = false;
+        if (result == uid_fix_status::cancelled)
+        {
+          _force_uid_check = false;
+          _uid_fix_failed = true;
+          emit uid_fix_cancelled();
+          deleteLater();
+          return;
+        }
+        if (result == uid_fix_status::failed) { on_uid_fix_fail(); return; }
+        _uid_fix = uid_fix_mode::none;
+        _needs_redraw = true;
+        update();
+      });
+      return;
+    }
+  }
+
   bool uid_warning = false;
 
   OpenGL::context::scoped_setter const _ (::gl, context());
@@ -2842,6 +2947,8 @@ void MapView::initializeGL()
 void MapView::paintGL()
 {
   ZoneScoped;
+  if (usesRetailMapWorkflow() && (_uid_fix_failed || _uid_fix_pending))
+    return;
 
   static bool lock = false;
 
@@ -2856,6 +2963,8 @@ void MapView::paintGL()
   if (!_gl_initialized)
   {
     initializeGL();
+    if (usesRetailMapWorkflow() && (!_gl_initialized || _uid_fix_failed))
+      return;
   }
 
   if (_last_opengl_context != context())
@@ -2869,8 +2978,22 @@ void MapView::paintGL()
   _last_frame_durations.emplace_back (now - _last_update);
 
   lock = true;
-  if (!activeTool()->preRender())
+  auto* frameTool = activeTool().get();
+  if (usesRetailMapWorkflow())
   {
+      auto* minimap = static_cast<Noggit::MinimapTool*>(_tools[static_cast<int>(editing_mode::minimap)].get());
+      if (minimap->isExportActive())
+          frameTool = minimap;
+  }
+  if (!frameTool->preRender())
+  {
+      // Export jobs keep receiving frames while the normal scene is paused.
+      // Do not turn their duration into one large simulation tick on resume.
+      if (usesRetailMapWorkflow())
+      {
+          _last_update = now;
+          _last_frame_durations.pop_back();
+      }
       lock = false;
       return;
   }
@@ -3055,7 +3178,7 @@ MapView::~MapView()
     _tools[static_cast<int>(editing_mode::object)].reset();
   }
 
-  AsyncLoader::instance->reset_object_fail();
+  if (!usesRetailMapWorkflow()) AsyncLoader::instance->reset_object_fail();
 
   Noggit::Ui::selected_texture::texture.reset();
 
@@ -3420,6 +3543,7 @@ math::ray MapView::intersect_ray() const
 
 selection_result MapView::intersect_result(bool terrain_only)
 {
+  bool const retailPreview = usesRetailMapWorkflow();
   selection_result results
   ( _world->intersect 
     ( glm::transpose(_model_view)
@@ -3431,11 +3555,12 @@ selection_result MapView::intersect_result(bool terrain_only)
     , _draw_models.get()
     , _draw_hidden_models.get()
     , _draw_wmo_exterior.get()
-    , _draw_model_animations.get()
+    , retailPreview || _draw_model_animations.get()
     , false
     , false
     , 0.0f
     , true // !_draw_wmo_exterior.get() // invert so that we only cast interiors if exterior is hidden
+    , retailPreview ? _world->renderer()->modelPreviewTime() : -1
     )
   );
 
@@ -4222,45 +4347,73 @@ void MapView::save(save_mode mode)
 
   activeTool()->saveSettings();
 
-  if (AsyncLoader::instance->important_object_failed_loading())
+  bool const retail = usesRetailMapWorkflow();
+  if (retail)
   {
-    save = false;
-    QPushButton *yes, *no;
-
-    QMessageBox first_warning;
-    first_warning.setIcon(QMessageBox::Critical);
-    first_warning.setWindowIcon(QIcon (":/icon"));
-    first_warning.setWindowTitle("Some models couldn't be loaded");
-    first_warning.setText("Error:\nSome models could not be loaded and saving will cause collision and culling issues,"
-      " this is most likely caused by missing or corrupted models."
-      "\nCheck the log file for the list of model errors and fix them."
-      "\nWould you still like to save ?");
-    // roles are swapped to force the user to pay attention and both are "accept" roles so that escape does nothing
-    no = first_warning.addButton("No", QMessageBox::ButtonRole::AcceptRole);
-    yes = first_warning.addButton("Yes", QMessageBox::ButtonRole::YesRole);
-    first_warning.setDefaultButton(no);
-
-    first_warning.exec();
-
-    if (first_warning.clickedButton() == yes)
+    auto const failures = AsyncLoader::instance->loading_failures();
+    if (!failures.empty())
     {
-      QMessageBox second_warning;
-      second_warning.setIcon(QMessageBox::Warning);
-      second_warning.setWindowIcon(QIcon (":/icon"));
-      second_warning.setWindowTitle("Are you sure ?");
-      second_warning.setText( "If you save you will have to save again all the adt containing the defective/missing models once you've fixed said models to correct all the issues.\n"
-                              "By clicking yes you accept to bear all the consequences of your action and forfeit the right to complain to the developers about any culling and collision issues.\n\n"
-                              "So... do you REALLY want to save ?"
-                            );
-      no = second_warning.addButton("No", QMessageBox::ButtonRole::YesRole);
-      yes = second_warning.addButton("Yes", QMessageBox::ButtonRole::AcceptRole);
-      second_warning.setDefaultButton(no);
+      QStringList details;
+      for (auto const& failure : failures)
+        details << QString::fromStdString(failure.asset) + "\n" + QString::fromStdString(failure.reason);
+      QMessageBox warning(QMessageBox::Warning, "Unresolved loading errors",
+        QString("%1 loaded objects have unresolved errors. Saving may produce incomplete bounds or tile references.\n"
+                "Fix UID checks placement bounds only, not skins, textures or WMO groups.\n\n"
+                "Details lists the files and loader errors. Report:\n%2")
+          .arg(failures.size()).arg(QString::fromStdString(AsyncLoader::instance->failure_report_path())),
+        QMessageBox::NoButton, this);
+      warning.setTextFormat(Qt::PlainText);
+      warning.setDetailedText(details.join("\n\n"));
+      auto cancel = warning.addButton(QMessageBox::Cancel);
+      auto proceed = warning.addButton("Save anyway", QMessageBox::AcceptRole);
+      warning.setDefaultButton(cancel);
+      warning.setEscapeButton(cancel);
+      warning.exec();
+      save = warning.clickedButton() == proceed;
+    }
+  }
+  else
+  {
+    if (AsyncLoader::instance->important_object_failed_loading())
+    {
+      save = false;
+      QPushButton *yes, *no;
 
-      second_warning.exec();
+      QMessageBox first_warning;
+      first_warning.setIcon(QMessageBox::Critical);
+      first_warning.setWindowIcon(QIcon (":/icon"));
+      first_warning.setWindowTitle("Some models couldn't be loaded");
+      first_warning.setText("Error:\nSome models could not be loaded and saving will cause collision and culling issues,"
+        " this is most likely caused by missing or corrupted models."
+        "\nCheck the log file for the list of model errors and fix them."
+        "\nWould you still like to save ?");
+      // roles are swapped to force the user to pay attention and both are "accept" roles so that escape does nothing
+      no = first_warning.addButton("No", QMessageBox::ButtonRole::AcceptRole);
+      yes = first_warning.addButton("Yes", QMessageBox::ButtonRole::YesRole);
+      first_warning.setDefaultButton(no);
 
-      if (second_warning.clickedButton() == yes)
+      first_warning.exec();
+
+      if (first_warning.clickedButton() == yes)
       {
-        save = true;
+        QMessageBox second_warning;
+        second_warning.setIcon(QMessageBox::Warning);
+        second_warning.setWindowIcon(QIcon (":/icon"));
+        second_warning.setWindowTitle("Are you sure ?");
+        second_warning.setText( "If you save you will have to save again all the adt containing the defective/missing models once you've fixed said models to correct all the issues.\n"
+                                "By clicking yes you accept to bear all the consequences of your action and forfeit the right to complain to the developers about any culling and collision issues.\n\n"
+                                "So... do you REALLY want to save ?"
+                              );
+        no = second_warning.addButton("No", QMessageBox::ButtonRole::YesRole);
+        yes = second_warning.addButton("Yes", QMessageBox::ButtonRole::AcceptRole);
+        second_warning.setDefaultButton(no);
+
+        second_warning.exec();
+
+        if (second_warning.clickedButton() == yes)
+        {
+          save = true;
+        }
       }
     }
   }
@@ -4290,6 +4443,16 @@ void MapView::save(save_mode mode)
     bool tiles_saved = false;
     try
     {
+      std::vector<TileIndex> saved_tiles;
+      if (retail)
+      {
+        _world->wait_for_all_tile_updates();
+        if (mode == save_mode::current)
+          saved_tiles.emplace_back(_camera.position);
+        else
+          for (auto* tile : _world->mapIndex.loaded_tiles())
+            if (mode == save_mode::all || tile->changed.load()) saved_tiles.push_back(tile->index);
+      }
       switch (mode)
       {
       case save_mode::current: tiles_saved = _world->mapIndex.saveTile(TileIndex(_camera.position), _world.get()); break;
@@ -4304,8 +4467,61 @@ void MapView::save(save_mode mode)
           "Keep the map open and check log.txt for the failing tile and reason before retrying.");
         return;
       }
+      if (retail)
+      {
+        auto const& project_path = Noggit::Project::CurrentProject::get()->ProjectPath;
+        try
+        {
+          // Pending WDL tiles without unsaved changes are rebuilt from their saved ADTs.
+          auto const pending_lod = Noggit::DerivedMapState::pending(
+            project_path, _world->basename, Noggit::DerivedMapState::Lod);
+          auto lod_ready = [&](TileIndex const& tile) {
+            return std::find(pending_lod.begin(), pending_lod.end(), tile) == pending_lod.end();
+          };
+          std::vector<TileIndex> wdl_tiles;
+          for (auto const& tile : saved_tiles)
+            if (lod_ready(tile)) wdl_tiles.push_back(tile);
+          for (auto const& tile : Noggit::DerivedMapState::pending(
+                 project_path, _world->basename, Noggit::DerivedMapState::Wdl))
+            if (lod_ready(tile) && !_world->mapIndex.has_unsaved_changes(tile)
+                && std::find(wdl_tiles.begin(), wdl_tiles.end(), tile) == wdl_tiles.end())
+              wdl_tiles.push_back(tile);
+          _world->horizon.save_wdl(_world.get(), true, &wdl_tiles);
+          Noggit::DerivedMapState::clear(project_path, _world->basename, wdl_tiles,
+            Noggit::DerivedMapState::Wdl);
+        }
+        catch (std::exception const& error)
+        {
+          try
+          {
+            Noggit::DerivedMapState::mark(project_path, _world->basename, saved_tiles,
+              Noggit::DerivedMapState::Wdl);
+          }
+          catch (std::exception const& state_error)
+          {
+            LogError << "[Map Save] Could not record pending WDL update: " << state_error.what() << std::endl;
+          }
+          throw std::runtime_error(std::string(error.what())
+            + " Use Update LOD + map textures + heightmap in the Minimap Editor after resolving the error.");
+        }
+        auto* textures = static_cast<Noggit::MinimapTool*>(_tools[static_cast<int>(editing_mode::minimap)].get());
+        auto const errors = textures->saveRetailMapTextures(saved_tiles);
+        if (!errors.empty())
+        {
+          LogError << "[Map Save] Map textures incomplete: " << errors.join("; ").toStdString() << std::endl;
+          _main_window->statusBar()->showMessage("ADTs saved; derived map results are incomplete", 15000);
+          QMessageBox warning(QMessageBox::Warning, "Map save incomplete",
+            "ADTs were saved, but LOD or map texture generation did not finish.\n"
+            "See Details for the affected tiles. Use Update project LOD + map textures + heightmap "
+            "after resolving the reported problem.",
+            QMessageBox::Ok, this);
+          warning.setDetailedText(errors.join("\n"));
+          warning.exec();
+          return;
+        }
+      }
       // Update the WDL only after every requested tile has been saved.
-      _world->horizon.save_wdl(_world.get());
+      if (!retail) _world->horizon.save_wdl(_world.get());
 
       for (auto&& dbc : _dirty_dbcs)
       {
@@ -4323,9 +4539,36 @@ void MapView::save(save_mode mode)
     }
 
     NOGGIT_ACTION_MGR->purge();
-    AsyncLoader::instance->reset_object_fail();
+    if (!retail)
+    {
+      AsyncLoader::instance->reset_object_fail();
+      _main_window->statusBar()->showMessage("Map saved", 2000);
+      return;
+    }
 
-    _main_window->statusBar()->showMessage("Map saved", 2000);
+    try
+    {
+      auto const& project_path = Noggit::Project::CurrentProject::get()->ProjectPath;
+      auto const textures = Noggit::DerivedMapState::pending(
+        project_path, _world->basename, Noggit::DerivedMapState::Diffuse | Noggit::DerivedMapState::Normal);
+      auto const lod = Noggit::DerivedMapState::pending(
+        project_path, _world->basename, Noggit::DerivedMapState::Lod);
+      auto const wdl = Noggit::DerivedMapState::pending(
+        project_path, _world->basename, Noggit::DerivedMapState::Wdl);
+      _main_window->statusBar()->showMessage(
+        QString("Map and textures saved. Pending textures: %1 tile(s); pending LOD: %2 tile(s); pending WDL: %3 tile(s).")
+          .arg(static_cast<qulonglong>(textures.size())).arg(static_cast<qulonglong>(lod.size()))
+          .arg(static_cast<qulonglong>(wdl.size())), 15000);
+      if (!lod.empty())
+        LogError << "[Terrain LOD] " << lod.size()
+                 << " tile(s) remain stale. See the per-tile diagnostics; missing or unsupported templates are not rebuilt."
+                 << std::endl;
+    }
+    catch (std::exception const& error)
+    {
+      _main_window->statusBar()->showMessage("Map saved; derived-result status could not be read", 15000);
+      LogError << "[Derived maps] Could not read stale state: " << error.what() << std::endl;
+    }
 
   }
   else
@@ -4459,6 +4702,8 @@ void MapView::setDbcDirty(DBCFile* dbc)
 // also called when loading world/viewport in MapView::initializeGL()
 void MapView::onSettingsSave()
 {
+  if (usesRetailMapWorkflow())
+    _draw_model_animations.set(true);
   _classic_ui = _settings->value("classicUI", false).toBool();
 
   OpenGL::TerrainParamsUniformBlock* params = _world->renderer()->getTerrainParamsUniformBlock();

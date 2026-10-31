@@ -6,5 +6,6 @@ enum class uid_fix_mode
   none,
   max_uid,
   fix_all_fail_on_model_loading_error,
-  fix_all_fuckporting_edition
+  fix_all_fuckporting_edition,
+  fix_project_tiles
 };

@@ -33,7 +33,7 @@ public:
   BlizzardArchive::Listfile::FileKey const& file_key() const;
 
   AsyncObject() = delete;
-  virtual ~AsyncObject() = default;
+  virtual ~AsyncObject();
 
   [[nodiscard]]
   virtual bool finishedLoading() const;

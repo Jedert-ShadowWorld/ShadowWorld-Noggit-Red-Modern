@@ -182,6 +182,21 @@ void OpenGL::context::blendFunc (GLenum sfactor, GLenum dfactor)
   return _current_context->functions()->glBlendFunc (sfactor, dfactor);
 }
 
+void OpenGL::context::blendFuncSeparate (GLenum src, GLenum dst, GLenum srcAlpha, GLenum dstAlpha)
+{
+#ifndef NOGGIT_DO_NOT_CHECK_FOR_OPENGL_ERRORS
+  verify_context_and_check_for_gl_errors const _ (_current_context, NOGGIT_CURRENT_FUNCTION);
+#endif
+  return _current_context->functions()->glBlendFuncSeparate(src, dst, srcAlpha, dstAlpha);
+}
+void OpenGL::context::blendColor (GLfloat r, GLfloat g, GLfloat b, GLfloat a)
+{
+#ifndef NOGGIT_DO_NOT_CHECK_FOR_OPENGL_ERRORS
+  verify_context_and_check_for_gl_errors const _ (_current_context, NOGGIT_CURRENT_FUNCTION);
+#endif
+  return _current_context->functions()->glBlendColor(r, g, b, a);
+}
+
 void OpenGL::context::clear (GLenum target)
 {
 #ifndef NOGGIT_DO_NOT_CHECK_FOR_OPENGL_ERRORS

@@ -1,6 +1,8 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include <noggit/DetailDoodads.hpp>
+#include <noggit/GroundEffectAsset.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 
 #include <noggit/DBC.h>
 #include <noggit/MapChunk.h>
@@ -290,21 +292,16 @@ void Noggit::DetailDoodads::generate(MapChunk* chunk, int density, NoggitRenderC
 
     DBCFile::Record record = gGroundEffectDoodadDB.getByID(id);
 
-    std::string path = "world/nodxt/detail/";
-    path += record.getString(GroundEffectDoodadDB::Filename);
-    if (path.size() > 4)
-    {
-      std::string ext = path.substr(path.size() - 4);
-      std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-      if (ext == ".mdx" || ext == ".mdl")
-      {
-        path.replace(path.size() - 4, 4, ".m2");
-      }
-    }
+    bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL;
+    auto const path = modelReference(record.getString(GroundEffectDoodadDB::Filename), retail);
+    auto const modelId = fileDataId(path, retail);
+    auto key = modelId ? BlizzardArchive::Listfile::FileKey(*modelId) : BlizzardArchive::Listfile::FileKey(path);
+    if (modelId) key.deduceOtherComponent(Noggit::Application::NoggitApplication::instance()->clientData()->listfile());
 
     dm.align = record.getUInt(GroundEffectDoodadDB::Flags) & 1;
     dm.index = static_cast<int>(out.models.size());
-    out.models.emplace_back(path, context);
+    out.models.emplace_back(key, context);
     return dm;
   };
 

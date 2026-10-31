@@ -5,6 +5,7 @@
 #include <noggit/Log.h>
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/project/CurrentProject.hpp>
+#include <noggit/formats/adt/RetailLiquidLod.hpp>
 #include <blizzard-archive-library/include/ClientFile.hpp>
 #include <blizzard-database-library/include/BlizzardDatabase.h>
 #include <core/Table.h>
@@ -20,6 +21,7 @@
 #include <QSaveFile>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTextStream>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -520,6 +522,43 @@ namespace
   }
 }
 
+std::vector<QStringList> Noggit::ClientData::supplementalRows(
+    std::string const& name, std::string const& legacyCsv,
+    std::vector<std::string> const& columns)
+{
+  std::vector<QStringList> rows;
+  auto project = Noggit::Project::CurrentProject::get();
+  if (project->projectVersion == Noggit::Project::ProjectVersion::RETAIL)
+  {
+    NativeTable native(name, true);
+    std::vector<std::size_t> indices;
+    for (auto const& column : columns) indices.push_back(columnIndex(native, column));
+    rows.reserve(native.table.rows.size());
+    for (auto const& row : native.table.rows)
+    {
+      QStringList values;
+      for (auto index : indices)
+        values.push_back(QString::fromStdString(dbc::CellToString(row.cells.at(index))));
+      rows.push_back(std::move(values));
+    }
+  }
+  else
+  {
+    auto configuration = Noggit::Application::NoggitApplication::instance()->getConfiguration();
+    QFile file(QString::fromStdString(configuration->ApplicationNoggitDefinitionsPath + "/" + legacyCsv));
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+      throw std::runtime_error("Could not open supplemental CSV: " + legacyCsv);
+    QTextStream input(&file);
+    input.readLine();
+    while (!input.atEnd())
+    {
+      auto values = input.readLine().split(',');
+      rows.push_back(std::move(values));
+    }
+  }
+  return rows;
+}
+
 bool Noggit::ClientData::saveModernMapDB2(std::uint32_t map_id, QWidget* parent)
 {
   NativeTable map;
@@ -691,6 +730,45 @@ bool Noggit::ClientData::loadModernWMOAreaDB2()
   {
     LogError << "[ModernDB2][WMOAreaTable] " << error.what() << std::endl;
     return false;
+  }
+}
+
+void Noggit::ClientData::loadRetailLiquidDB2()
+{
+  using namespace Noggit::Formats::ADT;
+  RetailLiquid::vertex_formats = {{1,0},{2,2},{3,1},{4,1},{5,0}};
+  RetailLiquid::default_objects = {{2,42}};
+  try
+  {
+    auto pairs = [](std::string const& name, std::string const& field) {
+      NativeTable table(name,true);
+      auto id = table.idColumn(), value = columnIndex(table,field);
+      std::map<unsigned,unsigned> result;
+      for (auto const& row : table.table.rows)
+        result.emplace(static_cast<unsigned>(std::stoul(dbc::CellToString(row.cells.at(id)))),
+                       static_cast<unsigned>(std::stoul(dbc::CellToString(row.cells.at(value)))));
+      return result;
+    };
+    auto materials = pairs("LiquidMaterial","LVF");
+    auto types = pairs("LiquidType","MaterialID");
+    auto objects = pairs("LiquidObject","LiquidTypeID");
+    auto formats = RetailLiquid::vertex_formats, defaults = RetailLiquid::default_objects;
+    for (auto const& [type,material] : types)
+      if (materials.count(material) && materials.at(material) <= 5) formats[type] = materials.at(material);
+    for (auto const& [id,type] : objects)
+      if (type && id >= 42 && id <= 65535 && (!defaults.count(type) || id < defaults.at(type)))
+        defaults[type] = id;
+    formats[2] = 2; defaults[2] = 42;
+    RetailLiquid::vertex_formats = std::move(formats);
+    RetailLiquid::default_objects = std::move(defaults);
+    Log << "[ModernDB2][Liquid] Loaded " << RetailLiquid::vertex_formats.size()
+        << " vertex layouts and " << RetailLiquid::default_objects.size()
+        << " default liquid objects." << std::endl;
+  }
+  catch (std::exception const& error)
+  {
+    LogError << "[ModernDB2][Liquid] " << error.what()
+             << "; new liquid types without reference metadata will remain pending." << std::endl;
   }
 }
 

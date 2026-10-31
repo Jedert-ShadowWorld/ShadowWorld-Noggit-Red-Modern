@@ -6,6 +6,7 @@
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
 #include <noggit/formats/adt/ShadowlandsADTCodec.hpp>
+#include <noggit/DerivedMapState.hpp>
 #include <noggit/Misc.h>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h> // ModelInstance
@@ -601,6 +602,10 @@ bool MapTile::save(World* world, bool save_using_mclq_liquids)
   {
     try
     {
+      // Marked here because saveTile can be called without MapIndex.
+      if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL)
+        Noggit::DerivedMapState::mark(
+          Noggit::Project::CurrentProject::get()->ProjectPath, world->basename, index);
       if (!_new_split_tile)
         modern_backing = Noggit::Formats::ADT::ShadowlandsADTCodec::loadBackingStore(
           _file_key.filepath());
@@ -1002,7 +1007,30 @@ bool MapTile::save(World* world, bool save_using_mclq_liquids)
       if (!modern_backing)
         modern_backing = Noggit::Formats::ADT::ShadowlandsADTCodec::createBackingStore(
           _file_key.filepath(), serialized);
-      Noggit::Formats::ADT::ShadowlandsADTCodec::saveFromLegacy(*modern_backing, serialized);
+      Noggit::Formats::ADT::RetailObjectTransfer::WmoSources wmo_sources;
+      if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL)
+        for (auto const* object : lObjectInstances)
+          if (object->retail_source()) wmo_sources.emplace(object->uid, *object->retail_source());
+      bool const lod_updated = Noggit::Formats::ADT::ShadowlandsADTCodec::saveFromLegacy(*modern_backing, serialized,
+        client_data->version() == BlizzardArchive::ClientVersion::RETAIL ? &wmo_sources : nullptr);
+      if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL)
+      {
+        try
+        {
+          // An editor save makes the tile an edited tile, including tiles that
+          // previously held only UID-repair neighbour OBJ files.
+          Noggit::DerivedMapState::clear(
+            Noggit::Project::CurrentProject::get()->ProjectPath, world->basename, index,
+            Noggit::DerivedMapState::ObjectDependency
+              | (lod_updated ? Noggit::DerivedMapState::Lod : 0u));
+        }
+        catch (std::exception const& error)
+        {
+          // ADT parts are already written; the stale flags remain set.
+          LogError << "[Terrain LOD] Saved, but could not clear stale state: "
+                   << error.what() << std::endl;
+        }
+      }
     }
     catch (std::exception const& error)
     {

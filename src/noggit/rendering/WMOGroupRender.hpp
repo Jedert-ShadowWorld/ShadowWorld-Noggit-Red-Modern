@@ -5,6 +5,7 @@
 
 #include <noggit/rendering/BaseRender.hpp>
 #include <opengl/scoped.hpp>
+#include <array>
 
 namespace OpenGL::Scoped
 {
@@ -30,7 +31,13 @@ namespace Noggit::Rendering
     std::uint32_t tex1;
     std::uint32_t alpha_test_mode;
     std::uint32_t sidn_color;
+    // Slots 2..8: sampler-array index and layer. Padding keeps RGBA32UI alignment.
+    std::uint32_t extra_textures[16]{};
+    std::uint32_t& sampler(unsigned slot) { return slot == 0 ? tex_array0 : slot == 1 ? tex_array1 : extra_textures[(slot - 2) * 2]; }
+    std::uint32_t& layer(unsigned slot) { return slot == 0 ? tex0 : slot == 1 ? tex1 : extra_textures[(slot - 2) * 2 + 1]; }
   };
+
+  static_assert(sizeof(WMORenderBatch) == 96);
 
   enum WMORenderBatchFlags
   {
@@ -39,16 +46,19 @@ namespace Noggit::Rendering
     eWMOBatch_Unlit = 0x4,
     eWMOBatch_Unfogged = 0x8,
     eWMOBatch_Collision = 0x10,
-    eWMOBatch_SIDN = 0x20
+    eWMOBatch_SIDN = 0x20,
+    eWMOBatch_RetailMaterials = 0x40,
+    eWMOBatch_NoEnvironment = 0x80
   };
 
   struct WMOCombinedDrawCall
   {
-    std::vector<int> samplers;
+    std::array<int, 15> samplers;
     std::uint32_t index_start = 0;
     std::uint32_t index_count = 0;
     std::uint32_t n_used_samplers = 0;
     bool backface_cull = false;
+    int blend_mode = -1; // Legacy groups retain their existing caller-owned state.
   };
 
   class WMOGroupRender : public BaseRender
@@ -73,6 +83,8 @@ namespace Noggit::Rendering
   private:
 
     void setupVao(OpenGL::Scoped::use_program& wmo_shader);
+    void packLegacyBatches();
+    bool packRetailBatches();
 
     WMOGroup* _wmo_group;
 
@@ -82,7 +94,7 @@ namespace Noggit::Rendering
 
     OpenGL::Scoped::deferred_upload_vertex_arrays<1> _vertex_array;
     GLuint const& _vao = _vertex_array[0];
-    OpenGL::Scoped::deferred_upload_buffers<8> _buffers;
+    OpenGL::Scoped::deferred_upload_buffers<12> _buffers;
     GLuint const& _vertices_buffer = _buffers[0];
     GLuint const& _normals_buffer = _buffers[1];
     GLuint const& _texcoords_buffer = _buffers[2];
@@ -92,9 +104,15 @@ namespace Noggit::Rendering
     GLuint const& _render_batch_mapping_buffer = _buffers[6];
     GLuint const& _render_batch_tex_buffer = _buffers[7];
 
+    GLuint const& _texcoords_buffer_3 = _buffers[8];
+    GLuint const& _texcoords_buffer_4 = _buffers[9];
+    GLuint const& _material_weights_buffer = _buffers[10];
+    GLuint const& _material_blend_alpha_buffer = _buffers[11];
+
     GLuint _render_batch_tex = 0;
 
     bool _uploaded = false;
+    bool _reload_before_upload = false;
     bool _upload_attempted = false;
     bool _vao_is_setup = false;
 

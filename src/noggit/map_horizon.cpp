@@ -4,6 +4,10 @@
 
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Log.h>
+#include <noggit/formats/RetailWorldTables.hpp>
+#include <QSaveFile>
+#include <QFileInfo>
+#include <QDir>
 #include <noggit/map_index.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/MapTile.h>
@@ -356,22 +360,21 @@ int16_t map_horizon::getWdlheight(MapTile* tile, float x, float y)
     int col = static_cast<int>((x - UNITSIZE * 0.5f * (row % 2)) / UNITSIZE + 0.5f);
     bool inner = (row % 2) == 1;
 
-    if (row < 0 || col < 0 || row > 16 || col >(inner ? 8 : 9))
-        return 0;
+    if (row < 0 || col < 0 || row > 16 || col > (inner ? 7 : 8))
+        throw std::runtime_error("WDL height sample is outside the terrain grid");
 
-    // truncate and clamp the float value
     auto chunk = tile->getChunk(cx, cy);
-    // float height = heights[cy * 16 + cx][17 * (row / 2) + (inner ? 9 : 0) + col];
     if (!chunk)
-        return 0.0f;
+        throw std::runtime_error("WDL height sample has no terrain chunk");
 
     float height = chunk->getHeightmap()[17 * (row / 2) + (inner ? 9 : 0) + col].y;
-    return std::min(std::max(static_cast<int16_t>(height), static_cast<int16_t>(SHRT_MIN)), static_cast<int16_t>(SHRT_MAX));
+    return Noggit::Formats::RetailWorldTables::wdlHeight(height);
 }
 
 void map_horizon::update_horizon_tile(MapTile* mTile)
 {
     auto tile_index = mTile->index;
+    auto updated = std::make_unique<map_horizon_tile>();
 
     // calculate the heightmap as a short array
     float x, y;
@@ -383,18 +386,11 @@ void map_horizon::update_horizon_tile(MapTile* mTile)
             x = j * CHUNKSIZE;
             y = i * CHUNKSIZE;
 
-            if (!_tiles[tile_index.z][tile_index.x].get()) // tile has not been initialised
-                //     continue;
-            {
-                _tiles[tile_index.z][tile_index.x] = std::make_unique<map_horizon_tile>();
-                // do we need to use memcpy as well ?
-            }
-            // only works for initialised
-            _tiles[tile_index.z][tile_index.x].get()->height_17[i][j] = getWdlheight(mTile, x, y);
+            updated->height_17[i][j] = getWdlheight(mTile, x, y);
 
             // inner - close enough; correct values appear to use some form of averaging
             if (i < 16 && j < 16)
-                _tiles[tile_index.z][tile_index.x].get()->height_16[i][j] = getWdlheight(mTile, x + CHUNKSIZE / 2.0f, y + CHUNKSIZE / 2.0f);
+                updated->height_16[i][j] = getWdlheight(mTile, x + CHUNKSIZE / 2.0f, y + CHUNKSIZE / 2.0f);
         }
     }
     // Holes
@@ -414,18 +410,104 @@ void map_horizon::update_horizon_tile(MapTile* mTile)
             if (holeBits.count() == 16) // if all holes are set in a chunk
                 wdlHoleMask.set(j, true);
         }
-        _tiles[tile_index.z][tile_index.x].get()->holes[i] = static_cast<int16_t>(wdlHoleMask.to_ulong());
+        updated->holes[i] = static_cast<int16_t>(wdlHoleMask.to_ulong());
     }
 
+    _tiles[tile_index.z][tile_index.x] = std::move(updated);
     update_minimap_tile(tile_index.z, tile_index.x, true);
 }
 
-void map_horizon::save_wdl(World* world, bool regenerate)
+void map_horizon::save_wdl(World* world, bool regenerate, std::vector<TileIndex> const* scope)
 {
     world->wait_for_all_tile_updates();
 
     std::stringstream filename;
     filename << "World\\Maps\\" << world->basename << "\\" << world->basename << ".wdl";
+    auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+    if (client->version() == BlizzardArchive::ClientVersion::RETAIL)
+    {
+      if (scope && scope->empty()) return;
+      BlizzardArchive::ClientFile source(filename.str(), client);
+      Noggit::Formats::RetailWorldTables::Bytes bytes(source.getBuffer(), source.getBuffer() + source.getSize());
+      auto offsets = Noggit::Formats::RetailWorldTables::wdlOffsets(bytes);
+      namespace Tables = Noggit::Formats::RetailWorldTables;
+      auto mapPath = "World\\Maps\\" + world->basename + "\\" + world->basename;
+      BlizzardArchive::ClientFile wdt(mapPath + ".wdt", client);
+      Tables::Bytes wdtBytes(wdt.getBuffer(), wdt.getBuffer() + wdt.getSize());
+      auto mphd = Tables::required(Tables::chunks(wdtBytes), "MPHD", 32);
+      auto occId = Tables::read(wdtBytes, mphd.payload + 8);
+      Tables::Bytes occlusion, originalOcclusion;
+      std::map<unsigned, std::size_t> occlusionOffsets;
+      std::size_t lowered = 0;
+      if (occId)
+      {
+        // Honor the existing MPHD reference and project override. Never rewrite
+        // the root WDT or silently replace an unreadable occlusion satellite.
+        BlizzardArchive::ClientFile occ(BlizzardArchive::Listfile::FileKey(mapPath + "_occ.wdt", occId), client);
+        occlusion.assign(occ.getBuffer(), occ.getBuffer() + occ.getSize());
+        originalOcclusion = occlusion;
+        occlusionOffsets = Tables::occlusionOffsets(occlusion);
+      }
+      for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 64; ++x)
+        {
+          TileIndex index(x, y);
+          if (scope && std::find(scope->begin(), scope->end(), index) == scope->end()) continue;
+          if (!world->mapIndex.hasTile(index)) continue;
+          if (regenerate)
+          {
+            bool unload = !world->mapIndex.tileLoaded(index) && !world->mapIndex.tileAwaitingLoading(index);
+            auto* tile = world->mapIndex.loadTile(index, false, false, false);
+            if (!tile) throw std::runtime_error("Cannot load tile for Retail WDL");
+            try
+            {
+              tile->wait_until_loaded();
+              if (tile->loading_failed())
+                throw std::runtime_error("Tile " + std::to_string(x) + "_" + std::to_string(y)
+                  + " failed to load; Retail WDL heights were not updated");
+              update_horizon_tile(tile);
+            }
+            catch (...)
+            {
+              if (unload) world->mapIndex.unloadTile(index);
+              throw;
+            }
+            if (unload) world->mapIndex.unloadTile(index);
+          }
+          auto* tile = get_horizon_tile(y, x);
+          if (!tile) throw std::runtime_error("Retail WDL tile has no sampled heights");
+          // The editor's 4x4 hole mask merges partial 8x8 holes. Read the saved
+          // ROOT so MAHO only removes chunks whose entire surface is a hole.
+          auto root_name = "World\\Maps\\" + world->basename + "\\" + world->basename
+            + "_" + std::to_string(x) + "_" + std::to_string(y) + ".adt";
+          BlizzardArchive::ClientFile root(root_name, client);
+          Tables::Bytes rootBytes(root.getBuffer(), root.getBuffer() + root.getSize());
+          auto holes = Tables::wdlHoles(rootBytes);
+          Noggit::Formats::RetailWorldTables::updateWdlTile(
+            bytes, offsets, y*64+x, tile->height_17, tile->height_16, holes);
+          lowered += Tables::lowerOcclusionTile(occlusion, occlusionOffsets, y*64+x, rootBytes);
+          std::memcpy(tile->holes, holes.data(), sizeof(tile->holes));
+        }
+      auto publish = [&](std::string const& name, Tables::Bytes const& data) {
+        auto path = QString::fromStdString(client->getDiskPath(name));
+        if (!QDir().mkpath(QFileInfo(path).absolutePath())) throw std::runtime_error("Cannot create world table directory");
+        QSaveFile output(path);
+        if (!output.open(QIODevice::WriteOnly) || output.write(data.data(), data.size()) != qint64(data.size()) || !output.commit())
+          throw std::runtime_error("Cannot atomically save " + name);
+      };
+      // Publish the conservative occluder first. If either write fails, the
+      // caller retains WDL pending state so the entire heightmap step is retried.
+      if (occlusion != originalOcclusion)
+      {
+        publish(mapPath + "_occ.wdt", occlusion);
+        Log << "Retail occlusion: lowered " << lowered << " samples for saved terrain" << std::endl;
+      }
+      if (bytes.size() == source.getSize()
+          && std::memcmp(bytes.data(), source.getBuffer(), bytes.size()) == 0) return;
+      publish(filename.str(), bytes);
+      set_minimap(&world->mapIndex);
+      return;
+    }
     //Log << "Saving WDL \"" << filename << "\"." << std::endl;
 
     util::sExtendableArray wdlFile;

@@ -2,6 +2,7 @@
 
 #include <noggit/client_data/ShadowlandsMapDB2Bridge.hpp>
 #include <noggit/client_data/ModernMapDB2Writer.hpp>
+#include <noggit/formats/adt/RetailLiquidLod.hpp>
 
 #include <noggit/DBC.h>
 #include <noggit/Log.h>
@@ -366,8 +367,9 @@ namespace Noggit::ClientData
       Table* liquid = load_optional(database, client_data, "LiquidType");
       Log << "[ModernDB2][Map] Bridging LiquidType" << std::endl;
       if (liquid) bridge_optional("LiquidType", [&] { bridge_liquid_type(*liquid); });
-
       load_optional(database, client_data, "LiquidMaterial");
+      if (project->projectVersion == Noggit::Project::ProjectVersion::RETAIL)
+        loadRetailLiquidDB2();
       load_optional(database, client_data, "SoundProviderPreferences");
       load_optional(database, client_data, "SoundAmbience");
       load_optional(database, client_data, "ZoneMusic");

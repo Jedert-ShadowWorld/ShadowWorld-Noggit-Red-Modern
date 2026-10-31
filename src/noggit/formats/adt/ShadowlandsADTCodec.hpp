@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
+#include "RetailObjectTransfer.hpp"
 
 namespace Noggit::Formats::ADT
 {
@@ -52,6 +54,11 @@ namespace Noggit::Formats::ADT
   class ShadowlandsADTCodec
   {
   public:
+    // Rebuilds OBJ1 from MDDF/MODF records with per-UID world bounds (Retail UID repair).
+    static std::vector<std::uint8_t> repairObjectLod(
+      std::vector<std::uint8_t> const& original,
+      std::vector<std::uint8_t> const& mddf, std::vector<std::uint8_t> const& modf,
+      std::map<std::uint32_t, std::array<float, 6>> const& worldBounds);
     [[nodiscard]] static ShadowlandsADTSource makeSource(std::string const& root_path);
 
     // Loads the physical split files through Noggit's ClientData/CASC gateway.
@@ -59,13 +66,28 @@ namespace Noggit::Formats::ADT
     // pipeline; OBJ1 and LOD are retained when present.
     [[nodiscard]] static ShadowlandsADTBackingStore loadBackingStore(std::string const& root_path);
 
+    // Retail only. Rebuilds LOD and OBJ1 liquid data from the saved ROOT/OBJ1;
+    // ROOT/TEX0/OBJ0 are not written.
+    static void rebuildDerived(std::string const& root_path);
+
+    // Optional, project-local source of coherent ROOT/LOD pairs for imported maps.
+    // The directory contains <map>_<x>_<y>.adt and its _lod.adt sibling. Each
+    // candidate is checked against the actual LOD before it can be used.
+    [[nodiscard]] static std::string lodReferenceDirectory(std::string const& root_path);
+    static void setLodReferenceDirectory(std::string const& root_path,
+                                        std::string const& directory);
+
     // Builds the required split parts for an explicitly new tile, without CASC reads.
     [[nodiscard]] static ShadowlandsADTBackingStore createBackingStore(
       std::string const& root_path, std::vector<std::uint8_t> const& legacy_adt);
 
     // Converts Noggit's canonical legacy serialization back into the modern
     // split layout while retaining chunks that the editor does not own.
-    static void saveFromLegacy(ShadowlandsADTBackingStore const& backing,
-                               std::vector<std::uint8_t> const& legacy_adt);
+    // Retail: also updates terrain LOD and returns whether it was updated; on
+    // failure the existing LOD is kept and the primary parts are still saved.
+    // Other clients keep their LOD bytes and return false.
+    static bool saveFromLegacy(ShadowlandsADTBackingStore const& backing,
+                               std::vector<std::uint8_t> const& legacy_adt,
+                               RetailObjectTransfer::WmoSources const* wmo_sources = nullptr);
   };
 }

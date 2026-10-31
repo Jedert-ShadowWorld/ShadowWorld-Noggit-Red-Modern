@@ -1,6 +1,9 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
 #include "ModelRender.hpp"
+#include <noggit/rendering/RetailM2Shader.hpp>
+#include <noggit/rendering/SurfaceDecalPreview.hpp>
+#include <noggit/formats/RetailSkin.hpp>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
 #include <noggit/Misc.h>
@@ -14,14 +17,23 @@
 #include <opengl/shader.hpp>
 
 #include <Listfile.hpp>
+#include <ClientFile.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 
 #include <external/tracy/Tracy.hpp>
+#include <map>
 
 
 using namespace Noggit::Rendering;
 
 namespace
 {
+  bool isRetailProject()
+  {
+    auto const* project = Noggit::Project::CurrentProject::get();
+    return project && project->projectVersion == Noggit::Project::ProjectVersion::RETAIL;
+  }
+
   bool isShadowlandsProject()
   {
     auto* project = Noggit::Project::CurrentProject::get();
@@ -69,7 +81,8 @@ void ModelRender::upload()
 
     gl.bindTexture(GL_TEXTURE_BUFFER, _bone_matrices_buf_tex);
     OpenGL::Scoped::buffer_binder<GL_TEXTURE_BUFFER> const binder(_bone_matrices_buffer);
-    gl.bufferData(GL_TEXTURE_BUFFER, _model->bone_matrices.size() * sizeof(glm::mat4x4), nullptr, GL_STREAM_DRAW);
+    std::vector<glm::mat4x4> const initialPose(_model->bone_matrices.size(), glm::mat4x4(1.f));
+    gl.bufferData(GL_TEXTURE_BUFFER, initialPose.size() * sizeof(glm::mat4x4), initialPose.data(), GL_STREAM_DRAW);
     gl.texBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, _bone_matrices_buffer);
   }
 
@@ -89,9 +102,12 @@ void ModelRender::upload()
   OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> box_indices_binder(_box_indices_buffer);
   gl.bufferData (GL_ELEMENT_ARRAY_BUFFER, _box_indices.size() * sizeof(uint16_t), _box_indices.data(), GL_STATIC_DRAW);
 
-  _model->_textureFilenames.clear();
-  _model->_textureFileDataIds.clear();
+  if (isRetailProject()) classifyPreviewDecals(_render_passes);
+  // Texture keys are kept for the next context upload; unload releases the handles.
 
+  _model->anim_calculated = false;
+  _bone_matrices_dirty = false;
+  _last_preview_animtime = -1;
   _uploaded = true;
 }
 
@@ -99,6 +115,10 @@ void ModelRender::unload()
 {
   _model->_textures.clear();
   _buffers.unload();
+  _preview_index_buffers.unload();
+  for (auto& skin : _preview_skins)
+    skin = PreviewSkin{};
+  _last_preview_animtime = -1;
   _vertex_arrays.unload();
 
   if (_bone_matrices_buf_tex)
@@ -167,6 +187,7 @@ void ModelRender::draw(glm::mat4x4 const& model_view
     _model->anim_calculated = true;
   }
 
+  updateBoneMatrices();
   OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> indices_binder(_indices_buffer);
 
   for (ModelRenderPass& p : _render_passes)
@@ -198,6 +219,9 @@ void ModelRender::draw(glm::mat4x4 const& model_view
     , bool animate
     , bool draw_fake_geometry_box
     , bool draw_animation_box
+    , int preview_lod
+    , bool preview_animation
+    , int preview_decals
 )
 {
   ZoneScopedN(NOGGIT_CURRENT_FUNCTION);
@@ -229,11 +253,21 @@ void ModelRender::draw(glm::mat4x4 const& model_view
   {
     ZoneScopedN("Model::draw() : drawing")
 
-    if (_model->animated && animate && (!_model->anim_calculated || _model->_per_instance_animation))
+    if (_model->animated && animate
+        && (preview_animation ? (_last_preview_animtime != animtime || _model->_global_animtime != animtime || _model->_per_instance_animation)
+                              : (!_model->anim_calculated || _model->_per_instance_animation)))
     {
       _model->animate(model_view, 0, animtime);
       _model->anim_calculated = true;
+      _last_preview_animtime = preview_animation ? animtime : -1;
     }
+    else if (_model->animated && animate && preview_animation)
+    {
+      // ModelManager::resetAnim clears this for every renderer; a held preview pose stays valid.
+      _model->anim_calculated = true;
+    }
+
+    updateBoneMatrices();
 
     if (all_boxes || _model->_hidden )
     {
@@ -267,11 +301,23 @@ void ModelRender::draw(glm::mat4x4 const& model_view
       m2_shader.uniform("anim_bones", false);
     }
 
-    OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> indices_binder(_indices_buffer);
+    int const lod = preview_lod >= 1 && preview_lod <= 2 ? preview_lod - 1 : -1;
+    if (lod >= 0)
+      loadPreviewSkin(lod);
+    bool useLod = lod >= 0 && _preview_skins[lod].valid;
+    // Authored LODs can merge equal-ID primary bone partitions. A custom
+    // geoset selection that separates those partitions needs the primary mesh.
+    if (useLod)
+      for (auto const& group : _shared_geosets)
+        for (auto index : group)
+          if (_model->showGeosets[index] != _model->showGeosets[group.front()])
+            useLod = false;
+    OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> indices_binder(useLod ? _preview_index_buffers[lod] : _indices_buffer);
+    auto& passes = useLod ? _preview_skins[lod].passes : _render_passes;
 
-    for (ModelRenderPass& p : _render_passes)
+    for (ModelRenderPass& p : passes)
     {
-      if (p.prepareDraw(m2_shader, _model, model_render_state))
+      if (p.prepareDraw(m2_shader, _model, model_render_state, preview_decals))
       {
         gl.drawElementsInstanced(GL_TRIANGLES, p.index_count, GL_UNSIGNED_SHORT, reinterpret_cast<void*>(p.index_start * sizeof(GLushort)), static_cast<GLsizei>(instances.size()));
       }
@@ -384,9 +430,10 @@ void ModelRender::fixShaderIdBlendOverride()
 {
   for (auto& pass : _render_passes)
   {
-    // Noggit's M2 shader path and ModelRenderPass storage support two texture
-    // stages. Newer clients may advertise more; never write past the arrays.
-    if (pass.texture_count > 2)
+    bool const authoredRetail = isRetailProject()
+        && (pass.shader_id & 0x8000);
+    // Retail authored materials keep all stages; unsupported counts are rejected in computePixelShaderIDs.
+    if (!authoredRetail && pass.texture_count > 2)
     {
       LogDebug << "modern M2: limiting texture stages to 2 for "
                << _model->_file_key.stringRepr() << std::endl;
@@ -492,6 +539,18 @@ void ModelRender::fixShaderIdBlendOverride()
 
 void ModelRender::fixShaderIDLayer()
 {
+  if (isRetailProject())
+  {
+    // Retail SKIN batches carry final material/layer IDs; the legacy reducer does not apply.
+    for (auto& pass : _render_passes)
+      for (unsigned stage = 0; stage < 3; ++stage)
+      {
+        pass.textures[stage] = pass.texture_combo_index + stage;
+        auto const animation = std::uint32_t(pass.animation_combo_index) + stage;
+        pass.uv_animations[stage] = animation < 0xffff ? static_cast<uint16_t>(animation) : 0xffff;
+      }
+    return;
+  }
   int non_layered_count = 0;
 
   for (auto const& pass : _render_passes)
@@ -818,14 +877,52 @@ void ModelRender::computePixelShaderIDs()
 {
   for (auto& pass : _render_passes)
   {
-    pass.pixel_shader = isShadowlandsProject()
-        ? M2GetShadowlandsPixelShaderID(pass.texture_count, pass.shader_id)
-        : M2GetPixelShaderID(pass.texture_count, pass.shader_id);
+    if (isRetailProject() && (pass.shader_id & 0x8000))
+    {
+      auto const material = retailM2Shader(pass.shader_id);
+      if (material && material->textures <= pass.texture_count && pass.texture_count <= 3
+          && std::uint32_t(pass.texture_combo_index) + pass.texture_count <= 65536u
+          && pass.texture_combo_index <= _model->_texture_lookup.size()
+          && pass.texture_count <= _model->_texture_lookup.size() - pass.texture_combo_index)
+        pass.pixel_shader = static_cast<ModelPixelShader>(material->pixel);
+      else
+      {
+        pass.pixel_shader.reset();
+        LogError << "Unsupported Retail M2 material: " << _model->file_key().stringRepr()
+                 << " shader=" << pass.shader_id << " stages=" << pass.texture_count << std::endl;
+      }
+    }
+    else
+      pass.pixel_shader = isShadowlandsProject()
+          ? M2GetShadowlandsPixelShaderID(pass.texture_count, pass.shader_id)
+          : M2GetPixelShaderID(pass.texture_count, pass.shader_id);
   }
 }
 
-void ModelRender::initRenderPasses(ModelView const* view, ModelTexUnit const* tex_unit, ModelGeoset const* model_geosets)
+void ModelRender::initRenderPasses(ModelView const* view, ModelTexUnit const* tex_unit, ModelGeoset const* model_geosets, std::size_t indexCount)
 {
+  bool const retail = isRetailProject();
+  if (indexCount == 0)
+  {
+    _primary_geoset_ids.clear();
+    for (std::size_t i = 0; i < view->n_submesh; ++i)
+      _primary_geoset_ids.push_back(model_geosets[i].id);
+    _shared_geosets.clear();
+    if (retail)
+    {
+      std::map<unsigned, std::vector<std::size_t>> groups;
+      for (std::size_t i = 0; i < _primary_geoset_ids.size(); ++i)
+        groups[_primary_geoset_ids[i]].push_back(i);
+      for (auto& [id, group] : groups)
+        if (group.size() > 1)
+          _shared_geosets.push_back(std::move(group));
+    }
+    indexCount = _model->_indices.size();
+  }
+  std::vector<bool> layeredGeosets(view->n_submesh, false);
+  for (std::size_t i = 0; i < view->n_texture_unit; ++i)
+    if (tex_unit[i].submesh < view->n_submesh && tex_unit[i].material_layer != 0)
+      layeredGeosets[tex_unit[i].submesh] = true;
   _render_passes.reserve(view->n_texture_unit);
   for (size_t j = 0; j<view->n_texture_unit; j++)
   {
@@ -841,11 +938,19 @@ void ModelRender::initRenderPasses(ModelView const* view, ModelTexUnit const* te
 
     ModelRenderPass pass(tex_unit[j], _model);
     pass.ordering_thingy = model_geosets[geoset].BoundingBox[0].x;
+    pass.layered_geometry = layeredGeosets[geoset];
 
-    pass.index_start = model_geosets[geoset].istart;
+    pass.index_start = Noggit::Format::skinIndexStart(model_geosets[geoset].istart,
+                                                     model_geosets[geoset].d2, retail);
     pass.index_count = model_geosets[geoset].icount;
     pass.vertex_start = model_geosets[geoset].vstart;
     pass.vertex_end = pass.vertex_start + model_geosets[geoset].vcount;
+
+    if (retail)
+    {
+      Noggit::Format::validateSkinRange(pass.index_start, pass.index_count, indexCount);
+      Noggit::Format::validateSkinRange(pass.vertex_start, model_geosets[geoset].vcount, view->n_index);
+    }
 
     _render_passes.push_back(std::move(pass));
   }
@@ -859,34 +964,132 @@ void ModelRender::initRenderPasses(ModelView const* view, ModelTexUnit const* te
     pass.initUVTypes(_model);
   }
 
-  if (_model->_file_key.stringRepr().find("8fx_ambient_waterfall_ripple02_misty.m2") != std::string::npos
-      || _model->_file_key.stringRepr().find("6fx_waterfall_mist01.m2") != std::string::npos)
-  {
-    Log << "[WaterfallM2] model=" << _model->_file_key.stringRepr()
-        << " uv_animations=" << _model->_texture_animations.size()
-        << " uv_lookups=" << _model->_texture_animation_lookups.size()
-        << " texture_unit_lookups=" << _model->_texture_unit_lookup.size()
-        << " passes=" << _render_passes.size() << std::endl;
-    for (auto const& pass : _render_passes)
-      Log << "[WaterfallM2] shader=" << pass.shader_id
-          << " pixel_shader=" << (pass.pixel_shader ? static_cast<int>(*pass.pixel_shader) : -1)
-          << " blend=" << pass.blend_mode
-          << " textures=" << pass.texture_count
-          << " texture_combo=" << pass.texture_combo_index
-          << " uv_combo=" << pass.texture_coord_combo_index
-          << " uv0=" << pass.uv_animations[0]
-          << " uv1=" << pass.uv_animations[1]
-          << " tex_unit0=" << static_cast<int>(pass.tu_lookups[0])
-          << " tex_unit1=" << static_cast<int>(pass.tu_lookups[1]) << std::endl;
-  }
+  if (retail)
+    std::stable_sort(_render_passes.begin(), _render_passes.end());
+  else
+    std::sort(_render_passes.begin(), _render_passes.end());
+}
 
-  std::sort(_render_passes.begin(), _render_passes.end());
+
+void ModelRender::classifyPreviewDecals(std::vector<ModelRenderPass>& passes)
+{
+  auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+  auto pathFor = [client](BlizzardArchive::Listfile::FileKey const& key)
+  {
+    if (key.hasFilepath())
+      return key.filepath();
+    return key.hasFileDataID() ? client->listfile()->getPath(key.fileDataID()) : std::string{};
+  };
+  auto const modelPath = pathFor(_model->file_key());
+  for (auto& pass : passes)
+  {
+    std::string texturePath;
+    if (pass.texture_count == 1 && pass.textures[0] < _model->_texture_lookup.size())
+    {
+      auto const index = _model->_texture_lookup[pass.textures[0]];
+      if (index < _model->_textures.size())
+        texturePath = pathFor(_model->_textures[index]->file_key());
+    }
+    pass.surface_decal = isSurfaceDecal(pass.flags, modelPath, pass.texture_count, texturePath, pass.layered_geometry);
+  }
+}
+
+void ModelRender::configurePreviewSkins(std::vector<std::uint32_t> const& fileIds, std::size_t viewCount)
+{
+  // The first nViews skins are bone partitions, not geometric LODs.
+  _preview_skin_ids = Noggit::Format::previewSkinFileIds(fileIds, viewCount);
+}
+
+void ModelRender::loadPreviewSkin(int choice)
+{
+  auto& target = _preview_skins[choice];
+  if (target.attempted)
+    return;
+  auto const id = _preview_skin_ids[choice];
+  if (!id)
+  {
+    target.attempted = true;
+    return;
+  }
+  // Optional SKIN reads are limited per frame; the primary mesh is drawn until then.
+  if (_preview_skin_load_budget <= 0)
+    return;
+  --_preview_skin_load_budget;
+  target.attempted = true;
+
+  // Optional SKINs get separate indices and passes; picking and saving use the primary mesh.
+  auto primaryPasses = std::move(_render_passes);
+  _render_passes.clear();
+  try
+  {
+    auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+    BlizzardArchive::ClientFile file(BlizzardArchive::Listfile::FileKey(id), client);
+    if (file.isEof() || file.getSize() < sizeof(ModelView))
+      throw std::runtime_error("missing or truncated optional SKIN");
+    ModelView view;
+    std::memcpy(&view, file.getBuffer(), sizeof(view));
+    if (std::memcmp(view.id, "SKIN", 4) || view.n_triangle == 0 || view.n_triangle % 3)
+      throw std::runtime_error("invalid optional SKIN header");
+    auto valid = [&](std::size_t offset, std::size_t count, std::size_t stride)
+    {
+      return offset <= file.getSize() && count <= (file.getSize() - offset) / stride;
+    };
+    if (!valid(view.ofs_index, view.n_index, sizeof(uint16_t))
+        || !valid(view.ofs_triangle, view.n_triangle, sizeof(uint16_t))
+        || !valid(view.ofs_submesh, view.n_submesh, sizeof(ModelGeoset))
+        || !valid(view.ofs_texture_unit, view.n_texture_unit, sizeof(ModelTexUnit)))
+      throw std::runtime_error("optional SKIN array is out of range");
+    auto const* lookup = reinterpret_cast<uint16_t const*>(file.getBuffer() + view.ofs_index);
+    auto const* triangles = reinterpret_cast<uint16_t const*>(file.getBuffer() + view.ofs_triangle);
+    target.indices.resize(view.n_triangle);
+    for (std::size_t i = 0; i < target.indices.size(); ++i)
+    {
+      if (triangles[i] >= view.n_index || lookup[triangles[i]] >= _model->_vertices.size())
+        throw std::runtime_error("optional SKIN triangle is out of range");
+      target.indices[i] = lookup[triangles[i]];
+    }
+    auto const* geosets = reinterpret_cast<ModelGeoset const*>(file.getBuffer() + view.ofs_submesh);
+    auto const* units = reinterpret_cast<ModelTexUnit const*>(file.getBuffer() + view.ofs_texture_unit);
+    // An optional SKIN is used whole or not at all.
+    for (std::size_t i = 0; i < view.n_texture_unit; ++i)
+      if (units[i].submesh >= view.n_submesh || units[i].renderflag_index >= _model->_render_flags.size())
+        throw std::runtime_error("optional SKIN material is out of range");
+    initRenderPasses(&view, units, geosets, target.indices.size());
+    for (auto& pass : _render_passes)
+    {
+      auto const found = std::find(_primary_geoset_ids.begin(), _primary_geoset_ids.end(), geosets[pass.submesh].id);
+      if (found == _primary_geoset_ids.end() || !pass.pixel_shader)
+        throw std::runtime_error("optional SKIN geoset or shader is unavailable");
+      pass.submesh = static_cast<uint16_t>(found - _primary_geoset_ids.begin());
+    }
+    if (_render_passes.empty())
+      throw std::runtime_error("optional SKIN contains no drawable material");
+    if (isRetailProject()) classifyPreviewDecals(_render_passes);
+    target.passes = std::move(_render_passes);
+    _preview_index_buffers.upload();
+    OpenGL::Scoped::buffer_binder<GL_ELEMENT_ARRAY_BUFFER> binder(_preview_index_buffers[choice]);
+    gl.bufferData(GL_ELEMENT_ARRAY_BUFFER, target.indices.size() * sizeof(uint16_t), target.indices.data(), GL_STATIC_DRAW);
+    std::vector<uint16_t>().swap(target.indices);
+    target.valid = true;
+  }
+  catch (std::exception const& error)
+  {
+    target.indices.clear();
+    target.passes.clear();
+    LogDebug << "[Retail preview] Using primary mesh for " << _model->file_key().stringRepr()
+             << ", optional SKIN " << id << ": " << error.what() << std::endl;
+  }
+  _render_passes = std::move(primaryPasses);
 }
 
 void ModelRender::updateBoneMatrices()
 {
+  // Requires this renderer's context to be current; picking only evaluates CPU poses.
+  if (!_uploaded || !_model->animBones || !_bone_matrices_dirty)
+    return;
   OpenGL::Scoped::buffer_binder<GL_TEXTURE_BUFFER> const binder (_bone_matrices_buffer);
   gl.bufferSubData(GL_TEXTURE_BUFFER, 0, _model->bone_matrices.size() * sizeof(glm::mat4x4), _model->bone_matrices.data());
+  _bone_matrices_dirty = false;
 }
 
 ModelRenderPass::ModelRenderPass(ModelTexUnit const& tex_unit, Model* m)
@@ -895,13 +1098,32 @@ ModelRenderPass::ModelRenderPass(ModelTexUnit const& tex_unit, Model* m)
 {
 }
 
-bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state)
+bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model *m, OpenGL::M2RenderState& model_render_state, int preview_decals)
 {
+  bool const retail = isRetailProject();
+  m2_shader.uniform("retail_alpha_key", retail ? 1 : 0);
+  m2_shader.uniform("retail_materials", retail ? 1 : 0);
+  m2_shader.uniform("preview_decal_lod_bias", retail && surface_decal && preview_decals == 1 ? 2.f : 0.f);
+  if (retail && surface_decal && preview_decals == 2)
+    return false;
   if (submesh >= m->showGeosets.size()
       || renderflag_index >= m->_render_flags.size()
       || !m->showGeosets[submesh]
       || !pixel_shader)
   {
+    return false;
+  }
+
+  // Texture resources exist only after upload; validate before changing any binding state.
+  if (retail
+      && (shader_id & 0x8000)
+      && !validRetailM2Textures(texture_combo_index, texture_count, m->_texture_lookup,
+          m->_specialTextures, m->_textures.size(),
+          [m](std::size_t type) { return m->_replaceTextures.find(type) != m->_replaceTextures.end(); }))
+  {
+    LogError << "Invalid Retail M2 texture stages: " << m->file_key().stringRepr()
+             << " shader=" << shader_id << std::endl;
+    pixel_shader.reset();
     return false;
   }
 
@@ -1014,6 +1236,9 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     model_render_state.unlit = renderflag.flags.unlit;
   }
 
+  m2_shader.uniform("tex3", 3);
+  if (retail && texture_count > 2)
+    bindTexture(2, m, model_render_state, m2_shader);
   if (texture_count > 1)
     bindTexture(1, m, model_render_state, m2_shader);
 
@@ -1032,6 +1257,11 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     m2_shader.uniform("tex_unit_lookup_2", tu2);
     model_render_state.tex_unit_lookups[1] = tu2;
   }
+
+  m2_shader.uniform("tex_unit_lookup_3", static_cast<int>(tu_lookups[2]));
+  auto const retailShader = retailM2Shader(shader_id);
+  m2_shader.uniform("retail_edge_fade", retail
+      && retailShader && retailShader->edgeFade ? 1 : 0);
 
   static const glm::mat4x4 unit(glm::mat4x4(1));
   auto texture_animation = [m](uint16_t lookup_index) -> int16_t
@@ -1054,6 +1284,9 @@ bool ModelRenderPass::prepareDraw(OpenGL::Scoped::use_program& m2_shader, Model 
     ? m->_texture_animations[first_tex_anim].mat : unit);
   m2_shader.uniform("tex_matrix_2", second_tex_anim != -1
     ? m->_texture_animations[second_tex_anim].mat : unit);
+
+  int16_t const third_tex_anim = texture_count > 2 ? texture_animation(uv_animations[2]) : -1;
+  m2_shader.uniform("tex_matrix_3", third_tex_anim != -1 ? m->_texture_animations[third_tex_anim].mat : unit);
 
   GLint ps = static_cast<GLint>(pixel_shader.value());
   if (model_render_state.pixel_shader != ps)
@@ -1087,6 +1320,7 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
     return;
   }
 
+  scoped_blp_texture_reference* reference = nullptr;
   if (m->_specialTextures[tex] == -1)
   {
     if (tex >= m->_textures.size())
@@ -1094,15 +1328,7 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
       LogError << "model: ordinary texture index out of range " << m->file_key().stringRepr() << std::endl;
       return;
     }
-    auto& texture = m->_textures[tex];
-    texture->upload();
-    GLuint tex_array = texture->texture_array();
-    int tex_index = texture->array_index();
-
-    gl.activeTexture(static_cast<GLenum>(GL_TEXTURE0 + index + 1));
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, tex_array);
-    m2_shader.uniform(index ? "tex2_index" : "tex1_index", tex_index);
-    model_render_state.tex_indices[index] = tex_index;
+    reference = &m->_textures[tex];
   }
   else
   {
@@ -1112,23 +1338,26 @@ void ModelRenderPass::bindTexture(size_t index, Model* m, OpenGL::M2RenderState&
       LogError << "model: special texture index out of range " << m->file_key().stringRepr() << std::endl;
       return;
     }
-
-    auto& texture = replacement->second;
-    texture->upload();
-    GLuint tex_array = texture->texture_array();
-    int tex_index = texture->array_index();
-
-    gl.activeTexture(static_cast<GLenum>(GL_TEXTURE0 + index + 1));
-    gl.bindTexture(GL_TEXTURE_2D_ARRAY, tex_array);
-    m2_shader.uniform(index ? "tex2_index" : "tex1_index", tex_index);
-    model_render_state.tex_indices[index] = tex_index;
+    reference = &replacement->second;
   }
+  auto& texture = *reference;
+  texture->upload();
+  auto const tex_index = texture->array_index();
+  gl.activeTexture(static_cast<GLenum>(GL_TEXTURE0 + index + 1));
+  gl.bindTexture(GL_TEXTURE_2D_ARRAY, texture->texture_array());
+  m2_shader.uniform(index == 2 ? "tex3_index" : index == 1 ? "tex2_index" : "tex1_index", tex_index);
+  model_render_state.tex_indices[index] = tex_index;
 }
-
 void ModelRenderPass::initUVTypes(Model* m)
 {
-  tu_lookups[0] = texture_unit_lookup::none;
-  tu_lookups[1] = texture_unit_lookup::none;
+  std::fill(std::begin(tu_lookups), std::end(tu_lookups), texture_unit_lookup::none);
+  if (isRetailProject() && (shader_id & 0x8000))
+  {
+    if (auto const material = retailM2Shader(shader_id))
+      for (unsigned stage = 0; stage < 3; ++stage)
+        tu_lookups[stage] = static_cast<texture_unit_lookup>(material->uv[stage]);
+    return;
+  }
 
   auto const lookup_size = m->_texture_unit_lookup.size();
   bool const invalid_texture_coord_combo =

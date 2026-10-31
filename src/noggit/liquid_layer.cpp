@@ -4,6 +4,8 @@
 #include <noggit/liquid_layer.hpp>
 #include <noggit/Log.h>
 #include <noggit/MapChunk.h>
+#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/formats/adt/RetailLiquidLod.hpp>
 #include <noggit/Misc.h>
 #include <opengl/scoped.hpp>
 #include <ClientFile.hpp>
@@ -15,6 +17,12 @@
 
 namespace
 {
+  bool retail_water()
+  {
+    auto* app = Noggit::Application::NoggitApplication::instance();
+    return app && app->clientData()
+      && app->clientData()->version() == BlizzardArchive::ClientVersion::RETAIL;
+  }
   inline glm::vec2 default_uv(int px, int pz)
   {
     return {static_cast<float>(px) / 4.f, static_cast<float>(pz) / 4.f};
@@ -22,6 +30,8 @@ namespace
 
   int infer_modern_mh2o_vertex_format(MH2O_Information const& info)
   {
+    if (retail_water())
+      return Noggit::Formats::ADT::RetailLiquid::format(info.liquid_id, info.liquid_vertex_format);
     if (info.liquid_vertex_format >= LVF_HEIGHT_DEPTH &&
         info.liquid_vertex_format <= LVF_HEIGHT_DEPTH_UV)
       return info.liquid_vertex_format;
@@ -48,11 +58,13 @@ liquid_layer::liquid_layer(ChunkWater* chunk, glm::vec3 const& base, float heigh
   , pos(base)
   , _chunk(chunk)
 {
-  if (!gLiquidTypeDB.CheckIfIdExists(_liquid_id))
+  if (!retail_water() && !gLiquidTypeDB.CheckIfIdExists(_liquid_id))
     _liquid_id = LIQUID_WATER;
 
   create_vertices(height);
 
+  if (retail_water())
+    _liquid_vertex_format = Noggit::Formats::ADT::RetailLiquid::format(_liquid_id,42);
   changeLiquidID(_liquid_id);
   
   update_min_max();
@@ -66,9 +78,11 @@ liquid_layer::liquid_layer(ChunkWater* chunk, glm::vec3 const& base, mclq& liqui
   , pos(base)
   , _chunk(chunk)
 {
-  if (!gLiquidTypeDB.CheckIfIdExists(_liquid_id))
+  if (!retail_water() && !gLiquidTypeDB.CheckIfIdExists(_liquid_id))
     _liquid_id = LIQUID_WATER;
 
+  if (retail_water())
+    _liquid_vertex_format = Noggit::Formats::ADT::RetailLiquid::format(_liquid_id,42);
   changeLiquidID(_liquid_id);
 
   for (int z = 0; z < 8; ++z)
@@ -114,18 +128,20 @@ liquid_layer::liquid_layer(ChunkWater* chunk
                            , std::uint64_t infomask)
   : _liquid_id(info.liquid_id)
   , _liquid_vertex_format(infer_modern_mh2o_vertex_format(info))
+  , _liquid_object(retail_water() && info.liquid_vertex_format >= 42 ? info.liquid_vertex_format : 0)
   , _minimum(info.minHeight)
   , _maximum(info.maxHeight)
   , _subchunks(0)
   , pos(base)
   , _chunk(chunk)
 {
+  bool const retail = retail_water();
   bool const modern_vertex_metadata = info.liquid_vertex_format > LVF_HEIGHT_DEPTH_UV;
 
   // Legacy/downported maps can still use the old DBC validation. Modern client
   // projects may not have LiquidType.dbc populated, so keep the MH2O liquid id
   // and let changeLiquidID() apply a safe basic-type fallback instead.
-  if (!modern_vertex_metadata && !gLiquidTypeDB.CheckIfIdExists(_liquid_id))
+  if (!retail && !modern_vertex_metadata && !gLiquidTypeDB.CheckIfIdExists(_liquid_id))
     _liquid_id = LIQUID_WATER;
 
   if (modern_vertex_metadata)
@@ -152,20 +168,30 @@ liquid_layer::liquid_layer(ChunkWater* chunk
   {
     f.seek(base_pos + info.ofsHeightMap);
 
-    if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || _liquid_vertex_format == LVF_HEIGHT_UV)
+    if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || _liquid_vertex_format == LVF_HEIGHT_UV
+        || (retail && _liquid_vertex_format != LVF_DEPTH))
     {
       for (int z = info.yOffset; z <= info.yOffset + info.height; ++z)
       {
         for (int x = info.xOffset; x <= info.xOffset + info.width; ++x)
         {
           float h;
+          if (_liquid_vertex_format >= 4)
+          {
+            std::uint8_t packed[4];
+            f.read(packed,4);
+            _vertices[z*9+x].depth = _liquid_vertex_format == 4 ? packed[0]/255.f : 1.f;
+          }
           f.read(&h, sizeof(float));
-          _vertices[z * 9 + x].position.y = std::clamp(h, _minimum, _maximum);
+          if (retail && !std::isfinite(h))
+            throw std::runtime_error("Non-finite Retail liquid height.");
+          _vertices[z * 9 + x].position.y = retail ? h : std::clamp(h, _minimum, _maximum);
         }
       }
     }
 
-    if (_liquid_vertex_format == LVF_HEIGHT_UV)
+    if (_liquid_vertex_format == LVF_HEIGHT_UV || (retail
+        && (_liquid_vertex_format == LVF_HEIGHT_DEPTH_UV || _liquid_vertex_format == 5)))
     {
       for (int z = info.yOffset; z <= info.yOffset + info.height; ++z)
       {
@@ -181,7 +207,8 @@ liquid_layer::liquid_layer(ChunkWater* chunk
       }
     }
 
-    if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || _liquid_vertex_format == LVF_DEPTH)
+    if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || _liquid_vertex_format == LVF_DEPTH
+        || (retail && _liquid_vertex_format == LVF_HEIGHT_DEPTH_UV))
     {
       for (int z = info.yOffset; z <= info.yOffset + info.height; ++z)
       {
@@ -202,6 +229,7 @@ liquid_layer::liquid_layer(ChunkWater* chunk
 liquid_layer::liquid_layer(liquid_layer&& other) noexcept
   : _liquid_id(other._liquid_id)
   , _liquid_vertex_format(other._liquid_vertex_format)
+  , _liquid_object(other._liquid_object)
   , _minimum(other._minimum)
   , _maximum(other._maximum)
   , _subchunks(other._subchunks)
@@ -216,6 +244,7 @@ liquid_layer::liquid_layer(liquid_layer&& other) noexcept
 liquid_layer::liquid_layer(liquid_layer const& other)
   : _liquid_id(other._liquid_id)
   , _liquid_vertex_format(other._liquid_vertex_format)
+  , _liquid_object(other._liquid_object)
   , _minimum(other._minimum)
   , _maximum(other._maximum)
   , _subchunks(other._subchunks)
@@ -231,6 +260,7 @@ liquid_layer& liquid_layer::operator= (liquid_layer&& other) noexcept
 {
   std::swap(_liquid_id, other._liquid_id);
   std::swap(_liquid_vertex_format, other._liquid_vertex_format);
+  std::swap(_liquid_object, other._liquid_object);
   std::swap(_minimum, other._minimum);
   std::swap(_maximum, other._maximum);
   std::swap(_subchunks, other._subchunks);
@@ -248,6 +278,8 @@ liquid_layer& liquid_layer::operator= (liquid_layer&& other) noexcept
 liquid_layer& liquid_layer::operator=(liquid_layer const& other)
 {
   _liquid_vertex_format = other._liquid_vertex_format;
+  _liquid_id = other._liquid_id;
+  _liquid_object = other._liquid_object;
   _minimum = other._minimum;
   _maximum = other._maximum;
   _subchunks = other._subchunks;
@@ -278,6 +310,7 @@ void liquid_layer::create_vertices(float height)
 
 void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos, int& current_pos) const
 {
+  bool const retail = retail_water();
   int min_x = 9, min_z = 9, max_x = 0, max_z = 0;
   bool filled = true;
 
@@ -299,11 +332,13 @@ void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos
     }
   }
 
-  MH2O_Information info;
+  // LiquidObject references always use the full 8x8 rectangle in Retail.
+  if (_liquid_object) { min_x = min_z = 0; max_x = max_z = 8; }
+  MH2O_Information info{};
   std::uint64_t mask = 0;
 
   info.liquid_id = _liquid_id;
-  info.liquid_vertex_format = _liquid_vertex_format;
+  info.liquid_vertex_format = _liquid_object ? _liquid_object : _liquid_vertex_format;
   info.minHeight = _minimum;
   info.maxHeight = _maximum;
   info.xOffset = min_x;
@@ -339,14 +374,21 @@ void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos
   int vertices_count = (info.width + 1) * (info.height + 1);
   info.ofsHeightMap = current_pos - base_pos;
 
-  if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || _liquid_vertex_format == LVF_HEIGHT_UV)
+  if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || _liquid_vertex_format == LVF_HEIGHT_UV
+      || (retail && _liquid_vertex_format != LVF_DEPTH))
   {
-    adt.Extend(vertices_count * sizeof(float));
+    adt.Extend(vertices_count * (_liquid_vertex_format >= 4 ? 8 : 4));
 
     for (int z = info.yOffset; z <= info.yOffset + info.height; ++z)
     {
       for (int x = info.xOffset; x <= info.xOffset + info.width; ++x)
       {
+        if (_liquid_vertex_format >= 4)
+        {
+          std::uint8_t packed[4]{static_cast<std::uint8_t>(std::clamp(_vertices[z*9+x].depth*255.f,0.f,255.f)),0,0,0};
+          memcpy(adt.GetPointer<char>(current_pos).get(),packed,4);
+          current_pos += 4;
+        }
         memcpy(adt.GetPointer<char>(current_pos).get(), &_vertices[z * 9 + x].position.y, sizeof(float));
         current_pos += sizeof(float);
       }
@@ -357,7 +399,8 @@ void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos
     info.ofsHeightMap = 0;
   }
 
-  if (_liquid_vertex_format == LVF_HEIGHT_UV)
+  if (_liquid_vertex_format == LVF_HEIGHT_UV || (retail
+      && (_liquid_vertex_format == LVF_HEIGHT_DEPTH_UV || _liquid_vertex_format == 5)))
   {
     adt.Extend(vertices_count * sizeof(mh2o_uv));
 
@@ -375,7 +418,8 @@ void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos
     }
   }
 
-  if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || (_liquid_vertex_format == LVF_DEPTH && !_fatigue_enabled))
+  if (_liquid_vertex_format == LVF_HEIGHT_DEPTH || (retail && _liquid_vertex_format == LVF_HEIGHT_DEPTH_UV)
+      || (_liquid_vertex_format == LVF_DEPTH && !_fatigue_enabled))
   {
     adt.Extend(vertices_count * sizeof(std::uint8_t));
 
@@ -396,6 +440,9 @@ void liquid_layer::save(util::sExtendableArray& adt, int base_pos, int& info_pos
 
 void liquid_layer::changeLiquidID(int id)
 {
+  int const old_format = _liquid_vertex_format;
+  bool const changed = id != _liquid_id;
+  if (changed) _liquid_object = 0;
   _liquid_id = id;
 
   try
@@ -457,6 +504,21 @@ void liquid_layer::changeLiquidID(int id)
     LogDebug << "[ModernADT][WaterAdapter] LiquidType.dbc missing id " << _liquid_id
              << "; using basic fallback type=" << _liquid_type
              << " vertexFormat=" << _liquid_vertex_format << std::endl;
+  }
+  if (retail_water())
+  {
+    auto const& formats = Noggit::Formats::ADT::RetailLiquid::vertex_formats;
+    _liquid_vertex_format = changed && formats.count(id) ? formats.at(id) : old_format;
+    if (_liquid_id == LIQUID_OCEAN)
+    {
+      _liquid_type = liquid_basic_types_ocean;
+      _mclq_liquid_type = mclq_liquid_ocean;
+    }
+    else if (_liquid_vertex_format == LVF_HEIGHT_UV)
+    {
+      _liquid_type = id == LIQUID_SLIME ? liquid_basic_types_slime : liquid_basic_types_magma;
+      _mclq_liquid_type = id == LIQUID_SLIME ? mclq_liquid_slime : mclq_liquid_magma;
+    }
   }
 }
 
@@ -614,10 +676,20 @@ void liquid_layer::update_min_max()
       x = 0;
     }
   }
+  if (retail_water())
+  {
+    std::array<float,81> heights;
+    for (std::size_t i = 0; i < heights.size(); ++i) heights[i] = _vertices[i].position.y;
+    auto bounds = Noggit::Formats::ADT::RetailLiquid::active_bounds(heights,_subchunks);
+    _minimum = bounds.first; _maximum = bounds.second;
+  }
 
   if (_liquid_vertex_format == LVF_DEPTH && (!misc::float_equals(0.f, _minimum) || !misc::float_equals(0.f, _maximum)))
+  {
     _liquid_vertex_format = LVF_HEIGHT_DEPTH;
-  else if (_liquid_vertex_format == LVF_HEIGHT_DEPTH && misc::float_equals(0.f, _minimum) && misc::float_equals(0.f, _maximum))
+    _liquid_object = 0; // Non-zero heights require explicit height samples.
+  }
+  else if (!_liquid_object && _liquid_vertex_format == LVF_HEIGHT_DEPTH && misc::float_equals(0.f, _minimum) && misc::float_equals(0.f, _maximum))
     _liquid_vertex_format = LVF_DEPTH;
 
   _fatigue_enabled = check_fatigue();

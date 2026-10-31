@@ -10,6 +10,7 @@
 #include <noggit/area_trigger.hpp>
 #include <noggit/texture_set.hpp>
 #include <noggit/liquid_layer.hpp>
+#include <noggit/formats/adt/RetailObjectTransfer.hpp>
 #include <QObject>
 
 #include <functional>
@@ -82,6 +83,7 @@ namespace Noggit
       glm::vec3 pos;
       math::degrees::vec3 dir;
       float scale;
+      std::optional<Formats::ADT::RetailObjectTransfer::WmoState> retail_wmo;
     };
 
     struct VertexSelectionCache

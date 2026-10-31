@@ -201,6 +201,7 @@ private:
   bool _uid_duplicate_warning_shown = false;
   bool _force_uid_check = false;
   bool _uid_fix_failed = false;
+  bool _uid_fix_pending = false;
   void on_uid_fix_fail();
 
   uid_fix_mode _uid_fix;
@@ -218,6 +219,7 @@ private:
   ImGuiContext* _imgui_context;
 
 signals:
+  void uid_fix_cancelled();
   void uid_fix_failed();
   void resized();
   void saved();

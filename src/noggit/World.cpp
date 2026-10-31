@@ -43,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cassert>
 #include <cstdint>
 #include <limits>
@@ -1350,6 +1351,7 @@ selection_result World::intersect (glm::mat4x4 const& model_view
                                   , const bool opaque_only_tris
                                   , const float obj_distance_max
                                   , const bool do_wmo_interiors
+                                  , const int model_preview_time
                                   )
 {
   ZoneScopedN("World::intersect()");
@@ -1437,7 +1439,9 @@ selection_result World::intersect (glm::mat4x4 const& model_view
 
             if (draw_hidden_models || !model_instance->model->is_hidden())
               // modelInstances.insert(model_instance);
-              model_instance->intersect(model_view, ray, &results, animtime, animate, first_object_occurence, opaque_only_tris);
+              model_instance->intersect(model_view, ray, &results,
+                  model_preview_time >= 0 ? model_preview_time : animtime,
+                  animate, first_object_occurence, opaque_only_tris);
           }
         }
         else if (pair.second[0]->which() == eWMO && draw_wmo)
@@ -2567,6 +2571,7 @@ WMOInstance* World::addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey co
     , math::degrees::vec3 rotation
     , float scale
     , bool action
+    , Noggit::Formats::ADT::RetailObjectTransfer::WmoState const* retail_state
 )
 {
   ZoneScoped;
@@ -2576,6 +2581,7 @@ WMOInstance* World::addWMOAndGetInstance ( BlizzardArchive::Listfile::FileKey co
   wmo_instance.pos = newPos;
   wmo_instance.dir = rotation;
   wmo_instance.scale = scale;
+  if (retail_state) wmo_instance.apply_retail_state(*retail_state);
 
   // to ensure the tiles are updated correctly
   wmo_instance.wmo->wait_until_loaded();
@@ -3760,6 +3766,8 @@ float World::getMaxTileHeight(const TileIndex& tile)
   float max_height = m_tile->getMaxHeight();
 
   std::vector<uint32_t>* uids = m_tile->get_uids();
+  bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+    == BlizzardArchive::ClientVersion::RETAIL;
 
   for (uint32_t uid : *uids)
   {
@@ -3769,7 +3777,12 @@ float World::getMaxTileHeight(const TileIndex& tile)
     {
       auto obj = std::get<selected_object_type>(instance.value());
       obj->ensureExtents();
-      max_height = std::max(max_height, std::max(obj->getExtents()[0].y, obj->getExtents()[1].y));
+      auto const& extents = obj->getExtents();
+      if (!retail)
+        max_height = std::max(max_height, std::max(extents[0].y, extents[1].y));
+      // Unloaded models keep the empty {+max, -max} extents.
+      else if (extents[0].y <= extents[1].y && std::isfinite(extents[1].y))
+        max_height = std::max(max_height, extents[1].y);
     }
   }
 

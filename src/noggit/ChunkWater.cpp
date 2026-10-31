@@ -5,6 +5,8 @@
 #include <noggit/liquid_layer.hpp>
 #include <noggit/MapChunk.h>
 #include <noggit/Misc.h>
+#include <noggit/application/NoggitApplication.hpp>
+#include <noggit/formats/adt/RetailLiquidLod.hpp>
 #include <ClientFile.hpp>
 #include <util/sExtendableArray.hpp>
 
@@ -101,6 +103,27 @@ void ChunkWater::fromFile(BlizzardArchive::ClientFile &f, size_t basePos)
     //info
     f.seek(basePos + header.ofsInformation + sizeof(MH2O_Information)* k);
     f.read(&info, sizeof(MH2O_Information));
+    bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL;
+    if (retail)
+    {
+      if (info.liquid_vertex_format >= 42)
+      {
+        info.xOffset = info.yOffset = 0;
+        info.width = info.height = 8;
+      }
+      if (!info.width || !info.height || info.xOffset+info.width > 8 || info.yOffset+info.height > 8)
+        throw std::runtime_error("Invalid Retail MH2O rectangle.");
+      auto vf = Noggit::Formats::ADT::RetailLiquid::format(info.liquid_id,info.liquid_vertex_format);
+      constexpr unsigned strides[]{5,8,1,9,8,12};
+      auto check = [&](unsigned offset, std::size_t length) {
+        if (offset && (basePos > f.getSize() || offset > f.getSize()-basePos
+            || length > f.getSize()-basePos-offset))
+          throw std::runtime_error("Retail MH2O vertex/mask data extends beyond ADT.");
+      };
+      check(info.ofsHeightMap,(info.width+1)*(info.height+1)*strides[vf]);
+      check(info.ofsInfoMask,(info.width*info.height+7)/8);
+    }
 
     //mask
     if (info.ofsInfoMask > 0 && info.height > 0)

@@ -88,6 +88,41 @@ namespace Noggit
           maptexture_n_btn->setVisible(true);
       }
 
+      if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
+          == BlizzardArchive::ClientVersion::RETAIL)
+      {
+          auto paired_selected = new QPushButton("Both map textures: selected tiles", generate_widget);
+          auto paired_stale = new QPushButton("Both map textures: changed / pending tiles", generate_widget);
+          paired_selected->setToolTip("Generate diffuse and normal map textures for the selected saved tiles.");
+          paired_stale->setToolTip("Generate pending diffuse and normal map textures.");
+          generate_layout->addRow(paired_selected);
+          generate_layout->addRow(paired_stale);
+          connect(paired_selected, &QPushButton::clicked, [this]() {
+              _render_settings.export_mode = MinimapGenMode::LOD_MAPTEXTURES_BOTH;
+              _render_settings.map_texture_scope = MapTextureScope::Selected;
+              emit onSave();
+          });
+          connect(paired_stale, &QPushButton::clicked, [this]() {
+              _render_settings.export_mode = MinimapGenMode::LOD_MAPTEXTURES_BOTH;
+              _render_settings.map_texture_scope = MapTextureScope::Stale;
+              emit onSave();
+          });
+          auto derived_scope = new QComboBox(generate_widget);
+          derived_scope->addItem("Project tiles (edited areas)", static_cast<int>(MapTextureScope::Project));
+          derived_scope->addItem("Selected tiles", static_cast<int>(MapTextureScope::Selected));
+          derived_scope->addItem("Whole map (fully custom)", static_cast<int>(MapTextureScope::All));
+          generate_layout->addRow("Terrain update scope:", derived_scope);
+          auto derived = new QPushButton("Update LOD + map textures + heightmap", generate_widget);
+          derived->setToolTip("Rebuild terrain LOD, map textures and WDL heights from saved tiles. "
+            "Project tiles: tiles with ADT files in the project. ROOT/TEX0/OBJ0 are not rewritten.");
+          generate_layout->addRow(derived);
+          connect(derived, &QPushButton::clicked, [this, derived_scope]() {
+              _render_settings.export_mode = MinimapGenMode::TERRAIN_DERIVED;
+              _render_settings.map_texture_scope = static_cast<MapTextureScope>(derived_scope->currentData().toInt());
+              emit onSave();
+          });
+      }
+
       // Render settings box
       auto render_settings_box = new QGroupBox("Render options", generate_widget);
       generate_layout->addRow (render_settings_box);

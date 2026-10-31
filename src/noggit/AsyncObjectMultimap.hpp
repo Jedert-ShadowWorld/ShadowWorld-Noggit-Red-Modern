@@ -91,7 +91,9 @@ namespace Noggit
       auto pair = std::make_pair(context, file_key);
       //LogDebug << "Erasing " << normalized << " from context" << context << std::endl;
 
-      AsyncObject* obj = nullptr;
+      // Extracted under the lock so a concurrent emplace of the same key
+      // creates a new object instead of reusing the one being destroyed.
+      typename decltype(_elements)::node_type node;
 
       {
         std::scoped_lock lock(_mutex);
@@ -110,24 +112,14 @@ namespace Noggit
 
         if (--count_it->second == 0)
         {
-          obj = static_cast<AsyncObject*>(&(_elements.at(pair)));
+          _counts.erase(count_it);
+          node = _elements.extract(pair);
         }
       }
 
-      if (obj)
-      {
-        // always make sure an async object can be deleted before deleting it
-        if (!obj->finishedLoading())
-        {
-          AsyncLoader::instance->ensure_deletable(obj);
-        }
-
-        {
-          std::scoped_lock lock(_mutex);
-          _elements.erase(pair);
-          _counts.erase(pair);
-        }
-      }
+      // A worker may still access the object after finishedLoading() is set.
+      if (node && AsyncLoader::instance)
+        AsyncLoader::instance->ensure_deletable(static_cast<AsyncObject*>(&node.mapped()));
     }
     void apply (std::function<void (BlizzardArchive::Listfile::FileKey const&, T&)> fun)
     {

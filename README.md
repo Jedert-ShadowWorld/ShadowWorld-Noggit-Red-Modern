@@ -87,6 +87,31 @@ without requiring maps to be converted back to WotLK. The workflow is:
 
 Version-specific readers and writers handle the differences between clients.
 
+### Retail Models and Preview
+
+Retail model loading, layered materials, asynchronous texture readiness and
+preview controls are described in [Retail models](docs/retail-models.md),
+including version boundaries, regression checks and remaining limitations.
+
+### Retail Map Saving and Repair
+
+Retail projects generate diffuse and terrain-normal maptextures in
+`world/maptextures/<map>/` when saving, alongside terrain LOD height updates
+and closure of obsolete LOD holes. The Minimap Editor also offers generation for
+selected or pending tiles. Results that still need updating are recorded in the project.
+See [Retail derived map results](docs/derived-map-results.md) for output formats,
+save behavior and supported edits.
+
+For maps with broken object references, **Review and fix UIDs...** lists
+problematic placements before applying changes. Confirmation saves backups and
+a report, removes the listed placements, and rebuilds UIDs, bounds and tile
+references for valid placements. Full-map repair transfers their LOD and instance
+data across tiles and rebuilds local dictionary references.
+See [Retail UID repair](docs/uid-repair.md).
+
+These workflows are specific to Retail; the other project targets retain their
+existing save and repair behavior.
+
 ## Current Capabilities
 
 ### Available in This Build

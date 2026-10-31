@@ -2,6 +2,11 @@
 
 #include <noggit/formats/adt/ShadowlandsADTCodec.hpp>
 #include <noggit/formats/adt/TextureMetadata.hpp>
+#include <noggit/formats/adt/RetailObjectTables.hpp>
+#include <noggit/formats/adt/RetailObjectTransfer.hpp>
+#include <noggit/formats/adt/RetailRootLayout.hpp>
+#include <noggit/formats/adt/TerrainLodUpdater.hpp>
+#include <noggit/formats/adt/RetailLiquidLod.hpp>
 
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/MapHeaders.h>
@@ -13,7 +18,13 @@
 
 #include <QSaveFile>
 #include <QFile>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <memory>
+#include <optional>
 
 #include <algorithm>
 #include <array>
@@ -259,6 +270,8 @@ namespace Noggit::Formats::ADT
         if (auto const* replacement = find_chunk(legacy_subs, magic))
           append_range(payload, legacy, replacement->offset, replacement->payload + replacement->size);
       }
+      if (root_part && Noggit::Application::NoggitApplication::instance()->clientData()->version() == BlizzardArchive::ClientVersion::RETAIL)
+        payload = finalizeRetailRootLayout(payload);
       return make_chunk(fourcc('M','C','N','K'), payload);
     }
 
@@ -586,8 +599,14 @@ namespace Noggit::Formats::ADT
     std::vector<std::uint8_t> rewrite_obj1(
       std::vector<std::uint8_t> const& obj1,
       std::vector<std::uint8_t> const& mddf_bytes,
-      std::vector<std::uint8_t> const& modf_bytes)
+      std::vector<std::uint8_t> const& modf_bytes,
+      std::map<std::uint32_t, std::array<float, 6>> const* repair_bounds = nullptr,
+      std::set<std::uint64_t> const& primary_only_wmos = {},
+      RetailObjectTransfer::WmoSources const* wmo_sources = nullptr)
     {
+      bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+        == BlizzardArchive::ClientVersion::RETAIL;
+      if (retail) RetailObjectTables::validate(obj1, true);
       auto const chunks = parse_chunks(obj1, "modern OBJ1");
       auto const* mldd_chunk = find_chunk(chunks, fourcc('M','L','D','D'));
       auto const* mldx_chunk = find_chunk(chunks, fourcc('M','L','D','X'));
@@ -615,6 +634,91 @@ namespace Noggit::Formats::ADT
         : std::vector<std::uint32_t>{};
       auto const old_map_objects = placement_records<LodMapObject>(obj1, *mlmd_chunk, "OBJ1 MLMD");
       auto const old_map_extents = placement_records<LodExtent>(obj1, *mlmx_chunk, "OBJ1 MLMX");
+      if (retail)
+      {
+        // Existing OBJ1 instances keep their LOD level memberships and dictionary entries.
+        auto metadata = RetailObjectTransfer::read(obj1, true);
+        std::map<std::pair<bool, std::uint64_t>, std::size_t> sources;
+        for (auto const& [offset, data] : metadata)
+          if (!sources.emplace(std::make_pair(data.wmo, placement_key(
+              RetailObjectTables::word(data.record, 0), RetailObjectTables::word(data.record, 4))), offset).second)
+            throw std::runtime_error("Ambiguous Retail LOD placement identity.");
+        auto source = [&](bool wmo, auto const& entry)
+        { return sources.find({wmo, placement_key(entry.nameID, entry.uniqueID)}); };
+        bool existing = std::all_of(doodads.begin(), doodads.end(),
+          [&](auto const& entry) { return source(false, entry) != sources.end(); })
+          && std::all_of(map_objects.begin(), map_objects.end(),
+          [&](auto const& entry) { return source(true, entry) != sources.end()
+            || primary_only_wmos.count(placement_key(entry.nameID, entry.uniqueID)) || wmo_sources; });
+        if (wmo_sources && !existing)
+          throw std::runtime_error("Retail M2 placement has no source LOD metadata; cannot rebuild this tile safely");
+        if (existing)
+        {
+          std::vector<RetailObjectTransfer::Row> rows;
+          for (auto const& placement : doodads)
+          {
+            auto at = source(false, placement)->second;
+            auto data = metadata.at(at);
+            auto index = (at - mldd_chunk->payload) / sizeof(ENTRY_MDDF);
+            auto const& old = old_doodads[index];
+            auto entry = placement;
+            entry.flags = old.flags;
+            auto extent = old_doodad_extents[index];
+            if (!std::equal(std::begin(old.pos), std::end(old.pos), std::begin(placement.pos))
+                || !std::equal(std::begin(old.rot), std::end(old.rot), std::begin(placement.rot))
+                || old.scale != placement.scale)
+              extent = moved_extent(extent, old.pos, placement.pos,
+                static_cast<float>(placement.scale) / std::max(1u, static_cast<unsigned>(old.scale)),
+                !std::equal(std::begin(old.rot), std::end(old.rot), std::begin(placement.rot)));
+            data.record = record_bytes(std::vector<ENTRY_MDDF>{entry});
+            RetailObjectTransfer::Row row{std::move(data), {}};
+            std::memcpy(row.extent.data(), &extent, sizeof(extent));
+            if (repair_bounds) row.extent = RetailObjectTransfer::extent(repair_bounds->at(entry.uniqueID));
+            rows.push_back(std::move(row));
+          }
+          for (auto const& placement : map_objects)
+          {
+            auto it = source(true, placement);
+            auto const foreign = wmo_sources ? wmo_sources->find(placement.uniqueID) : RetailObjectTransfer::WmoSources::const_iterator{};
+            bool const has_foreign = wmo_sources && foreign != wmo_sources->end();
+            if (it == sources.end() && has_foreign && !foreign->second.lodKnown)
+              throw std::runtime_error("Retail WMO source LOD is unknown; reload its source tile before transfer");
+            // Primary-only placements stay primary-only. Moved or copied WMOs use
+            // their source LOD metadata; new WMOs have none and stay primary-only.
+            if (it == sources.end() && (primary_only_wmos.count(placement_key(placement.nameID, placement.uniqueID))
+                || !has_foreign || !foreign->second.lod)) continue;
+            auto data = it != sources.end() ? metadata.at(it->second) : *foreign->second.lod;
+            if (data.record.size() != sizeof(LodMapObject) || RetailObjectTables::word(data.record, 0) != placement.nameID)
+              throw std::runtime_error("Retail WMO LOD source metadata belongs to a different asset");
+            LodMapObject old{};
+            std::memcpy(&old, data.record.data(), sizeof(old));
+            auto entry = old;
+            std::memcpy(&entry, &placement, 32);
+            entry.scale = placement.scale;
+            if (wmo_sources)
+            {
+              entry.flags = (entry.flags & ~std::uint16_t(0x80)) | (placement.flags & 0x80);
+              entry.nameSet = placement.nameSet;
+              if (entry.flags & 0x80)
+              {
+                if (!has_foreign) throw std::runtime_error("Retail WMO multiset has no semantic selection for LOD save");
+                data.sets = foreign->second.primary.sets;
+              }
+              else { entry.doodadSet = placement.doodadSet; data.sets.clear(); }
+            }
+            else if (!(old.flags & 0x80))
+            { entry.doodadSet = placement.doodadSet; entry.nameSet = placement.nameSet; }
+            auto extent = !repair_bounds && it != sources.end() && std::memcmp(&entry, &old, sizeof(entry)) == 0
+              ? old_map_extents[(it->second - mlmd_chunk->payload) / sizeof(LodMapObject)] : map_object_extent(placement);
+            data.record = record_bytes(std::vector<LodMapObject>{entry});
+            RetailObjectTransfer::Row row{std::move(data), {}};
+            std::memcpy(row.extent.data(), &extent, sizeof(extent));
+            if (repair_bounds) row.extent = RetailObjectTransfer::extent(repair_bounds->at(entry.uniqueID));
+            rows.push_back(std::move(row));
+          }
+          return RetailObjectTransfer::write(obj1, std::move(rows), true);
+        }
+      }
       // Older split layouts have no group table; all records form the base group.
       auto counts = mlfd_chunk
         ? placement_records<std::uint32_t>(obj1, *mlfd_chunk, "OBJ1 MLFD")
@@ -624,6 +728,12 @@ namespace Noggit::Formats::ADT
         counts[3] = static_cast<std::uint32_t>(old_doodads.size());
         counts[8] = counts[9] = static_cast<std::uint32_t>(old_map_objects.size());
       }
+      // Layout with only the third LOD level populated for both kinds; it is kept as is.
+      bool const converted_third_lod = (retail || repair_bounds) && mlfd_chunk
+        && std::all_of(counts.begin(), counts.begin()+5, [](auto n){return n==0;})
+        && std::all_of(counts.begin()+6, counts.begin()+11, [](auto n){return n==0;})
+        && counts[5] == old_doodads.size() && counts[11] == old_map_objects.size();
+      if (converted_third_lod) counts[4] = counts[5];
       if (old_doodads.size() != old_doodad_extents.size()
           || old_doodads.size() != old_doodad_lod.size()
           || old_map_objects.size() != old_map_extents.size()
@@ -650,7 +760,7 @@ namespace Noggit::Formats::ADT
         auto entry = placement;
         LodExtent extent{};
         std::uint32_t lod = 0;
-        std::size_t group = 0;
+        std::size_t group = converted_third_lod ? 1 : 0;
         if (auto const it = doodad_indices.find(placement_key(placement.nameID, placement.uniqueID));
             it != doodad_indices.end())
         {
@@ -692,6 +802,13 @@ namespace Noggit::Formats::ADT
             lod = old_doodad_lod[index];
           }
         }
+        if (repair_bounds)
+        {
+          auto const& b = repair_bounds->at(entry.uniqueID);
+          ENTRY_MODF bounded{};
+          bounded.extents = {glm::vec3(b[0], b[1], b[2]), glm::vec3(b[3], b[4], b[5])};
+          extent = map_object_extent(bounded);
+        }
         updated_doodads.push_back(entry);
         updated_doodad_extents.push_back(extent);
         updated_doodad_lod.push_back(lod);
@@ -710,14 +827,26 @@ namespace Noggit::Formats::ADT
         std::memcpy(reinterpret_cast<std::uint8_t*>(&entry) + 32,
                     reinterpret_cast<std::uint8_t const*>(&placement) + 56, 8);
         auto extent = map_object_extent(placement);
-        std::size_t group = 0;
+        std::size_t group = converted_third_lod ? 1 : 0;
         if (auto const it = map_indices.find(placement_key(placement.nameID, placement.uniqueID));
             it != map_indices.end())
         {
           auto const index = it->second;
           group = index < counts[8] ? 0 : 1;
+          // OBJ1 flags control LOD loading and differ from OBJ0 flags.
+          if (retail)
+          {
+            auto const& old = old_map_objects[index];
+            entry.flags = old.flags;
+            // MWDS selectors index this OBJ1's own tables, not OBJ0's.
+            if (old.flags & 0x80)
+            {
+              entry.doodadSet = old.doodadSet;
+              entry.nameSet = old.nameSet;
+            }
+          }
           // Keep shipped bounds byte-for-byte when the placement has not moved.
-          if (std::memcmp(&entry, &old_map_objects[index], sizeof(entry)) == 0)
+          if (!repair_bounds && std::memcmp(&entry, &old_map_objects[index], sizeof(entry)) == 0)
             extent = old_map_extents[index];
         }
         updated_map_objects.push_back(entry);
@@ -822,10 +951,16 @@ namespace Noggit::Formats::ADT
         make_chunk(fourcc('M','L','M','D'), record_bytes(updated_map_objects)));
       output = replace_top_level_chunk(output, fourcc('M','L','M','X'),
         make_chunk(fourcc('M','L','M','X'), record_bytes(updated_map_extents)));
+      if (converted_third_lod)
+      {
+        counts.assign(12, 0);
+        counts[5] = static_cast<std::uint32_t>(updated_doodads.size());
+        counts[11] = static_cast<std::uint32_t>(updated_map_objects.size());
+      }
       if (mlfd_chunk)
         output = replace_top_level_chunk(output, fourcc('M','L','F','D'),
           make_chunk(fourcc('M','L','F','D'), record_bytes(counts)));
-      return output;
+      return retail ? RetailObjectTables::remap(obj1, output, true) : output;
     }
 
     template<typename Entry>
@@ -875,15 +1010,66 @@ namespace Noggit::Formats::ADT
       });
     }
 
+    std::vector<std::uint8_t> primary_for_save(
+      std::vector<std::uint8_t> const& original, std::vector<std::uint8_t> const& mddf,
+      std::vector<std::uint8_t> const& modf, RetailObjectTransfer::WmoSources const& sources,
+      bool has_lod)
+    {
+      auto updated = replace_top_level_chunk(original, fourcc('M','D','D','F'), make_chunk(fourcc('M','D','D','F'), mddf));
+      updated = replace_top_level_chunk(updated, fourcc('M','O','D','F'), make_chunk(fourcc('M','O','D','F'), modf));
+      updated = RetailObjectTransfer::writePrimary(original, updated, sources, has_lod);
+      // The original OBJ0 is kept when placements and selected doodad set values
+      // are unchanged. Dictionary indices are file-local and not compared.
+      std::map<std::uint64_t, RetailObjectTransfer::Instance> old_wmos;
+      for (auto const& [offset, data] : RetailObjectTransfer::read(original, false))
+        if (data.wmo) old_wmos.emplace(placement_key(RetailObjectTables::word(data.record, 0),
+          RetailObjectTables::word(data.record, 4)), data);
+      std::vector<std::uint8_t> comparable_modf;
+      bool same_sets = true;
+      for (auto const& [offset, data] : RetailObjectTransfer::read(updated, false))
+        if (data.wmo)
+        {
+          auto record = data.record;
+          auto old = old_wmos.find(placement_key(RetailObjectTables::word(record, 0), RetailObjectTables::word(record, 4)));
+          if (old == old_wmos.end() || old->second.sets != data.sets) same_sets = false;
+          else if (RetailObjectTables::word(record, 56) & 0x80)
+            std::copy_n(old->second.record.begin() + 58, 2, record.begin() + 58);
+          comparable_modf.insert(comparable_modf.end(), record.begin(), record.end());
+        }
+      if (same_sets && same_placements<ENTRY_MDDF>(original, mddf, fourcc('M','D','D','F'))
+          && same_placements<ENTRY_MODF>(original, comparable_modf, fourcc('M','O','D','F')))
+        return original;
+      return updated;
+    }
+
     std::vector<std::uint8_t> obj1_for_save(
       std::vector<std::uint8_t> const& original_obj0, std::vector<std::uint8_t> const& obj1,
-      std::vector<std::uint8_t> const& mddf, std::vector<std::uint8_t> const& modf)
+      std::vector<std::uint8_t> const& mddf, std::vector<std::uint8_t> const& modf,
+      RetailObjectTransfer::WmoSources const* wmo_sources = nullptr, bool metadata_changed = false)
     {
+      if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
+          == BlizzardArchive::ClientVersion::RETAIL)
+        RetailObjectTables::validate(obj1, true);
       // Painting must not rebuild unrelated, potentially newer LOD placement layouts.
-      if (same_placements<ENTRY_MDDF>(original_obj0, mddf, fourcc('M','D','D','F'))
+      if (!metadata_changed && same_placements<ENTRY_MDDF>(original_obj0, mddf, fourcc('M','D','D','F'))
           && same_placements<ENTRY_MODF>(original_obj0, modf, fourcc('M','O','D','F')))
         return obj1;
-      return rewrite_obj1(obj1, mddf, modf);
+      std::set<std::uint64_t> primary_only_wmos;
+      if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
+          == BlizzardArchive::ClientVersion::RETAIL)
+      {
+        auto primary_chunks = parse_chunks(original_obj0, "original OBJ0");
+        auto lod_chunks = parse_chunks(obj1, "original OBJ1");
+        auto const* primary = find_chunk(primary_chunks, fourcc('M','O','D','F'));
+        auto const* lod = find_chunk(lod_chunks, fourcc('M','L','M','D'));
+        if (primary)
+          for (auto const& entry : placement_records<ENTRY_MODF>(original_obj0, *primary, "MODF"))
+            primary_only_wmos.insert(placement_key(entry.nameID, entry.uniqueID));
+        if (lod)
+          for (auto const& entry : placement_records<LodMapObject>(obj1, *lod, "MLMD"))
+            primary_only_wmos.erase(placement_key(entry.nameID, entry.uniqueID));
+      }
+      return rewrite_obj1(obj1, mddf, modf, nullptr, primary_only_wmos, wmo_sources);
     }
 
     void validate_tex0_alpha_layout(std::vector<std::uint8_t> const& tex0)
@@ -1052,6 +1238,13 @@ namespace Noggit::Formats::ADT
       for (auto const& [logical_path, bytes] : parts)
       {
         BlizzardArchive::Listfile::FileKey key(logical_path);
+        if (client_data->version() == BlizzardArchive::ClientVersion::RETAIL && client_data->exists(key))
+        {
+          BlizzardArchive::ClientFile current(key, client_data);
+          if (current.getSize() == bytes.size()
+              && (bytes.empty() || std::memcmp(current.getBuffer(), bytes.data(), bytes.size()) == 0))
+            continue; // Identical to the client file; no override is written.
+        }
         auto const disk_path = client_data->getDiskPath(key);
         std::filesystem::create_directories(std::filesystem::path(disk_path).parent_path());
         PendingPart part{QString::fromStdString(disk_path), false, {}, nullptr};
@@ -1066,6 +1259,7 @@ namespace Noggit::Formats::ADT
             throw std::runtime_error("Could not read previous modern ADT part: " + disk_path);
         }
         part.file = std::make_unique<QSaveFile>(part.path);
+        part.file->setDirectWriteFallback(false);
         if (!part.file->open(QIODevice::WriteOnly)
             || part.file->write(reinterpret_cast<char const*>(bytes.data()),
                                  static_cast<qint64>(bytes.size())) != static_cast<qint64>(bytes.size()))
@@ -1097,11 +1291,266 @@ namespace Noggit::Formats::ADT
         throw std::runtime_error(message);
       }
     }
+
+    using LodBytes = std::vector<std::uint8_t>;
+
+    QString project_file(std::string const& path)
+    {
+      auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+      return QString::fromStdString(client->getDiskPath(BlizzardArchive::Listfile::FileKey(path)));
+    }
+
+    std::string reference_config_path(std::string const& root_path)
+    {
+      auto const map = QFileInfo(QString::fromStdString(root_path)).dir().dirName().toLower();
+      if (map.isEmpty() || map == "." || map == "..")
+        throw std::invalid_argument("LOD reference requires a map ROOT path.");
+      return ".noggit/lod-reference/" + map.toStdString() + ".json";
+    }
+
+    std::optional<LodBytes> read_reference_file(QString const& path)
+    {
+      QFile file(path);
+      if (!file.exists()) return std::nullopt;
+      if (!file.open(QIODevice::ReadOnly) || file.size() > 64 * 1024 * 1024)
+        throw std::runtime_error("Cannot read LOD reference: " + path.toStdString());
+      auto bytes = file.readAll();
+      if (file.error() != QFileDevice::NoError)
+        throw std::runtime_error("Cannot read LOD reference: " + path.toStdString());
+      return LodBytes(bytes.begin(), bytes.end());
+    }
+
+    QString reference_hash(LodBytes const& bytes)
+    {
+      return QString::fromLatin1(QCryptographicHash::hash(
+        QByteArray::fromRawData(reinterpret_cast<char const*>(bytes.data()), static_cast<int>(bytes.size())),
+        QCryptographicHash::Sha256).toHex());
+    }
+
+    LodBytes json_bytes(QJsonObject const& object)
+    {
+      auto bytes = QJsonDocument(object).toJson(QJsonDocument::Indented);
+      return LodBytes(bytes.begin(), bytes.end());
+    }
+
+    struct LodReference
+    {
+      LodBytes root;
+      TerrainLodReferenceInspection inspection;
+      std::string origin;
+      std::optional<LodBytes> calibrated_lod;
+    };
+
+    LodReference resolve_lod_reference(ShadowlandsADTBackingStore const& backing,
+                                       LodBytes const& lod)
+    {
+      auto const base = ".noggit/lod-reference/" + backing.source.root_path;
+      std::string failures;
+      auto attempt = [&](std::string const& origin, auto&& load) -> std::optional<LodReference> {
+        try
+        {
+          auto candidate = load();
+          if (!candidate) return std::nullopt;
+          std::optional<LodBytes> calibrated;
+          if (candidate->second != lod)
+            calibrated = TerrainLodUpdater::calibrateReference(candidate->first, candidate->second, lod);
+          auto inspection = TerrainLodUpdater::inspectReference(candidate->first,
+            calibrated ? *calibrated : lod);
+          if (!inspection.usable) throw std::runtime_error(inspection.diagnostics);
+          return LodReference{std::move(candidate->first), std::move(inspection), origin, std::move(calibrated)};
+        }
+        catch (std::exception const& error)
+        {
+          failures += origin + ": " + error.what() + "; ";
+          return std::nullopt;
+        }
+      };
+      using Pair = std::pair<LodBytes, LodBytes>;
+      if (auto retained = attempt("retained", [&]() -> std::optional<Pair> {
+            auto root = read_reference_file(project_file(base + ".root"));
+            auto old_lod = read_reference_file(project_file(base + ".lod"));
+            if (!root && !old_lod) return std::nullopt;
+            if (!root || !old_lod) throw std::runtime_error("Incomplete retained ROOT/LOD pair");
+            if (auto metadata = read_reference_file(project_file(base + ".json")))
+            {
+              auto document = QJsonDocument::fromJson(QByteArray(
+                reinterpret_cast<char const*>(metadata->data()), static_cast<int>(metadata->size())));
+              auto object = document.object();
+              if (!document.isObject() || object.value("version").toInt() != 1
+                  || object.value("rootPath").toString().compare(
+                       QString::fromStdString(backing.source.root_path), Qt::CaseInsensitive) != 0
+                  || object.value("rootSha256").toString() != reference_hash(*root)
+                  || object.value("lodSha256").toString() != reference_hash(*old_lod))
+                throw std::runtime_error("Retained reference metadata does not match its files");
+            }
+            return Pair{std::move(*root), std::move(*old_lod)};
+          })) return std::move(*retained);
+
+      if (auto configured = attempt("configured folder", [&]() -> std::optional<Pair> {
+            auto directory = ShadowlandsADTCodec::lodReferenceDirectory(backing.source.root_path);
+            if (directory.empty()) return std::nullopt;
+            QDir source(QString::fromStdString(directory));
+            auto root = read_reference_file(source.filePath(QFileInfo(
+              QString::fromStdString(backing.source.root_path)).fileName()));
+            auto old_lod = read_reference_file(source.filePath(QFileInfo(QString::fromStdString(
+              backing.source.paths[part_index(ShadowlandsADTPart::Lod)])).fileName()));
+            if (!root || !old_lod) throw std::runtime_error("Folder has no ROOT/LOD pair for this tile");
+            return Pair{std::move(*root), std::move(*old_lod)};
+          })) return std::move(*configured);
+
+      if (auto archive = attempt("client archives", [&]() -> std::optional<Pair> {
+            auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+            std::vector<char> root, old_lod;
+            if (!client->readFile(BlizzardArchive::Listfile::FileKey(backing.source.root_path), root)
+                || !client->readFile(BlizzardArchive::Listfile::FileKey(
+                     backing.source.paths[part_index(ShadowlandsADTPart::Lod)]), old_lod))
+              return std::nullopt;
+            return Pair{LodBytes(root.begin(), root.end()), LodBytes(old_lod.begin(), old_lod.end())};
+          })) return std::move(*archive);
+
+      throw std::runtime_error("No coherent ROOT/LOD reference. " + failures
+        + "Choose a LOD reference folder containing the original pair for this tile.");
+    }
+
+    void retain_lod_reference(std::string const& root_path, LodBytes const& root,
+      LodBytes const& lod, std::string const& origin,
+      std::vector<std::pair<std::string, LodBytes>>& parts,
+      TerrainLodReferenceInspection const* verified = nullptr)
+    {
+      auto const inspection = verified ? *verified : TerrainLodUpdater::inspectReference(root, lod);
+      if (!inspection.usable)
+        throw std::runtime_error("Generated LOD cannot form a verified reference: " + inspection.diagnostics);
+      QJsonObject metadata{{"version", 1}, {"rootPath", QString::fromStdString(root_path)},
+        {"rootSha256", reference_hash(root)}, {"lodSha256", reference_hash(lod)},
+        {"origin", QString::fromStdString(origin)},
+        {"candidateLayouts", static_cast<int>(inspection.candidate_layouts)}};
+      // A tied flat reference has equivalent outputs, but no unique orientation.
+      if (inspection.unique_layout)
+        metadata.insert("layout", static_cast<int>(*inspection.unique_layout));
+      auto const base = ".noggit/lod-reference/" + root_path;
+      parts.emplace_back(base + ".root", root);
+      parts.emplace_back(base + ".lod", lod);
+      parts.emplace_back(base + ".json", json_bytes(metadata));
+    }
+
+    bool update_lod(ShadowlandsADTBackingStore const& backing,
+      std::vector<std::uint8_t> const& root, std::vector<std::uint8_t>& obj1,
+      std::vector<std::uint8_t>& lod,
+      std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& lod_reference_parts,
+      std::string* failure = nullptr, bool force_refinement = false)
+    {
+      bool lod_updated = false;
+      auto* client_data = Noggit::Application::NoggitApplication::instance()->clientData();
+      bool const retail = client_data->version() == BlizzardArchive::ClientVersion::RETAIL;
+      if (!retail)
+      {
+        if (backing.has(ShadowlandsADTPart::Lod))
+          lod = backing.part(ShadowlandsADTPart::Lod).bytes;
+      }
+      else if (backing.has(ShadowlandsADTPart::Lod))
+      {
+        lod = backing.part(ShadowlandsADTPart::Lod).bytes;
+        std::optional<LodReference> reference;
+        try
+        {
+          reference = resolve_lod_reference(backing, lod);
+          std::string diagnostics;
+          auto updated_lod = TerrainLodUpdater::update(reference->root,
+            reference->calibrated_lod ? *reference->calibrated_lod : lod, root,
+            &diagnostics, force_refinement);
+          auto updated_obj1 = RetailLiquid::update_object_water(root,obj1);
+          updated_lod = RetailLiquid::update_object_bounds(updated_obj1,updated_lod);
+          // Validate before changing any output, including the retained baseline.
+          retain_lod_reference(backing.source.root_path, root, updated_lod,
+            reference->origin, lod_reference_parts);
+          lod = std::move(updated_lod);
+          obj1 = std::move(updated_obj1);
+          lod_updated = true;
+          Log << "[Terrain LOD] " << backing.source.root_path << ": reference="
+              << reference->origin << (reference->calibrated_lod ? " (terrain indexing verified; heights recalibrated)" : "")
+              << "; " << diagnostics << std::endl;
+        }
+        catch (std::exception const& error)
+        {
+          if (failure) *failure = error.what();
+          LogError << "[Terrain LOD] Preserving original LOD; result remains stale for "
+                   << backing.source.root_path << ": " << error.what() << std::endl;
+          // Retain only an inspected baseline. A failed guess must never become
+          // the reference used by every subsequent retry.
+          lod_reference_parts.clear();
+          if (reference && !reference->calibrated_lod)
+            retain_lod_reference(backing.source.root_path, reference->root, lod,
+              reference->origin, lod_reference_parts, &reference->inspection);
+        }
+      }
+      else
+      {
+        if (failure) *failure = "No LOD template exists for this tile.";
+        LogError << "[Terrain LOD] No template; result remains stale for "
+                 << backing.source.root_path << std::endl;
+      }
+
+      return lod_updated;
+    }
   }
 
   bool ShadowlandsADTBackingStore::has(ShadowlandsADTPart part) const noexcept
   {
     return parts[part_index(part)].present;
+  }
+
+  std::string ShadowlandsADTCodec::lodReferenceDirectory(std::string const& root_path)
+  {
+    auto const bytes = read_reference_file(project_file(reference_config_path(root_path)));
+    if (!bytes) return {};
+    auto const document = QJsonDocument::fromJson(QByteArray(
+      reinterpret_cast<char const*>(bytes->data()), static_cast<int>(bytes->size())));
+    auto const object = document.object();
+    if (!document.isObject() || object.value("version").toInt() != 1
+        || !object.value("directory").isString())
+      throw std::runtime_error("Invalid LOD reference folder configuration (preserved without overwriting).");
+    auto const directory = object.value("directory").toString();
+    if (!QDir::isAbsolutePath(directory))
+      throw std::runtime_error("LOD reference folder must be an absolute path.");
+    return directory.toStdString();
+  }
+
+  void ShadowlandsADTCodec::setLodReferenceDirectory(std::string const& root_path,
+                                                     std::string const& directory)
+  {
+    auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+    if (client->version() != BlizzardArchive::ClientVersion::RETAIL)
+      throw std::runtime_error("LOD reference folders are available only for Retail.");
+    auto const source = QFileInfo(QString::fromStdString(directory));
+    if (directory.empty() || !source.isDir())
+      throw std::runtime_error("Choose an existing folder containing the original ROOT and LOD ADTs.");
+    auto const path = project_file(reference_config_path(root_path));
+    if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+      throw std::runtime_error("Cannot create the project LOD reference directory.");
+    auto const bytes = QJsonDocument(QJsonObject{{"version", 1},
+      {"directory", source.canonicalFilePath()}}).toJson(QJsonDocument::Indented);
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+      throw std::runtime_error("Cannot save the project LOD reference folder.");
+  }
+
+  void ShadowlandsADTCodec::rebuildDerived(std::string const& root_path)
+  {
+    auto* client = Noggit::Application::NoggitApplication::instance()->clientData();
+    if (client->version() != BlizzardArchive::ClientVersion::RETAIL)
+      throw std::runtime_error("Derived terrain repair is available only for Retail.");
+    auto const backing = loadBackingStore(root_path);
+    auto obj1 = backing.part(ShadowlandsADTPart::Obj1).bytes;
+    std::vector<std::uint8_t> lod;
+    std::vector<std::pair<std::string, std::vector<std::uint8_t>>> parts;
+    std::string failure;
+    if (!update_lod(backing, backing.part(ShadowlandsADTPart::Root).bytes, obj1, lod, parts, &failure, true))
+      throw std::runtime_error("LOD could not be rebuilt: " + failure);
+    parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Lod)], std::move(lod));
+    if (backing.has(ShadowlandsADTPart::Obj1))
+      parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Obj1)], std::move(obj1));
+    save_parts(parts);
   }
 
   ShadowlandsADTRawPart const& ShadowlandsADTBackingStore::part(ShadowlandsADTPart part) const noexcept
@@ -1201,9 +1650,10 @@ namespace Noggit::Formats::ADT
     return backing;
   }
 
-  void ShadowlandsADTCodec::saveFromLegacy(
+  bool ShadowlandsADTCodec::saveFromLegacy(
     ShadowlandsADTBackingStore const& backing,
-    std::vector<std::uint8_t> const& legacy_adt)
+    std::vector<std::uint8_t> const& legacy_adt,
+    RetailObjectTransfer::WmoSources const* wmo_sources)
   {
     auto root = rewrite_mcnks(backing.part(ShadowlandsADTPart::Root).bytes, legacy_adt, true);
     auto tex0 = rewrite_mcnks(backing.part(ShadowlandsADTPart::Tex0).bytes, legacy_adt, false);
@@ -1247,19 +1697,32 @@ namespace Noggit::Formats::ADT
     tex0 = replace_top_level_chunk(
       tex0, fourcc('M','D','I','D'), make_chunk(fourcc('M','D','I','D'), uint32_payload(texture_ids)));
 
+    bool const retail_objects = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+      == BlizzardArchive::ClientVersion::RETAIL;
+    if (retail_objects) RetailObjectTables::validate(obj0, false);
+    auto const original_obj0 = obj0;
     auto const mddf = modern_placements<ENTRY_MDDF>(
       legacy_adt, fourcc('M','D','D','F'), fourcc('M','M','I','D'), fourcc('M','M','D','X'), obj0);
-    auto const modf = modern_placements<ENTRY_MODF>(
+    auto modf = modern_placements<ENTRY_MODF>(
       legacy_adt, fourcc('M','O','D','F'), fourcc('M','W','I','D'), fourcc('M','W','M','O'), obj0);
-    bool const doodads_unchanged = same_placements<ENTRY_MDDF>(obj0, mddf, fourcc('M','D','D','F'));
-    bool const wmos_unchanged = same_placements<ENTRY_MODF>(obj0, modf, fourcc('M','O','D','F'));
-    bool const placements_unchanged = doodads_unchanged && wmos_unchanged;
+    if (retail_objects && wmo_sources)
+    {
+      obj0 = primary_for_save(original_obj0, mddf, modf, *wmo_sources, backing.has(ShadowlandsADTPart::Obj1));
+      auto const table = RetailObjectTables::chunks(obj0);
+      auto const entry = table.at("FDOM");
+      modf.assign(obj0.begin() + entry.offset, obj0.begin() + entry.offset + entry.size);
+    }
+    bool const doodads_unchanged = same_placements<ENTRY_MDDF>(original_obj0, mddf, fourcc('M','D','D','F'));
+    bool const wmos_unchanged = same_placements<ENTRY_MODF>(original_obj0, modf, fourcc('M','O','D','F'));
+    bool const placements_unchanged = doodads_unchanged && wmos_unchanged
+      && (!(retail_objects && wmo_sources) || obj0 == original_obj0);
     Log << "[ModernADT][Save] " << backing.source.root_path
         << ": M2 unchanged=" << doodads_unchanged << ", WMO unchanged=" << wmos_unchanged
         << ", preserving original objects=" << placements_unchanged << std::endl;
     std::vector<std::uint8_t> obj1;
     if (backing.has(ShadowlandsADTPart::Obj1))
-      obj1 = obj1_for_save(obj0, backing.part(ShadowlandsADTPart::Obj1).bytes, mddf, modf);
+      obj1 = obj1_for_save(original_obj0, backing.part(ShadowlandsADTPart::Obj1).bytes, mddf, modf,
+        wmo_sources, retail_objects && obj0 != original_obj0);
     if (!placements_unchanged)
     {
       obj0 = replace_top_level_chunk(
@@ -1271,7 +1734,13 @@ namespace Noggit::Formats::ADT
                                modf.size() / sizeof(ENTRY_MODF));
     }
 
+    if (retail_objects && !placements_unchanged && !wmo_sources)
+      obj0 = RetailObjectTables::remap(original_obj0, obj0, false);
     validate_tex0_alpha_layout(tex0);
+
+    std::vector<std::uint8_t> lod;
+    std::vector<std::pair<std::string, std::vector<std::uint8_t>>> lod_reference_parts;
+    bool const lod_updated = update_lod(backing, root, obj1, lod, lod_reference_parts);
 
     // Stage the complete tile before replacing any project override.
     std::vector<std::pair<std::string, std::vector<std::uint8_t>>> parts;
@@ -1282,10 +1751,21 @@ namespace Noggit::Formats::ADT
       parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Obj1)], std::move(obj1));
     if (backing.has(ShadowlandsADTPart::Lod))
       parts.emplace_back(backing.source.paths[part_index(ShadowlandsADTPart::Lod)],
-                         backing.part(ShadowlandsADTPart::Lod).bytes);
+                         std::move(lod));
+    for (auto& reference_part : lod_reference_parts)
+      parts.push_back(std::move(reference_part));
     save_parts(parts);
 
     Log << "[ModernADT][Save] Saved split tile ROOT/TEX0/OBJ0/OBJ1/LOD to the project override: "
         << backing.source.root_path << std::endl;
+    return lod_updated;
+  }
+
+  std::vector<std::uint8_t> ShadowlandsADTCodec::repairObjectLod(
+    std::vector<std::uint8_t> const& original, std::vector<std::uint8_t> const& mddf,
+    std::vector<std::uint8_t> const& modf,
+    std::map<std::uint32_t, std::array<float, 6>> const& worldBounds)
+  {
+    return rewrite_obj1(original, mddf, modf, &worldBounds);
   }
 }

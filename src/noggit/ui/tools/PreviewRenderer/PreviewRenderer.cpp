@@ -1,6 +1,8 @@
 #include "PreviewRenderer.hpp"
 
 #include <noggit/AsyncLoader.h>
+#include <noggit/GroundEffectAsset.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <noggit/Model.h>
 #include <noggit/ModelInstance.h>
 #include <noggit/rendering/Primitives.hpp>
@@ -90,6 +92,9 @@ void PreviewRenderer::setModel(std::string const &filename)
 
   // add new model instance
   QString q_filename = QString(filename.c_str());
+  bool const retail = Noggit::Application::NoggitApplication::instance()->clientData()->version()
+    == BlizzardArchive::ClientVersion::RETAIL;
+  auto const id = Noggit::DetailDoodads::fileDataId(filename, retail);
 
   if (q_filename.endsWith(".wmo"))
   {
@@ -98,9 +103,11 @@ void PreviewRenderer::setModel(std::string const &filename)
     instance.recalcExtents();
 
   }
-  else if (q_filename.endsWith(".m2"))
+  else if (id || q_filename.endsWith(".m2"))
   {
-    auto& instance = _model_instances.emplace_back(filename, _context);
+    auto key = id ? BlizzardArchive::Listfile::FileKey(*id) : BlizzardArchive::Listfile::FileKey(filename);
+    if (id) key.deduceOtherComponent(Noggit::Application::NoggitApplication::instance()->clientData()->listfile());
+    auto& instance = _model_instances.emplace_back(key, _context);
     instance.model->wait_until_loaded();
     instance.recalcExtents();
   }
@@ -214,6 +221,7 @@ void PreviewRenderer::draw()
     {
       OpenGL::Scoped::use_program wmo_program{*_wmo_program.get()};
 
+      wmo_program.uniform("preview_texture_lod_bias", 0.f);
       wmo_program.uniform("camera", glm::vec3(_camera.position.x, _camera.position.y, _camera.position.z));
 
 
@@ -265,6 +273,8 @@ void PreviewRenderer::draw()
     gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     gl.disable(GL_BLEND);
     gl.depthMask(GL_TRUE);
+    m2_shader.uniform("preview_texture_lod_bias", 0.f);
+    m2_shader.uniform("preview_decal_lod_bias", 0.f);
     m2_shader.uniform("blend_mode", 0);
     m2_shader.uniform("unfogged", static_cast<int>(model_render_state.unfogged));
     m2_shader.uniform("unlit", static_cast<int>(model_render_state.unlit));

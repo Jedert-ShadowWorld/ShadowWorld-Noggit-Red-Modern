@@ -7,6 +7,7 @@
 #include <noggit/ui/TexturingGUI.h>
 #include <noggit/application/NoggitApplication.hpp>
 #include <noggit/application/Configuration/NoggitApplicationConfiguration.hpp>
+#include <ClientData.hpp>
 
 #include <opengl/shader.hpp>
 
@@ -176,10 +177,21 @@ void TileRender::draw (OpenGL::Scoped::use_program& mcnk_shader
         gl.texImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGB, 64, 64,
                       n_slices, 0, GL_RGB, GL_UNSIGNED_BYTE, zeroed_slices.data());
 
-        _map_tile->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
-        for (int j = 0; j < 256; ++j)
+        if (Noggit::Application::NoggitApplication::instance()->clientData()->version()
+            == BlizzardArchive::ClientVersion::RETAIL)
         {
-          _map_tile->mChunks[j % 16][j / 16]->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+          for (int j = 0; j < 256; ++j)
+          {
+            _map_tile->mChunks[j % 16][j / 16]->requeueChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+          }
+        }
+        else
+        {
+          _map_tile->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+          for (int j = 0; j < 256; ++j)
+          {
+            _map_tile->mChunks[j % 16][j / 16]->registerChunkUpdate(ChunkUpdateFlags::ALPHAMAP);
+          }
         }
 
         _alphamap_extended = true;

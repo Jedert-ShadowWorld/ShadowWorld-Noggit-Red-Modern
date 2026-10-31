@@ -1,5 +1,7 @@
 // This file is part of Noggit3, licensed under GNU General Public License (version 3).
 
+#include <noggit/client_data/ModernMapDB2Writer.hpp>
+#include <noggit/project/CurrentProject.hpp>
 #include <noggit/DBC.h>
 #include <noggit/Log.h>
 #include <noggit/MapHeaders.h>
@@ -470,28 +472,14 @@ const int hseg = 32;
 
 void Skies::loadZoneLights(int map_id)
 {
-    // read zone lights from csv file
+  auto const* project = Noggit::Project::CurrentProject::get();
+  bool const retail = project && project->projectVersion == Noggit::Project::ProjectVersion::RETAIL;
+  // Retail reads client DB2 tables; other projects read the supplemental CSV files.
   {
-    std::string zonelight_db_path = Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationNoggitDefinitionsPath
-      + "\\ZoneLight.3.4.3.56262.csv";
-    QString qPath = QString::fromStdString(zonelight_db_path);
-    QFile file(qPath);
-
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text))
+    try
     {
-      QTextStream in(&file);
-
-      // Skip the header line
-      std::string headerLine = in.readLine().toStdString();
-      assert(headerLine == "ID,Name,MapID,LightID");
-
-      while (!in.atEnd())
+      for (auto fields : Noggit::ClientData::supplementalRows("ZoneLight", "ZoneLight.3.4.3.56262.csv", {"ID", "Name", "MapID", "LightID"}))
       {
-        QString line = in.readLine();
-
-        // Split the line by comma
-        QStringList fields = line.split(',');
-
         assert(fields.size() == 4);
         if (fields.size() != 4)
         {
@@ -517,17 +505,16 @@ void Skies::loadZoneLights(int map_id)
         // get the light reference
         Sky* light_ptr = findSkyById(zone_light_entry.lightId);
         // if light was not loaded, most likely missing or not in map.
-        assert(light_ptr != nullptr);
+        if (!retail) assert(light_ptr != nullptr);
         if (!light_ptr)
           continue;
         // zoneLightsWotlk[zone_light_entry.id].light = findSkyById(zone_light_entry.lightId);
         light_ptr->zone_light = true;
       }
-      file.close();
     }
-    else
+    catch (std::exception const& error)
     {
-      LogError << "Failed loading Zone Lights. Can't open " << zonelight_db_path << std::endl;
+      LogError << "[ZoneLight] " << error.what() << std::endl;
       return;
     }
   }
@@ -535,26 +522,10 @@ void Skies::loadZoneLights(int map_id)
   // load zone light points to temporary object
   std::unordered_map<int, std::vector<ZoneLightPoint>> zoneLightPoints;
   {
-    std::string zonelightpoints_db_path = Noggit::Application::NoggitApplication::instance()->getConfiguration()->ApplicationNoggitDefinitionsPath
-      + "\\ZoneLightPoint.3.4.3.56262.csv";
-    QString qPath = QString::fromStdString(zonelightpoints_db_path);
-    QFile file(qPath);
-
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text))
+    try
     {
-      QTextStream in(&file);
-
-      // Skip the header line
-      std::string headerLine = in.readLine().toStdString();
-      assert(headerLine == "ID,Pos_0,Pos_1,PointOrder,ZoneLightID");
-
-      while (!in.atEnd())
+      for (auto fields : Noggit::ClientData::supplementalRows("ZoneLightPoint", "ZoneLightPoint.3.4.3.56262.csv", {"ID", "Pos[0]", "Pos[1]", "PointOrder", "ZoneLightID"}))
       {
-        QString line = in.readLine();
-
-        // Split the line by comma
-        QStringList fields = line.split(',');
-
         assert(fields.size() == 5);
         if (fields.size() != 5)
         {
@@ -591,11 +562,10 @@ void Skies::loadZoneLights(int map_id)
         // zoneLightsWotlk[zone_light_id].points.push_back(glm::vec2(zone_light_point_entry.posX, zone_light_point_entry.posY));
 
       }
-      file.close();
     }
-    else
+    catch (std::exception const& error)
     {
-      LogError << "Failed loading Zone Light Points. Can't open " << zonelightpoints_db_path << std::endl;
+      LogError << "[ZoneLightPoint] " << error.what() << std::endl;
       return;
     }
   }
@@ -607,7 +577,9 @@ void Skies::loadZoneLights(int map_id)
     //   continue;
 
     // polygon must have at least 3 points
-    assert(points_list.second.size() > 2);
+    if (!retail) assert(points_list.second.size() > 2);
+    if (retail && points_list.second.size() < 3)
+      continue;
 
     // Check for duplicate pointOrder values
     for (int i = 1; i < points_list.second.size(); ++i) {
@@ -626,6 +598,9 @@ void Skies::loadZoneLights(int map_id)
   }
 
 
+  if (retail)
+    zoneLightsWotlk.erase(std::remove_if(zoneLightsWotlk.begin(), zoneLightsWotlk.end(),
+        [&](auto const& light) { return zoneLightPoints[light.id].size() < 3; }), zoneLightsWotlk.end());
   for (auto& zone_light : zoneLightsWotlk)
   {
     auto& list = zoneLightPoints[zone_light.id];

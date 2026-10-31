@@ -10,12 +10,18 @@ function Slice([string]$start, [string]$end) {
 }
 $includes = @'
 #include <noggit/MapHeaders.h>
+#include <noggit/formats/adt/RetailObjectTables.hpp>
+#include <noggit/formats/adt/RetailObjectTransfer.hpp>
+namespace RetailObjectTables = Noggit::Formats::ADT::RetailObjectTables;
+namespace RetailObjectTransfer = Noggit::Formats::ADT::RetailObjectTransfer;
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>

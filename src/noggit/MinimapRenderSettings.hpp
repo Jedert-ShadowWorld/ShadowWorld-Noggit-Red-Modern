@@ -16,12 +16,20 @@ enum MinimapGenMode
   MAP,
   LOD_MAPTEXTURES,
   LOD_MAPTEXTURES_N,
+  LOD_MAPTEXTURES_BOTH,
+  TERRAIN_DERIVED,
+  WDL_HEIGHTMAP,
 };
+
+enum class MapTextureScope { All, Selected, Stale, Project };
 
 struct MinimapRenderSettings
 {
   MinimapGenMode export_mode = CURRENT_ADT;
   std::string file_format = ".blp (DXT1)";
+
+  MapTextureScope map_texture_scope = MapTextureScope::All;
+  bool generate_mipmaps = false;
 
   // Render settings
   int resolution = 512;

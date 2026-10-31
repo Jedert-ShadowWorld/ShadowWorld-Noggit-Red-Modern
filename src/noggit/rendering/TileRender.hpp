@@ -71,6 +71,10 @@ namespace Noggit::Rendering
 
     [[nodiscard]]
     bool isUploaded() const;;
+    // False when the last draw was skipped because a layer or height texture
+    // was not resident yet.
+    [[nodiscard]]
+    bool texturesReady() const { return !_texture_not_loaded; }
     [[nodiscard]]
     bool alphamapUploadedLastFrame() const;;
     int numUploadedChunkAlphamaps() const;;

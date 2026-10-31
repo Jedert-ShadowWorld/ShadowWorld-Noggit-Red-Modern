@@ -2,6 +2,7 @@
 
 #pragma once
 #include <noggit/ModelHeaders.h>
+#include <noggit/AnimationTrackMode.hpp>
 #include <math/interpolation.hpp>
 #include <cassert>
 #include <map>
@@ -76,6 +77,9 @@ namespace Animation
     int32_t* _globalSequences;
 
     Animation::Interpolation::Type::Type_t _interpolationType;
+    std::vector<SequenceMode> _sequenceModes;
+    std::int16_t interpolationFor(AnimationIdType anim) const
+    { return anim < _sequenceModes.size() ? _sequenceModes[anim].interpolation : _interpolationType; }
 
     std::map<AnimationIdType, TimestampTypeVectorType> times;
     std::map<AnimationIdType, AnimatedTypeVectorType> data;
@@ -87,7 +91,7 @@ namespace Animation
   public:
     bool uses(AnimationIdType anim)
     {
-      if (_globalSequenceID != NO_GLOBAL_SEQUENCE)
+      if (_sequenceModes.empty() && _globalSequenceID != NO_GLOBAL_SEQUENCE)
       {
         anim = AnimationIdType();
       }
@@ -97,17 +101,19 @@ namespace Animation
 
     AnimatedType getValue (AnimationIdType anim, TimestampType time, int animtime)
     {
-      if (_globalSequenceID != NO_GLOBAL_SEQUENCE)
+      auto globalSequence = anim < _sequenceModes.size() ? _sequenceModes[anim].globalSequence : _globalSequenceID;
+      auto interpolation = interpolationFor(anim);
+      if (globalSequence != NO_GLOBAL_SEQUENCE)
       {
-        if (_globalSequences[_globalSequenceID])
+        if (_globalSequences[globalSequence])
         {
-          time = animtime % _globalSequences[_globalSequenceID];
+          time = animtime % _globalSequences[globalSequence];
         }
         else
         {
           time = TimestampType();
         }
-        anim = AnimationIdType();
+        if (_sequenceModes.empty()) anim = AnimationIdType();
       }
 
       TimestampTypeVectorType& timestampVector = times[anim];
@@ -144,7 +150,7 @@ namespace Animation
           }
         }
 
-        if (pos == timestampVector.size() - 1 || _interpolationType == Animation::Interpolation::Type::NONE)
+        if (pos == timestampVector.size() - 1 || interpolation == Animation::Interpolation::Type::NONE)
         {
           result = dataVector[pos];
         }
@@ -155,7 +161,7 @@ namespace Animation
           TimestampType t2 = timestampVector[pos + 1];
           const float percentage = (time - t1) / static_cast<float>(t2 - t1);
 
-          switch (_interpolationType)
+          switch (interpolation)
           {
           case Animation::Interpolation::Type::LINEAR:
           {
@@ -189,9 +195,11 @@ namespace Animation
              , const BlizzardArchive::ClientFile& file
              , int32_t* globalSequences
              , const std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>& animation_files
-             = std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>())
+             = std::vector<std::unique_ptr<BlizzardArchive::ClientFile>>()
+             , std::vector<SequenceMode> const& sequenceModes = {})
     {
       _interpolationType = animationBlock.type;
+      _sequenceModes = sequenceModes;
 
       _globalSequences = globalSequences;
       _globalSequenceID = animationBlock.seq;
@@ -245,8 +253,9 @@ namespace Animation
         BlizzardArchive::ClientFile const& source =
           j < animation_files.size() && animation_files[j] ? *animation_files[j] : file;
 
+        auto interpolation = interpolationFor(j);
         std::size_t values_per_key =
-          _interpolationType == Animation::Interpolation::Type::HERMITE ? 3 : 1;
+          interpolation == Animation::Interpolation::Type::HERMITE ? 3 : 1;
         if (keyHeaders[j].nEntries > static_cast<std::size_t>(-1) / values_per_key
             || !contains(source, keyHeaders[j].ofsEntries,
                          static_cast<std::size_t>(keyHeaders[j].nEntries) * values_per_key,
@@ -257,7 +266,7 @@ namespace Animation
 
         const DataType* keys = source.get<DataType>(keyHeaders[j].ofsEntries);
 
-        switch (_interpolationType)
+        switch (interpolation)
         {
         case Animation::Interpolation::Type::NONE:
         case Animation::Interpolation::Type::LINEAR:
@@ -282,7 +291,7 @@ namespace Animation
       for (std::uint32_t j = 0; j < track_count; ++j)
       {
         std::size_t common_size = std::min(times[j].size(), data[j].size());
-        if (_interpolationType == Animation::Interpolation::Type::HERMITE)
+        if (interpolationFor(j) == Animation::Interpolation::Type::HERMITE)
         {
           common_size = std::min(common_size, std::min(in[j].size(), out[j].size()));
           in[j].resize(common_size);
@@ -295,6 +304,19 @@ namespace Animation
 
     void apply(AnimatedType function(const AnimatedType))
     {
+      if (!_sequenceModes.empty())
+      {
+        for (auto& [index, values] : data)
+        {
+          for (auto& value : values) value = function(value);
+          if (interpolationFor(index) == Animation::Interpolation::Type::HERMITE)
+          {
+            for (auto& value : in[index]) value = function(value);
+            for (auto& value : out[index]) value = function(value);
+          }
+        }
+        return;
+      }
       switch (_interpolationType)
       {
       case Animation::Interpolation::Type::NONE:

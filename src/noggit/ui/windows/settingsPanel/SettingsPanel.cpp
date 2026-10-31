@@ -6,6 +6,12 @@
 #include <noggit/database/SqlDatabaseManager.h>
 
 #include <QDir>
+#include <QVBoxLayout>
+#include <QFormLayout>
+#include <QLabel>
+#include <QShowEvent>
+#include <ClientData.hpp>
+#include <noggit/application/NoggitApplication.hpp>
 #include <QtCore/QSettings>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QFileDialog>
@@ -27,6 +33,54 @@ namespace Noggit
       ui = new ::Ui::SettingsPanel;
       ui->setupUi(body);
       setCentralWidget(body);
+
+      auto previewTab = new QWidget(ui->tabWidget);
+      auto previewLayout = new QVBoxLayout(previewTab);
+      auto scope = new QLabel(tr("Model quality for the Retail map viewport"), previewTab);
+      previewLayout->addWidget(scope);
+      auto previewForm = new QFormLayout;
+      previewLayout->addLayout(previewForm);
+      _retail_preview_quality = new QComboBox(previewTab);
+      _retail_preview_quality->addItems({tr("Low — layout"), tr("Medium — editing"),
+          tr("High — review"), tr("Ultra — full detail")});
+      previewForm->addRow(tr("Model quality"), _retail_preview_quality);
+      _retail_preview_lod = new QComboBox(previewTab);
+      _retail_preview_lod->addItems({tr("From quality preset"), tr("Highest"),
+          tr("Reduced"), tr("Lowest available")});
+      _retail_preview_lod->setToolTip(tr(
+          "Inspect an available M2 model LOD without changing placements. "
+          "Models without a usable lower LOD retain their original mesh."));
+      previewForm->addRow(tr("Model geometry (LOD)"), _retail_preview_lod);
+      _retail_preview_animation = new QComboBox(previewTab);
+      _retail_preview_animation->addItems({tr("Running"), tr("Paused — hold current pose"),
+          tr("Off — static pose")});
+      _retail_preview_animation->setToolTip(tr(
+          "Paused holds the current animation time. Off uses a static pose. "
+          "Neither option changes the saved model or its placement."));
+      previewForm->addRow(tr("Animation playback"), _retail_preview_animation);
+      _retail_preview_decals = new QComboBox(previewTab);
+      _retail_preview_decals->addItems({tr("Full"), tr("Reduced texture detail"), tr("Hidden")});
+      _retail_preview_decals->setToolTip(tr(
+          "Controls identified M2 surface decals, such as stains, cracks and tracks. "
+          "Recognition uses projected-texture flags or explicit decal asset names. "
+          "Unrecognized details and marks baked into terrain or WMO textures remain visible. "
+          "Hiding a decal never removes its placement."));
+      previewForm->addRow(tr("Surface decals (identified)"), _retail_preview_decals);
+      _retail_preview_description = new QLabel(previewTab);
+      _retail_preview_description->setWordWrap(true);
+      previewLayout->addWidget(_retail_preview_description);
+      connect(_retail_preview_quality, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, [this] { update_retail_preview_description(); });
+      auto explanation = new QLabel(tr(
+          "Use Low or Medium to arrange a scene, then High or Ultra to inspect it. "
+          "Model geometry overrides the preset LOD when selected; other preset settings stay active.\n\n"
+          "Applies after Save settings. View distance and the number of placed objects are unchanged. "
+          "Selection, bounds, collision calculations, UIDs, tile references and saved map data use the original assets. "
+          "Exports retain full detail."), previewTab);
+      explanation->setWordWrap(true);
+      previewLayout->addWidget(explanation);
+      previewLayout->addStretch();
+      ui->tabWidget->addTab(previewTab, tr("Retail preview"));
       setWindowTitle("Settings");
 
       // dev QOL, selecting another tab when editing the UI file makes it the default
@@ -227,8 +281,58 @@ namespace Noggit
       // ui->_adt_unload_dist->setMinimum(ui->_adt_loading_radius->value() + 1);
     }
 
+    void settings::update_retail_preview_description()
+    {
+      switch (_retail_preview_quality->currentIndex())
+      {
+        case 0:
+          _retail_preview_description->setText(tr(
+              "Low: lowest available model LOD, coarser textures, animation updates up to 15 FPS; "
+              "particles and ribbons are hidden."));
+          break;
+        case 1:
+          _retail_preview_description->setText(tr(
+              "Medium: reduced model LOD where available, moderately coarser textures, "
+              "animation updates up to 30 FPS; particles and ribbons are shown."));
+          break;
+        case 2:
+          _retail_preview_description->setText(tr(
+              "High: highest model LOD and full texture detail, animation updates up to 60 FPS; "
+              "particles and ribbons are shown."));
+          break;
+        default:
+          _retail_preview_description->setText(tr(
+              "Ultra: highest model LOD and full texture detail; animations update every frame. "
+              "Particles and ribbons are shown."));
+          break;
+      }
+    }
+
+    void settings::showEvent(QShowEvent* event)
+    {
+      auto app = Noggit::Application::NoggitApplication::instance();
+      // The launcher may configure future Retail projects before loading a client.
+      bool const available = !app->hasClientData()
+          || app->clientData()->version() == BlizzardArchive::ClientVersion::RETAIL;
+      ui->tabWidget->setTabVisible(ui->tabWidget->indexOf(_retail_preview_quality->parentWidget()), available);
+      // Viewport quick controls write the same keys; spontaneous show events keep unsaved edits.
+      if (!event->spontaneous())
+        load_retail_preview_settings();
+      QMainWindow::showEvent(event);
+    }
+
+    void settings::load_retail_preview_settings()
+    {
+      _retail_preview_quality->setCurrentIndex(qBound(0, _settings->value("retail/model_preview_quality", 3).toInt(), 3));
+      _retail_preview_animation->setCurrentIndex(qBound(0, _settings->value("retail/model_preview_animation", 0).toInt(), 2));
+      _retail_preview_lod->setCurrentIndex(qBound(0, _settings->value("retail/model_preview_lod", 0).toInt(), 3));
+      _retail_preview_decals->setCurrentIndex(qBound(0, _settings->value("retail/model_preview_decals", 0).toInt(), 2));
+      update_retail_preview_description();
+    }
+
     void settings::discard_changes()
     {
+      load_retail_preview_settings();
       ui->importPathField->setText(_settings->value("project/import_file", "import.txt").toString());
       ui->wmvLogPathField->setText(_settings->value("project/wmv_log_file").toString());
       ui->_view_distance->setValue(_settings->value("view_distance", 2000.f).toFloat());
@@ -324,6 +428,13 @@ namespace Noggit
 
     void settings::save_changes()
     {
+      if (ui->tabWidget->isTabVisible(ui->tabWidget->indexOf(_retail_preview_quality->parentWidget())))
+      {
+        _settings->setValue("retail/model_preview_quality", _retail_preview_quality->currentIndex());
+        _settings->setValue("retail/model_preview_animation", _retail_preview_animation->currentIndex());
+        _settings->setValue("retail/model_preview_lod", _retail_preview_lod->currentIndex());
+        _settings->setValue("retail/model_preview_decals", _retail_preview_decals->currentIndex());
+      }
       _settings->setValue("project/import_file", ui->importPathField->text());
       _settings->setValue("project/wmv_log_file", ui->wmvLogPathField->text());
       _settings->setValue("view_distance", ui->_view_distance->value());

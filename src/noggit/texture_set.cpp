@@ -14,6 +14,7 @@
 #include <QSettings>
 
 #include <algorithm>    // std::min
+#include <set>
 #include <sstream>
 
 TextureSet::TextureSet (MapChunk* chunk, BlizzardArchive::ClientFile* f, size_t base
