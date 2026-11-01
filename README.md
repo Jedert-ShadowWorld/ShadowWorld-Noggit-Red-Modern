@@ -42,6 +42,16 @@ does not by itself guarantee that every game client accepts every layer setup.
 
 ## Workflow
 
+### Latest release: v1.4.6
+
+Retail terrain/model rendering, texture loading and deferred map generation
+have been improved, incorporating Allen K. McWood's PR #9. Ordinary saves
+retain pending derived data for a separate export; legacy split maps without
+a terrain LOD asset no longer wait indefinitely for a nonexistent asset.
+
+See the [v1.4.6 changes and download instructions](docs/releases/1.4.6.md)
+and [GitHub releases](https://github.com/Jedert-ShadowWorld/ShadowWorld-Noggit-Red-Modern/releases/latest).
+
 ### Native DB2 Release (v1.4.3)
 
 - Modern map creation and metadata editing write native `Map.db2`.
@@ -297,6 +307,10 @@ developers of Noggit Red.
 
 Special credit to:
 
+-   [Allen K. McWood](https://github.com/Allen-K-McWood), contributing developer,
+    for his substantial help and development work on modern model rendering,
+    terrain texturing, loading stability and deferred map generation in PRs
+    #8 and #9. Thank you, Allen, for your expertise, time and continued support!
 -   Noggit / Noggit Red contributors.
 -   Natsirt867 for the `terrain-texture-layers-authoring` branch and
     modern terrain-related work.
